@@ -19,6 +19,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def run_warnings(stats: dict | None) -> list[str]:
+    """Warnings of an indexing pass (German, e.g. PROJECTS_DIR not mounted) for the status page."""
+    return [str(v["warning"]) for v in (stats or {}).values() if isinstance(v, dict) and v.get("warning")]
+
+
 class BackgroundIndexer:
     def __init__(self, settings: Settings, ai: AIServices):
         self.settings = settings
@@ -29,7 +34,7 @@ class BackgroundIndexer:
         self._lock = threading.Lock()
         self.state: dict = {"running": False, "phase": "wartet", "runs": 0, "last_started": None,
                             "last_finished": None, "last_stats": None, "last_error": None,
-                            "next_run": None, "demo_generated": None}
+                            "last_warnings": [], "next_run": None, "demo_generated": None}
 
     # -- control ---------------------------------------------------------------------------------
     def start(self) -> None:
@@ -66,7 +71,10 @@ class BackgroundIndexer:
         self._set(running=True, last_started=_now(), phase="startet")
         try:
             stats = run_index(self.settings, self.ai, progress=lambda phase: self._set(phase=phase))
-            self._set(last_stats=stats, last_error=None)
+            warnings = run_warnings(stats)
+            for w in warnings:
+                log.warning("Indexierung: %s", w)
+            self._set(last_stats=stats, last_error=None, last_warnings=warnings, last_success=_now())
             return stats
         except Exception as exc:  # noqa: BLE001 – the worker must survive any single failure
             log.exception("Indexierung fehlgeschlagen")

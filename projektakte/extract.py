@@ -1,7 +1,9 @@
 """Text extraction: classic extraction first, the multimodal model only as a fallback for scans
-and plans (and only with LLM_VISION=1). Without vision, such files are recorded as skipped."""
+and plans (and only with LLM_VISION=1). Without vision, such files are recorded as skipped and
+marked incomplete, so they are read once vision is switched on (see documents.reprocess_due)."""
 from __future__ import annotations
 
+import codecs
 import email
 import io
 import logging
@@ -21,6 +23,18 @@ VISION_PROMPT = (
     "Transkribiere den gesamten lesbaren Text dieses gescannten Dokuments bzw. Plans auf Deutsch. "
     "Beschreibe bei Plänen kurz Inhalt, Beschriftungen und Brandschutz-Symbole. Erfinde nichts."
 )
+# Bump when the extraction itself changes in a way that could read more of incomplete documents.
+EXTRACT_VERSION = 1
+
+
+def extraction_profile(llm) -> str:
+    """What the extraction can read with this model: without vision the LLM plays no part.
+
+    Stored per document; incomplete documents are processed again when the profile changes
+    (e.g. LLM_VISION switched on, or another multimodal model)."""
+    if llm is not None and getattr(llm, "vision", False):
+        return f"v{EXTRACT_VERSION}:vision:{getattr(llm, 'model', '') or '?'}"
+    return f"v{EXTRACT_VERSION}:text"
 
 
 @dataclass
@@ -35,14 +49,48 @@ class Extracted:
     status: str = "ok"  # ok | empty | skipped | error
     message: str | None = None
     method: str = "text"  # text | vision
+    # part of the content could not be read with this extraction profile (scan without vision,
+    # failed or empty model answer, error) – another profile may read more
+    incomplete: bool = False
+    # a (possibly transient) failure occurred – try again later even with the same profile
+    retry: bool = False
 
     @property
     def text(self) -> str:
         return "\n\n".join(p.text for p in self.pages)
 
 
+_BOMS = (  # UTF-32 first: its little-endian BOM starts with the UTF-16 one
+    (codecs.BOM_UTF32_LE, "utf-32-le"), (codecs.BOM_UTF32_BE, "utf-32-be"),
+    (codecs.BOM_UTF8, "utf-8"), (codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be"),
+)
+
+
+def _utf16_without_bom(data: bytes) -> str | None:
+    """Guess BOM-less UTF-16 (Windows tools): text in Latin script has a zero byte in every other
+    position. Returns the codec name or None."""
+    sample = data[:4096]
+    pairs = len(sample) // 2
+    if pairs < 2:
+        return None
+    zeros_even = sample[0 : pairs * 2 : 2].count(0) / pairs
+    zeros_odd = sample[1 : pairs * 2 : 2].count(0) / pairs
+    if zeros_odd > 0.4 and zeros_even < 0.05:
+        return "utf-16-le"
+    if zeros_even > 0.4 and zeros_odd < 0.05:
+        return "utf-16-be"
+    return None
+
+
 def decode_text(data: bytes) -> str:
-    for enc in ("utf-8-sig", "cp1252"):
+    """Decode a text file: BOM (UTF-8/16/32), BOM-less UTF-16, UTF-8, then Windows-1252."""
+    for bom, enc in _BOMS:
+        if data.startswith(bom):
+            return data[len(bom):].decode(enc, "replace")
+    enc16 = _utf16_without_bom(data)
+    if enc16:  # strong evidence – a truncated last byte must not turn it into cp1252 garbage
+        return data.decode(enc16, "replace")
+    for enc in ("utf-8", "cp1252"):
         try:
             return data.decode(enc)
         except UnicodeDecodeError:
@@ -101,32 +149,60 @@ def _pdf(data: bytes, llm, name: str) -> Extracted:
             pages.append(Page(i, text))
     if not empty_pages:
         return Extracted(pages)
-    if llm is not None and getattr(llm, "vision", False):
-        method = "text"
-        for i, page in empty_pages:
-            texts = []
-            try:
-                images = list(page.images)[:3]
-            except Exception:  # noqa: BLE001
-                images = []
-            for img in images:
-                mime = "image/jpeg" if img.name.lower().endswith((".jpg", ".jpeg")) else "image/png"
-                try:
-                    texts.append(llm.describe_image(img.data, mime, VISION_PROMPT).text)
-                    method = "vision"
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("%s Seite %d: Bildauswertung fehlgeschlagen (%s)", name, i, exc)
-            if texts:
-                pages.append(Page(i, "\n".join(texts)))
-        pages.sort(key=lambda p: p.number or 0)
+    if llm is None or not getattr(llm, "vision", False):
+        # vision off: the pages may well be scans – a later profile with vision reads them
         if pages:
-            return Extracted(pages, method=method)
+            return Extracted(pages, incomplete=True, message=(
+                f"{len(empty_pages)} Seite(n) ohne Textebene – Bildauswertung ausgeschaltet (LLM_VISION=0)"))
+        return Extracted([], status="skipped", incomplete=True,
+                         message="Scan ohne Textebene – Bildauswertung ausgeschaltet (LLM_VISION=0)")
+    vision_pages, unread, failed = _read_scanned_pages(empty_pages, llm, name)
+    pages = sorted(pages + vision_pages, key=lambda p: p.number or 0)
+    method = "vision" if vision_pages else "text"
+    retry = failed and unread > 0
+    reason = "Bildauswertung fehlgeschlagen" if retry else "Bildauswertung ergab keinen Text"
     if pages:
-        return Extracted(pages, message=f"{len(empty_pages)} Seite(n) ohne Textebene")
-    return Extracted([], status="skipped",
-                     message="Scan ohne Textebene – Bildauswertung ausgeschaltet (LLM_VISION=0)"
-                     if not (llm and getattr(llm, "vision", False))
-                     else "Scan ohne Textebene – Bildauswertung ergab keinen Text")
+        message = f"{unread} Seite(n) ohne Textebene nicht gelesen ({reason})" if unread else None
+        return Extracted(pages, method=method, message=message, incomplete=unread > 0, retry=retry)
+    if not unread:  # only blank pages – nothing a model could read
+        return Extracted([], status="empty", message="kein Text gefunden")
+    return Extracted([], status="error" if retry else "skipped", message=f"Scan ohne Textebene – {reason}",
+                     incomplete=True, retry=retry)
+
+
+def _read_scanned_pages(empty_pages, llm, name: str) -> tuple[list[Page], int, bool]:
+    """Let the multimodal model read the images of pages without a text layer.
+
+    Returns (pages read, pages with images that could not be read, whether a model call failed).
+    Pages without any image (blank pages) count as nothing to read."""
+    read: list[Page] = []
+    unread = 0
+    failed = False
+    for i, page in empty_pages:
+        try:
+            images = list(page.images)[:3]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, i, exc)
+            unread += 1
+            continue
+        if not images:
+            continue
+        texts = []
+        for img in images:
+            mime = "image/jpeg" if img.name.lower().endswith((".jpg", ".jpeg")) else "image/png"
+            try:
+                text = llm.describe_image(img.data, mime, VISION_PROMPT).text
+            except Exception as exc:  # noqa: BLE001
+                log.warning("%s Seite %d: Bildauswertung fehlgeschlagen (%s)", name, i, exc)
+                failed = True
+                continue
+            if text and text.strip():
+                texts.append(text)
+        if texts:
+            read.append(Page(i, "\n".join(texts)))
+        else:
+            unread += 1
+    return read, unread, failed
 
 
 def _docx(data: bytes) -> Extracted:
@@ -190,13 +266,14 @@ def extract(path: Path | str, data: bytes | None = None, *, llm=None) -> Extract
             result = _eml(data)
         else:  # images: plans, photos, scans
             if llm is None or not getattr(llm, "vision", False):
-                return Extracted([], status="skipped",
+                return Extracted([], status="skipped", incomplete=True,
                                  message="Bild – Bildauswertung ausgeschaltet (LLM_VISION=0)")
             text = llm.describe_image(data, IMAGE_EXT[ext], VISION_PROMPT).text
-            result = Extracted([Page(1, text)], method="vision")
+            result = Extracted([Page(1, text)], method="vision", incomplete=not (text or "").strip())
     except Exception as exc:  # noqa: BLE001 – one broken file must not stop indexing
         log.warning("Extraktion fehlgeschlagen: %s (%s)", path.name, exc)
-        return Extracted([], status="error", message=f"{type(exc).__name__}: {exc}"[:300])
+        return Extracted([], status="error", message=f"{type(exc).__name__}: {exc}"[:300],
+                         incomplete=True, retry=True)
     if result.status == "ok" and not result.text.strip():
         result.status, result.message = "empty", "kein Text gefunden"
     return result

@@ -113,6 +113,20 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE mails ADD COLUMN external_assignment TEXT;
     """,
+    # 6 – extraction profile per document: incomplete results (scans without vision, failed model
+    #     calls, errors) are processed again when the profile changes or their retry time is due.
+    #     Existing incomplete rows get no profile, so the next run processes them once.
+    """
+    ALTER TABLE documents ADD COLUMN extract_profile TEXT;
+    ALTER TABLE documents ADD COLUMN incomplete INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE documents ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE documents ADD COLUMN retry_after TEXT;
+    UPDATE documents SET incomplete = 1
+     WHERE status = 'error'
+        OR (status = 'skipped' AND COALESCE(message, '') NOT LIKE 'Format %')
+        OR (status = 'ok' AND COALESCE(message, '') LIKE '%ohne Textebene%')
+        OR (status = 'empty' AND ext IN ('.pdf', '.png', '.jpg', '.jpeg', '.tif', '.tiff', '.webp'));
+    """,
 ]
 
 

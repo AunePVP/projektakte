@@ -13,7 +13,7 @@ from projektakte.config import load_settings
 from projektakte.demo import generate
 from projektakte.demo.writers import docx_bytes, pdf_bytes, png_bytes
 from projektakte.documents import document_date, index_all_documents
-from projektakte.extract import Page, extract
+from projektakte.extract import Page, decode_text, extract, extraction_profile
 from projektakte.indexer import run_index
 from projektakte.main import create_app
 from projektakte.registry import scan_projects, sync_projects
@@ -163,3 +163,87 @@ def test_documents_api(indexed):
     detail = client.get(f"/api/documents/{pdf['id']}").json()
     assert any("Außentreppe" in c["text"] and c["page"] == 2 for c in detail["chunks"])
     assert client.get("/api/documents/999999").status_code == 404
+
+
+# -- BUG-12: Unicode text files from Windows tools ----------------------------------------------------
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-8-sig", "utf-8",
+                                      "cp1252"])
+def test_text_files_in_unicode_encodings(encoding):
+    text = "Rettungsweg Breite 1,20 m – Prüfung (Maße ≥ 0,9 m)" if encoding != "cp1252" else "Grüße – Maß"
+    r = extract(Path("Notiz.txt"), text.encode(encoding))
+    assert r.status == "ok" and r.text == text
+
+
+def test_utf16_detection_does_not_misfire_on_binary_like_text():
+    assert decode_text(b"ab") == "ab"
+    assert decode_text("Grüße".encode("cp1252")) == "Grüße"
+    # mostly zero bytes in both positions: not UTF-16 text, falls through to UTF-8/cp1252
+    assert decode_text(b"\x00\x00\x00\x00") == "\x00\x00\x00\x00"
+
+
+# -- BUG-5 / spec-03: incomplete extraction is marked so it can be redone -----------------------------
+def test_pdf_scan_pages_are_marked_incomplete_without_vision():
+    data = pdf_bytes(["Seite eins mit Text über Rauchableitung.", "\f", "x", "\f", "Seite drei: Außentreppe."])
+    r = extract(Path("a.pdf"), data)
+    assert r.status == "ok" and [p.number for p in r.pages] == [1, 3]
+    assert r.incomplete and not r.retry and "1 Seite(n) ohne Textebene" in r.message
+    scan = extract(Path("scan.pdf"), pdf_bytes(["x"]))
+    assert (scan.status, scan.incomplete) == ("skipped", True)
+    # with vision, a page without any image is just blank – nothing left to read
+    vision = _FakeVision()
+    assert not extract(Path("a.pdf"), data, llm=vision).incomplete
+    assert extract(Path("scan.pdf"), pdf_bytes(["x"]), llm=vision).status == "empty"
+
+
+class _Img:
+    def __init__(self, name="bild.png"):
+        self.name, self.data = name, b"\x89PNG"
+
+
+class _PdfPage:
+    def __init__(self, images):
+        self.images = images
+
+
+class _FakeVision:
+    vision = True
+    model = "vision-x"
+
+    def __init__(self, answers=()):
+        self.answers = list(answers)
+
+    def describe_image(self, data, mime, prompt):
+        answer = self.answers.pop(0) if self.answers else "Text"
+        if isinstance(answer, Exception):
+            raise answer
+
+        class R:
+            text = answer
+        return R()
+
+
+def test_failed_vision_pages_are_reported_not_dropped():
+    from projektakte.extract import _read_scanned_pages
+    pages = [(2, _PdfPage([_Img()])), (3, _PdfPage([_Img("a.jpg")])), (4, _PdfPage([])), (5, _PdfPage([_Img()]))]
+    read, unread, failed = _read_scanned_pages(pages, _FakeVision(["Grundriss", RuntimeError("timeout"), ""]), "x.pdf")
+    assert [p.number for p in read] == [2] and unread == 2 and failed
+
+
+def test_extraction_errors_are_retryable_and_images_need_vision():
+    err = extract(Path("a.pdf"), b"%PDF-1.4 kaputt")
+    assert (err.status, err.incomplete, err.retry) == ("error", True, True)
+    img = extract(Path("plan.png"), png_bytes())
+    assert (img.status, img.incomplete, img.retry) == ("skipped", True, False)
+    down = extract(Path("plan.png"), png_bytes(), llm=_FakeVision([RuntimeError("LLM timeout")]))
+    assert (down.status, down.incomplete, down.retry) == ("error", True, True)
+    empty = extract(Path("plan.png"), png_bytes(), llm=_FakeVision([" "]))
+    assert (empty.status, empty.incomplete) == ("empty", True)
+    ok = extract(Path("plan.png"), png_bytes(), llm=_FakeVision(["Fluchtwegplan"]))
+    assert (ok.status, ok.incomplete, ok.method) == ("ok", False, "vision")
+
+
+def test_extraction_profile_depends_on_vision_and_model():
+    assert extraction_profile(None) == extraction_profile(LLMClient("http://127.0.0.1:9/v1", "m", vision=False))
+    a = extraction_profile(LLMClient("http://127.0.0.1:9/v1", "m", vision=True))
+    b = extraction_profile(LLMClient("http://127.0.0.1:9/v1", "n", vision=True))
+    assert a != b and a != extraction_profile(None)

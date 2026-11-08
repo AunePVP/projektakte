@@ -1,4 +1,4 @@
-"""Indexing pipeline: project register → documents → mails → assignment.
+"""Indexing pipeline: project register → documents → mails → embeddings → assignment.
 
 One call of :func:`run_index` processes everything that is new or changed; it is used by the
 background worker, the CLI (``python -m projektakte.index``) and the tests.
@@ -13,10 +13,10 @@ from . import db
 from .ai.services import AIServices
 from .assign import assign_mails
 from .config import Settings
-from .documents import index_all_documents
+from .documents import index_all_documents, reprocess_attachments
 from .mails.eml_source import sync_eml_folder
 from .mails.jmap_source import JMAPClient, sync_plmail
-from .registry import scan_projects, sync_projects
+from .registry import sync_from_folder
 from .vectors import embed_pending
 
 log = logging.getLogger("projektakte.indexer")
@@ -42,23 +42,41 @@ def run_index(settings: Settings, ai: AIServices | None = None, progress=None) -
         return _run(settings, ai, phase)
 
 
+# ------------------------------------------------------------------------------------------------
+# WIRING (mails package): extra keyword arguments for the mail and assignment phases, e.g. a guard
+# against an empty MAIL_DIR or a minimum similarity for suggestions. Add an entry only once the
+# called function accepts it; everything else in this module stays as it is.
+def _extra_kwargs(settings: Settings, step: str) -> dict:
+    """Optional keyword arguments for ``step`` in ("eml", "plmail", "assign")."""
+    if step == "assign":
+        return {"min_similarity": settings.assign_min_similarity}
+    return {}
+# ------------------------------------------------------------------------------------------------
+
+
 def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
     started = time.time()
     db.init_db(settings.db_path)
     stats: dict = {}
     with db.session(settings.db_path) as conn:
         phase("Projekte")
-        folders = scan_projects(settings.projects_dir, settings.project_number_pattern)
-        stats["projects"] = sync_projects(conn, folders)
+        stats["projects"] = sync_from_folder(conn, settings.projects_dir, settings.project_number_pattern)
         conn.commit()
         llm = ai.llm if ai else None
         phase("Dokumente")
-        stats["documents"] = index_all_documents(conn, llm=llm)
+        if stats["projects"].get("warning"):  # PROJECTS_DIR unavailable: change nothing
+            stats["documents"] = {"note": "nicht abgeglichen – Projektordner nicht verfügbar"}
+        else:
+            stats["documents"] = index_all_documents(conn, llm=llm, projects_dir=settings.projects_dir)
         phase("Mails")
-        stats["mails"] = sync_eml_folder(conn, settings.mail_dir, cache_dir=settings.cache_dir, llm=llm)
+        stats["mails"] = sync_eml_folder(conn, settings.mail_dir, cache_dir=settings.cache_dir, llm=llm,
+                                         **_extra_kwargs(settings, "eml"))
         if settings.plmail_enabled:
             phase("plMail")
-            stats["plmail"] = sync_plmail(conn, plmail_client(settings), cache_dir=settings.cache_dir, llm=llm)
+            stats["plmail"] = sync_plmail(conn, plmail_client(settings), cache_dir=settings.cache_dir, llm=llm,
+                                          **_extra_kwargs(settings, "plmail"))
+        # incomplete attachments (scan without vision, model down) of unchanged mails
+        stats["attachments"] = reprocess_attachments(conn, llm=llm)
         if ai is not None:
             phase("Embeddings")
             stats["embeddings"] = embed_pending(conn, ai.embed)
@@ -67,7 +85,8 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
                                            min_share=settings.assign_min_share,
                                            min_lead=settings.assign_min_lead,
                                            vector_key=str(settings.db_path),
-                                           mode=settings.assign_mode)
+                                           mode=settings.assign_mode,
+                                           **_extra_kwargs(settings, "assign"))
     stats["seconds"] = round(time.time() - started, 2)
     log.info("Indexierung fertig: %s", stats)
     return stats

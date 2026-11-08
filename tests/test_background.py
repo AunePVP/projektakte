@@ -72,3 +72,21 @@ def test_periodic_runs(tmp_path, fake_ai):
         st = wait_for_runs(client, 3)
         assert st["indexing"]["last_stats"]["documents"]["unchanged"] == 33
         assert st["indexing"]["next_run"]
+
+
+def test_run_warnings_are_collected():
+    from projektakte.background import run_warnings
+    stats = {"projects": {"warning": "Projektordner /p nicht vorhanden"}, "documents": {"note": "x"},
+             "mails": {"new": 1}, "seconds": 0.1}
+    assert run_warnings(stats) == ["Projektordner /p nicht vorhanden"]
+    assert run_warnings(None) == []
+
+
+def test_unmounted_projects_dir_is_reported_in_status(tmp_path, fake_ai):
+    s = fake_settings(fake_ai, tmp_path, INDEX_INTERVAL=0, PROJECTS_DIR=tmp_path / "nicht-eingebunden",
+                      MAIL_DIR=tmp_path / "mails")
+    with TestClient(create_app(s)) as client:
+        st = wait_for_runs(client, 1)
+        assert st["indexing"]["last_error"] is None
+        assert any("nicht vorhanden" in w for w in st["indexing"]["last_warnings"])
+        assert st["indexing"]["last_stats"]["projects"]["warning"]
