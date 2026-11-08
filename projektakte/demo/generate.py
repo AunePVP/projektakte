@@ -9,10 +9,12 @@ from pathlib import Path
 
 from . import data
 from .documents import project_files
+from .eval import EVAL
+from .mails import render_all
 
 SEED = 4711
 # bump when the generated content changes, so DEMO_MODE regenerates outdated demo data
-DEMO_VERSION = "1"
+DEMO_VERSION = "2"
 
 
 def _mtime(d: date) -> float:
@@ -40,6 +42,17 @@ def generate(demo_dir: Path, seed: int = SEED) -> dict:
             _write(target, content, when)
             written.append(str(target.relative_to(demo_dir)))
 
+    mails_meta = []
+    for fname, raw, m in render_all(rng):
+        target = demo_dir / "mails" / fname
+        _write(target, raw, m["date"].date())
+        rel = str(target.relative_to(demo_dir))
+        written.append(rel)
+        mails_meta.append({
+            "file": rel, "category": m["category"], "project": m["project"],
+            "subject": m["subject"], "attachments": [a[0] for a in m["attachments"]],
+        })
+
     # remove files from older generator versions (only inside our own demo folder)
     keep = set(written) | {"manifest.json"}
     for f in sorted(demo_dir.rglob("*"), reverse=True):
@@ -55,6 +68,7 @@ def generate(demo_dir: Path, seed: int = SEED) -> dict:
         "projects": [{"number": p["number"], "name": p["name"], "kind": p["kind"]}
                      for p in data.PROJECTS],
         "files": sorted(written),
+        "mails": mails_meta,
     }
     (demo_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     return manifest
@@ -75,3 +89,11 @@ def ensure(demo_dir: Path) -> bool:
         return False
     generate(demo_dir)
     return True
+
+
+def eval_set() -> list[dict]:
+    return EVAL
+
+
+def write_eval(path: Path) -> None:
+    Path(path).write_text(json.dumps(EVAL, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")

@@ -40,3 +40,18 @@ Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
   aber stabil.
 - Der Generator räumt nur in seinem eigenen Ordner (`$DATA_DIR/demo`) auf und schreibt Dateien nur,
   wenn sich der Inhalt geändert hat.
+
+## Schritt 3 – Demo-Mails und Evaluationssatz
+
+- **Mail-Kategorien im Manifest**: Der Generator schreibt die erwartete Zuordnung je Mail nach
+  `demo/manifest.json`; Tests prüfen damit die Qualitätskriterien aus VISION.md Abschnitt 9.
+- **Schwere Negativbeispiele**: Mehrere Mails ohne Projektbezug enthalten Brandschutz-Vokabular
+  (Newsletter des Fachverbands, Seminarangebot, Feuerlöscher-Werbung), damit die inhaltliche
+  Zuordnung nicht einfach „irgendwas mit Brandschutz“ einem Projekt zuschlägt.
+- **Evaluationssatz als Python-Daten** (`projektakte/demo/eval.py`), `tests/eval.json` wird daraus
+  erzeugt (`python -m projektakte.demo --eval tests/eval.json`); ein Test prüft, dass beide gleich
+  sind. Quellen werden über den Dateipfad im Projektordner bzw. den Mail-Betreff angegeben;
+  Antworten werden über `answer_contains` geprüft. Zwei Fragen haben bewusst keine Antwort in den
+  Daten („nicht gefunden“ muss kommen).
+- Deterministische MIME-Grenzen (`set_boundary`) und Message-IDs, damit auch die Mails Byte für Byte
+  reproduzierbar sind.

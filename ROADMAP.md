@@ -13,7 +13,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
 - [x] **2. Demo-Projekte und -Dokumente erzeugen** – `python -m projektakte.demo` legt deterministisch
   mindestens 8 fiktive Projekte mit Ordnerstruktur und Dokumenten (TXT, MD, PDF, DOCX) unter
   `DATA_DIR/demo/projekte` an (siehe VISION.md Abschnitt 6), inkl. bekannter Fakten für Tests.
-- [ ] **3. Demo-Mails erzeugen** – derselbe Generator legt mindestens 60 `.eml`-Dateien (teils mit
+- [x] **3. Demo-Mails erzeugen** – derselbe Generator legt mindestens 60 `.eml`-Dateien (teils mit
   Anhängen) unter `DATA_DIR/demo/mails` an: mit Projektnummer im Betreff, nur im Text, nur im
   Anhangnamen, ohne Nummer aber eindeutig, ohne Projektbezug. Dazu `tests/eval.json` mit Fragen,
   erwarteten Projekten und Quellen.

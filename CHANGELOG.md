@@ -5,6 +5,14 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 3 – Demo-Mails erzeugen
+- 76 deterministische `.eml`-Dateien unter `demo/mails` (50 mit Nummer im Betreff, 6 nur im Text,
+  5 nur im Anhangnamen, 8 ohne Nummer aber eindeutig, 7 ohne Projektbezug), 15 mit Anhängen
+  (PDF, DOCX, TXT), eine HTML-Mail, eine Mail in ISO-8859-1, Antworten mit `In-Reply-To`.
+- `tests/eval.json`: 20 Fragen mit erwarteten Projekten, Quellen und Antwortbestandteilen,
+  darunter projektübergreifende Fragen und zwei Fragen ohne Antwort in den Daten.
+- `demo/manifest.json` mit der erwarteten Zuordnung jeder Mail.
+
 ### Schritt 2 – Demo-Projekte und -Dokumente erzeugen
 - `python -m projektakte.demo` erzeugt 8 fiktive Projekte mit je Baugenehmigung (PDF), Brandschutz-
   konzept (DOCX), Prüfbericht (MD) und Besprechungsprotokoll (TXT), dazu ein Bild-Plan (PNG).

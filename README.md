@@ -71,13 +71,17 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 ```bash
 python -m projektakte.demo            # schreibt nach $DATA_DIR/demo (Standard ./data/demo)
 python -m projektakte.demo --target /tmp/demo
+python -m projektakte.demo --eval tests/eval.json   # Evaluationssatz neu schreiben
 ```
 
 Erzeugt deterministisch (fester Seed, ohne Zeitstempel in den Dateien) 8 frei erfundene
 Brandschutz-Projekte (Schule, Pflegeheim, Bürogebäude, Tiefgarage, Hotel, Industriehalle, Kita,
 Wohnhochhaus) unter `demo/projekte/<Nummer> <Name>/` mit Baugenehmigung (PDF, nummerierte
 Auflagen), Brandschutzkonzept (DOCX), Prüfbericht (Markdown), Besprechungsprotokoll (TXT) und
-einem Bild-„Scan“ eines Fluchtwegplans. Alle Namen, Firmen und Orte sind erfunden; Mailadressen
+einem Bild-„Scan“ eines Fluchtwegplans, außerdem 76 Mails (`demo/mails/*.eml`, 15 mit Anhängen):
+Projektnummer im Betreff (Mehrheit), nur im Text, nur im Anhangnamen, ohne Nummer aber inhaltlich
+eindeutig und ohne Projektbezug (Newsletter, Rechnung …). `demo/manifest.json` hält fest, welche Mail
+zu welchem Projekt gehört; `tests/eval.json` enthält Fragen mit bekannter Antwort und Quelle. Alle Namen, Firmen und Orte sind erfunden; Mailadressen
 nutzen die reservierte Domain `.example`.
 
 ## Fake-KI-Dienste
