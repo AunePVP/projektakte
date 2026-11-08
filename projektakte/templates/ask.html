@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Fragen{% endblock %}
+{% block content %}
+<h1>Frage stellen</h1>
+<form method="post" action="/fragen" hx-post="/fragen" hx-target="#answer" hx-indicator="#ask-spinner" class="card">
+  <div class="ask-row">
+    <input type="text" name="question" value="{{ question }}" required maxlength="2000" placeholder="z. B. In welchem Projekt ist eine Druckbelüftungsanlage gefordert?" aria-label="Frage">
+    <button>Fragen</button>
+  </div>
+  <label class="small">Projekt:
+    <select name="project">
+      <option value="">alle Projekte</option>
+      {% for p in projects %}<option value="{{ p.number }}" {% if p.number == project %}selected{% endif %}>{{ p.number }} {{ p.name }}</option>{% endfor %}
+    </select>
+  </label>
+  <span id="ask-spinner" class="htmx-indicator muted">Suche und formuliere Antwort …</span>
+</form>
+<div id="answer">{% if result %}{% include "_answer.html" %}{% endif %}</div>
+<p class="muted small">Antworten stützen sich nur auf die gefundenen Unterlagen und nennen ihre Quellen. Steht nichts dazu in den Unterlagen, sagt Projektakte das.</p>
+{% endblock %}

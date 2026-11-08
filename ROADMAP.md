@@ -38,7 +38,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
 - [x] **11. Hintergrund-Indexierung** – beim Start und periodisch neue/geänderte Dateien und Mails
   verarbeiten, ohne den Webserver zu blockieren; `DEMO_MODE=1` erzeugt beim Start fehlende
   Demo-Daten.
-- [ ] **12. Weboberfläche** – Projektliste mit Suche, Projektseite (Dokumente, Mails, Zeitachse,
+- [x] **12. Weboberfläche** – Projektliste mit Suche, Projektseite (Dokumente, Mails, Zeitachse,
   Fragefeld mit Antwort und Quellen), Zuordnungs-Eingang mit Bestätigen/Verwerfen. Deutsch.
 - [ ] **13. Zugangsschutz** – Anmeldung mit Benutzern aus der Konfiguration (Passwort-Hash), Sitzungs-
   Cookie; alle Seiten und APIs außer `/health` geschützt.

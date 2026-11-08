@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Suche{% endblock %}
+{% block content %}
+<h1>Suche</h1>
+<form method="get" action="/suche" class="card ask-row">
+  <input type="search" name="q" value="{{ q }}" placeholder="Suchbegriffe" aria-label="Suchbegriffe">
+  <select name="project" aria-label="Projekt">
+    <option value="">alle Projekte</option>
+    {% for p in projects %}<option value="{{ p.number }}" {% if p.number == project %}selected{% endif %}>{{ p.number }} {{ p.name }}</option>{% endfor %}
+  </select>
+  <button>Suchen</button>
+</form>
+{% if res %}
+  {% for n in res.notes %}<p class="pill warn">{{ n }}</p>{% endfor %}
+  {% if res.hits %}
+  <ol class="hits">
+  {% for h in res.hits %}
+    <li>
+      <div>{% if h.kind == 'mail' %}<a href="/mails/{{ h.mail_id }}">{{ h.label }}</a>{% else %}<a href="/dokumente/{{ h.doc_id }}#c{{ h.chunk_id }}">{{ h.label }}</a>{% endif %}
+      {% if h.project %}<span class="muted">· <a href="/projekte/{{ h.project }}">{{ h.project }} {{ h.project_name }}</a></span>{% endif %}</div>
+      <blockquote>{{ h.text[:500] }}{% if h.text|length > 500 %} …{% endif %}</blockquote>
+    </li>
+  {% endfor %}
+  </ol>
+  {% else %}<p class="empty">Keine Treffer.</p>{% endif %}
+{% endif %}
+{% endblock %}

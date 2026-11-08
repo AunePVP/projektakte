@@ -1,0 +1,25 @@
+{% if result %}
+<div class="answer {{ result.status }}">
+  {% if result.status == 'answered' or result.status == 'no_citation' %}
+  <p class="answer-text">{{ result.answer|cite_links('q-src') }}</p>
+  {% else %}
+  <p class="answer-text"><strong>{{ result.answer }}</strong></p>
+  {% endif %}
+  {% for n in result.notes %}<p class="pill warn">{{ n }}</p>{% endfor %}
+  {% if result.sources %}
+  <h3>Quellen</h3>
+  <ol class="sources">
+    {% for s in result.sources %}
+    <li id="q-src-{{ s.n }}" value="{{ s.n }}">
+      {% if s.kind == 'mail' %}<a href="/mails/{{ s.mail_id }}">{{ s.label }}</a>
+      {% else %}<a href="/dokumente/{{ s.doc_id }}#c{{ s.chunk_id }}">{{ s.label }}</a>{% endif %}
+      {% if s.project %}<span class="muted">· <a href="/projekte/{{ s.project }}">{{ s.project }}</a></span>{% endif %}
+      <blockquote>{{ s.snippet }}{% if s.text|length > 400 %} …{% endif %}</blockquote>
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+</div>
+{% elif question == '' %}
+<p class="muted">Bitte eine Frage eingeben.</p>
+{% endif %}

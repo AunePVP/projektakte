@@ -177,3 +177,16 @@ Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
   indexieren.
 - **Demo-Daten im Hintergrund**: auch das Erzeugen des Demo-Datensatzes verzögert den Start nicht.
   Veraltete Demo-Daten (andere `DEMO_VERSION`) werden neu erzeugt.
+
+## Schritt 12 – Weboberfläche
+
+- **HTMX lokal ausgeliefert** (`projektakte/static/htmx.min.js`, Version 2.0.4, Lizenz 0BSD) statt
+  per CDN: Die Oberfläche lädt nichts aus dem Internet (Datenschutz, Betrieb ohne Internetzugang).
+- **Progressive Verbesserung**: Jede Aktion ist ein normales Formular (POST + Redirect bzw. volle
+  Seite); HTMX tauscht nur Teile aus (Antwort, Eingangseintrag, gefilterte Projektliste).
+- **Eine Projektseite mit Sprungmarken** statt Tabs mit eigenem Zustand: Fragefeld oben, darunter
+  Zeitachse, Dokumente und Mails – auf dem Laptop schnell überblickbar und ohne JavaScript nutzbar.
+- **Fehlerseiten**: Browser-Anfragen bekommen eine deutsche HTML-Seite, API-Anfragen weiter JSON.
+- **Originaldateien** nur über die Dokument-ID, nie über einen Pfad aus der Anfrage; zusätzlich wird
+  geprüft, dass die Datei unter `PROJECTS_DIR` oder dem Anhang-Cache liegt.
+- **Zeitzone der Anzeige**: Europe/Berlin (falls die Zeitzonendatenbank fehlt: UTC).

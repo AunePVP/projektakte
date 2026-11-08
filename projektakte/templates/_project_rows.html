@@ -1,0 +1,18 @@
+{% if projects %}
+<table class="list">
+  <thead><tr><th class="w-num">Nummer</th><th>Projekt</th><th class="w-s num">Dokumente</th><th class="w-s num">Mails</th><th class="w-m">Letzte Aktivität</th></tr></thead>
+  <tbody>
+  {% for p in projects %}
+  <tr>
+    <td><a href="/projekte/{{ p.number }}"><strong>{{ p.number }}</strong></a></td>
+    <td><a href="/projekte/{{ p.number }}">{{ p.name }}</a></td>
+    <td class="num">{{ p.docs }}</td>
+    <td class="num">{{ p.mails }}</td>
+    <td>{{ p.last|de_date }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">{% if q %}Kein Projekt passt zu „{{ q }}“.{% else %}Noch keine Projekte – die Indexierung läuft oder der Projektordner ist leer.{% endif %}</p>
+{% endif %}

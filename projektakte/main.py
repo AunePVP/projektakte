@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import __version__, db
 from .ai.services import AIServices, resolve_settings
@@ -46,8 +50,21 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
         return {"version": __version__}
 
     from .api import router as api_router
+    from .web import router as web_router, templates
 
     app.include_router(api_router)
+    app.include_router(web_router)
+    app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request: Request, exc: HTTPException):
+        # JSON for the API, a German HTML page for the browser
+        if request.url.path.startswith(("/api/", "/health")) or "text/html" not in request.headers.get("accept", ""):
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+        title = {404: "Nicht gefunden", 401: "Anmeldung nötig", 403: "Kein Zugriff"}.get(exc.status_code, "Fehler")
+        return templates.TemplateResponse(request, "error.html", {"title": title, "message": exc.detail},
+                                          status_code=exc.status_code)
+
     return app
 
 

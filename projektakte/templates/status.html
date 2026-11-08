@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Status{% endblock %}
+{% block content %}
+<h1>Status</h1>
+<div class="grid">
+  <section class="card">
+    <h2>Indexierung</h2>
+    <dl class="meta">
+      <dt>Zustand</dt><dd>{{ 'läuft (' ~ st.indexing.phase ~ ')' if st.indexing.running else 'wartet' }}</dd>
+      <dt>Läufe</dt><dd>{{ st.indexing.runs }}</dd>
+      <dt>Letzter Lauf</dt><dd>{{ st.indexing.last_finished|de_date(true) }}</dd>
+      <dt>Nächster Lauf</dt><dd>{{ st.indexing.next_run|de_date(true) if st.indexing.next_run else 'auf Anforderung' }}</dd>
+      {% if st.indexing.last_error %}<dt>Fehler</dt><dd class="pill warn">{{ st.indexing.last_error }}</dd>{% endif %}
+    </dl>
+    <form method="post" action="/status/neu-indexieren"><button>Jetzt neu indexieren</button></form>
+  </section>
+  <section class="card">
+    <h2>Bestand</h2>
+    <dl class="meta">
+      <dt>Projekte</dt><dd>{{ st.counts.projects }}</dd>
+      <dt>Dokumente</dt><dd>{{ st.counts.documents }} ({{ st.counts.documents_skipped }} übersprungen/fehlerhaft)</dd>
+      <dt>Mails</dt><dd>{{ st.counts.mails }} ({{ st.counts.inbox }} im Eingang)</dd>
+      <dt>Abschnitte</dt><dd>{{ st.counts.chunks }} ({{ st.counts.chunks_without_vector }} ohne Vektor)</dd>
+    </dl>
+  </section>
+</div>
+<section class="card">
+  <h2>KI-Dienste</h2>
+  <div hx-get="/status/dienste" hx-trigger="load" hx-swap="outerHTML"><p class="muted">Prüfe Dienste … <a href="/status/dienste">(ohne JavaScript)</a></p></div>
+</section>
+{% endblock %}

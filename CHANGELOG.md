@@ -5,6 +5,18 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 12 – Weboberfläche
+- Deutsche, serverseitig gerenderte Oberfläche (Jinja2) mit HTMX (lokal unter `/static`, 0BSD):
+  Projektliste mit Live-Filter, Projektseite (Fragefeld, Zeitachse, Dokumente, Mails), Zuordnungs-
+  Eingang (Bestätigen/Verwerfen/Zuordnen/Kein Projektbezug), Fragen, Suche, Mail- und Dokumentseiten
+  mit Abschnitten und Originaldatei, Statusseite mit Dienstezustand.
+- Antworten mit verlinkten Quellenverweisen `[n]`; Quellen springen zum Abschnitt im Dokument.
+- Alle Formulare funktionieren auch ohne JavaScript; Fehlerseiten auf Deutsch (API bleibt JSON).
+- Responsives Layout ohne horizontales Scrollen (geprüft bei 1366 px und 390 px Breite).
+- Originaldateien werden nur ausgeliefert, wenn sie im Index stehen und unter `PROJECTS_DIR` bzw.
+  dem Anhang-Cache liegen.
+- Neue Abhängigkeiten: `jinja2==3.1.6`, `python-multipart==0.0.32`.
+
 ### Schritt 11 – Hintergrund-Indexierung
 - Indexierung in einem Hintergrund-Thread: beim Start, danach alle `INDEX_INTERVAL` Sekunden und auf
   Anforderung (`POST /api/reindex`); nie zwei Läufe gleichzeitig.

@@ -11,8 +11,8 @@ im lokalen Netz mit lokalen Modellen.
 
 ## Stand
 
-Roadmap-Schritt 1: Konfiguration aus Umgebungsvariablen, vollständige Clients für alle drei
-KI-Dienste, Fake-Dienste (`python -m projektakte.fake_ai`) und `GET /health/deps`.
+Phase A in Arbeit (siehe [ROADMAP.md](ROADMAP.md)): Projektregister, Dokument- und Mail-Indexierung,
+Zuordnung, hybride Suche, Fragen mit Quellen, Hintergrund-Indexierung und Weboberfläche.
 Getroffene Entscheidungen: [DECISIONS.md](DECISIONS.md), Änderungen: [CHANGELOG.md](CHANGELOG.md).
 
 ## Starten
@@ -68,6 +68,22 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `ASK_TOP_K` / `ASK_CONTEXT_CHARS` / `ASK_MIN_RERANK` | `6` / `8000` / `0.01` | Quellen je Frage / Zeichenbudget im Prompt / Mindest-Score des Rerankers |
 | `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
+
+## Oberfläche
+
+Im Browser unter `http://localhost:8000/`:
+
+- **Projekte** – Liste mit Filter (Nummer/Name) und Suche über alle Projekte.
+- **Projektseite** – Fragefeld (Antwort mit nummerierten, verlinkten Quellen), Zeitachse aus
+  Dokumenten und Mails, Dokumente (mit Hinweis auf übersprungene Scans), Mails mit Zuordnungsart.
+- **Zuordnungs-Eingang** – Mails ohne sichere Projektnummer mit Vorschlag und Begründung;
+  Bestätigen, Verwerfen, anderes Projekt wählen oder „Kein Projektbezug“.
+- **Fragen** und **Suche** – projektübergreifend oder auf ein Projekt beschränkt.
+- **Status** – Indexierung, Bestand und Zustand der KI-Dienste.
+
+Mail- und Dokumentseiten zeigen den Text bzw. die Abschnitte (mit Seitenangabe) und öffnen die
+Originaldatei. Serverseitig gerendert (Jinja2), HTMX liegt lokal unter `/static` (kein CDN); alle
+Formulare funktionieren auch ohne JavaScript.
 
 ## Indexieren
 

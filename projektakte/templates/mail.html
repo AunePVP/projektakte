@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ m.subject or 'Mail' }}{% endblock %}
+{% block content %}
+<p class="crumbs">{% if m.project %}<a href="/projekte/{{ m.project }}">{{ m.project }} {{ m.project_name }}</a>{% else %}<a href="/eingang">Zuordnungs-Eingang</a>{% endif %} › Mail</p>
+<h1>{{ m.subject or '(ohne Betreff)' }}</h1>
+<dl class="meta">
+  <dt>Von</dt><dd>{{ m.sender_name }} &lt;{{ m.sender }}&gt;</dd>
+  <dt>An</dt><dd>{{ m.recipients }}</dd>
+  <dt>Datum</dt><dd>{{ m.date|de_date(true) }}</dd>
+  <dt>Projekt</dt><dd>{% if m.project %}<a href="/projekte/{{ m.project }}">{{ m.project }} {{ m.project_name }}</a>{% else %}–{% endif %}
+    <span class="pill {{ m.assign_status }}">{{ ASSIGN_LABELS[m.assign_status] }}</span> <span class="muted small">{{ m.assign_reason or '' }}</span></dd>
+  <dt>Quelle</dt><dd class="muted small">{{ m.source_key }}</dd>
+</dl>
+{% if atts %}
+<h2>Anhänge</h2>
+<ul class="atts">
+  {% for a in atts %}<li><a href="/dokumente/{{ a.id }}">{{ a.filename }}</a> <span class="muted">({{ a.size|filesize }})</span> · <a href="/dokumente/{{ a.id }}/datei">Datei öffnen</a>{% if a.status != 'ok' %} <span class="pill warn" title="{{ a.message or '' }}">{{ DOC_STATUS[a.status] }}</span>{% endif %}</li>{% endfor %}
+</ul>
+{% endif %}
+<h2>Text</h2>
+<pre class="mailbody">{{ m.body }}</pre>
+<details class="card">
+  <summary>Zuordnung ändern</summary>
+  <form method="post" action="/eingang/{{ m.id }}" class="ask-row">
+    <input type="hidden" name="back" value="/mails/{{ m.id }}">
+    <input type="hidden" name="action" value="assign">
+    <select name="project" required aria-label="Projekt">
+      <option value="">Projekt wählen …</option>
+      {% for p in projects %}<option value="{{ p.number }}" {% if p.number == m.project %}selected{% endif %}>{{ p.number }} {{ p.name }}</option>{% endfor %}
+    </select>
+    <button>Zuordnen</button>
+  </form>
+  <form method="post" action="/eingang/{{ m.id }}"><input type="hidden" name="back" value="/mails/{{ m.id }}"><input type="hidden" name="action" value="none"><button class="secondary">Kein Projektbezug</button></form>
+</details>
+{% endblock %}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Projektakte{% endblock %} – Projektakte</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js" defer></script>
+</head>
+<body hx-boost="false">
+<header class="top">
+  <a class="brand" href="/">Projektakte</a>
+  <nav>
+    <a href="/" {% if request.url.path == '/' or request.url.path.startswith('/projekte') %}class="active"{% endif %}>Projekte</a>
+    <a href="/eingang" {% if request.url.path.startswith('/eingang') %}class="active"{% endif %}>Zuordnungs-Eingang{% if inbox_count %} <span class="badge">{{ inbox_count }}</span>{% endif %}</a>
+    <a href="/fragen" {% if request.url.path.startswith('/fragen') %}class="active"{% endif %}>Fragen</a>
+    <a href="/suche" {% if request.url.path.startswith('/suche') %}class="active"{% endif %}>Suche</a>
+    <a href="/status" {% if request.url.path.startswith('/status') %}class="active"{% endif %}>Status</a>
+  </nav>
+  <div class="user">
+    {% if indexing and indexing.running %}<span class="pill busy" title="Indexierung läuft">Indexiert: {{ indexing.phase }}</span>{% endif %}
+    {% if user %}<span>{{ user }}</span> <form method="post" action="/logout" class="inline"><button class="link">Abmelden</button></form>{% endif %}
+  </div>
+</header>
+{% if demo_mode or ai_mode == 'fake' %}
+<div class="notice">Demo-Betrieb{% if demo_mode %}: frei erfundene Projekte und Mails{% endif %}{% if ai_mode == 'fake' %}; KI-Dienste simuliert{% endif %}.</div>
+{% endif %}
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer>Projektakte {{ version }} · nur lesend · alle Daten bleiben im lokalen Netz</footer>
+</body>
+</html>

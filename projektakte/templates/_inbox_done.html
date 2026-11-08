@@ -1,0 +1,7 @@
+<article class="card inbox-item done" id="mail-{{ mail.id }}">
+  <a href="/mails/{{ mail.id }}"><strong>{{ mail.subject or '(ohne Betreff)' }}</strong></a>
+  {% if error %}<p class="pill warn">{{ error }}</p>
+  {% elif result.assign_status == 'confirmed' %}<p>✓ Zugeordnet zu <a href="/projekte/{{ result.project }}">{{ result.project }} {{ name }}</a>.</p>
+  {% elif result.assign_status == 'none' %}<p>✓ Als „ohne Projektbezug“ markiert.</p>
+  {% else %}<p>Vorschlag verworfen – die Mail bleibt im Eingang. <a href="/eingang">Neu laden</a></p>{% endif %}
+</article>

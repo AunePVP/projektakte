@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Projekte{% endblock %}
+{% block content %}
+<div class="head-row">
+  <h1>Projekte</h1>
+  <form action="/" method="get" class="search-inline" role="search">
+    <input type="search" name="q" value="{{ q }}" placeholder="Nummer oder Name filtern …" aria-label="Projekte filtern"
+           hx-get="/" hx-trigger="input changed delay:250ms, search" hx-target="#project-list" autocomplete="off">
+  </form>
+</div>
+<form action="/suche" method="get" class="card ask-row">
+  <input type="text" name="q" placeholder="In allen Projekten suchen, z. B. „Druckbelüftung Sicherheitstreppenraum“" aria-label="Volltextsuche">
+  <button>Suchen</button>
+  <a class="button secondary" href="/fragen">Frage stellen</a>
+</form>
+<div id="project-list">{% include "_project_rows.html" %}</div>
+{% endblock %}
