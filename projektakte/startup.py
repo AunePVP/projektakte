@@ -83,6 +83,26 @@ def trusted_proxies(settings, *, warn: bool = False) -> str:
     return value
 
 
+# hybrid searches of one question in the worst case (ask.py): the question itself, the overview for
+# a summary (_summary_hits) and up to two named parties such as "Bauherr" (_role_hits)
+ASK_SEARCHES = 4
+RERANK_FORMATS = ("tei", "cohere")
+
+
+def ask_worst_case_seconds(settings) -> float:
+    """Longest a question can take when every AI service hangs until its timeout – what a reverse
+    proxy's timeout must exceed (deploy/README.md, "Zeitlimits"):
+    ``searches x (EMBED_TIMEOUT + RERANK_TIMEOUT) + LLM_TIMEOUT``, capped by the overall budget of a
+    question (``ASK_DEADLINE``, default 180 s) – AI calls never run past it."""
+    from . import ask
+
+    searches = getattr(ask, "MAX_SEARCHES", ASK_SEARCHES)
+    # a timeout no longer triggers a second format detection (ai/rerank.py): one rerank call per search
+    worst = searches * (settings.embed_timeout + settings.rerank_timeout) + settings.llm_timeout
+    deadline = getattr(settings, "ask_deadline", 0) or 0
+    return min(worst, deadline) if deadline > 0 else worst
+
+
 def log_startup(settings, auth) -> None:
     """One INFO line with the version and the effective configuration – URLs without credentials,
     no secrets."""
@@ -94,10 +114,11 @@ def log_startup(settings, auth) -> None:
         access = f"{len(auth.users)} Benutzer, Cookies {'mit' if auth.cookie_secure else 'ohne'} Secure"
     log.info("Projektakte %s – Konfiguration: APP_ENV=%s, AI_MODE=%s, DEMO_MODE=%s, DATA_DIR=%s, "
              "PROJECTS_DIR=%s, MAIL_DIR=%s, LLM=%s (%s, Timeout %gs), Embeddings=%s (%s, Timeout %gs), "
-             "Reranker=%s (Timeout %gs), plMail=%s, Zuordnung=%s, Zugangsschutz=%s, Proxy-Vertrauen=%s",
+             "Reranker=%s (Timeout %gs), längste Frage bis %gs (Proxy-Zeitlimit darüber), plMail=%s, "
+             "Zuordnung=%s, Zugangsschutz=%s, Proxy-Vertrauen=%s",
              __version__, settings.app_env, settings.ai_mode, "an" if settings.demo_mode else "aus",
              settings.data_dir, settings.projects_dir, settings.mail_dir, public_url(settings.llm_url),
              settings.llm_model, settings.llm_timeout, public_url(settings.embed_url), settings.embed_model,
              settings.embed_timeout, public_url(settings.rerank_url), settings.rerank_timeout,
-             public_url(settings.plmail_url) if settings.plmail_enabled else "aus",
+             ask_worst_case_seconds(settings), public_url(settings.plmail_url) if settings.plmail_enabled else "aus",
              settings.assign_mode, access, trusted_proxies(settings))

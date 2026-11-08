@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -175,6 +176,10 @@ def test_server_log_has_timestamps_and_no_search_terms(tmp_path):
         opener.open(base + "/health?q=Geheimprojekt+Mueller", timeout=5).read()
         opener.open(base + "/login?next=%2Fsuche%3Fq%3DGeheimprojekt", timeout=5).read()
         opener.open(base + "/suche?q=Gehaltsliste+Brandschutz", timeout=30).read()
+        try:  # file name in the path (verify3): not in the log either
+            opener.open(base + "/dokumente/1/datei/Personalakte%20Mueller.pdf", timeout=5).read()
+        except urllib.error.HTTPError:
+            pass  # 404: no such document – logged all the same
         with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:  # raw quote, like curl --path-as-is
             raw.sendall(b'GET /suche?q=abc"Rohzitat5 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
             while raw.recv(65536):
@@ -189,11 +194,13 @@ def test_server_log_has_timestamps_and_no_search_terms(tmp_path):
     assert '"GET /suche HTTP/1.1" 200' in out and '"GET /login HTTP/1.1"' in out
     assert '"GET /health HTTP/1.1" 200' not in out  # successful probes are not logged
     assert "Geheimprojekt" not in out and "Gehaltsliste" not in out and "Rohzitat" not in out
+    assert "Personalakte" not in out and '"GET /dokumente/1/datei/ HTTP/1.1" 404' in out
     assert "10.20.30.40" in out  # client address from the trusted proxy header
     from projektakte import __version__
 
     assert f"Projektakte {__version__} – Konfiguration: APP_ENV=dev, AI_MODE=fake" in out  # ops-10: version
     assert "Timeout 60s" in out and "Timeout 30s" in out  # embedding/reranker time limits (ops-12)
+    assert "längste Frage bis 180s (Proxy-Zeitlimit darüber)" in out  # ASK_DEADLINE caps all searches + LLM
     lines = [line for line in out.splitlines() if line.strip()]
     stamped = [line for line in lines if line[:4].isdigit() and line[4] == "-"]
     assert len(stamped) == len(lines), [line for line in lines if line not in stamped]

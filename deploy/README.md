@@ -18,6 +18,18 @@ docker compose up -d
 docker compose ps        # beide Dienste "healthy" bzw. "running"
 ```
 
+## Benutzerkonten: eines je Person
+
+Jede Person bekommt ein eigenes Konto (`python -m projektakte.passwd NAME`, eine Zeile je Person in
+`benutzer.txt`), Skripte und Überwachung ein eigenes technisches Konto (z. B. `monitor`). Kein
+gemeinsames Konto für mehrere Personen – auch nicht für eine Vorführung: **Abmelden beendet alle
+Sitzungen dieses Kontos auf allen Geräten** (so gewollt – ein kopierter oder auf einem fremden
+Rechner vergessener Cookie wird damit wertlos; die Anmeldeseite meldet „Alle Sitzungen dieses Kontos
+sind beendet“). Melden sich alle mit demselben Konto an, fliegen beim Abmelden einer Person alle
+anderen mit heraus. Für eine Vorführung also je Teilnehmer ein Konto anlegen (die Zeilen danach
+wieder aus `benutzer.txt` löschen) oder vorab ankündigen, dass die vortragende Person sich erst am
+Ende abmeldet. Eigene Konten halten auch die Anmeldebremse (siehe unten) und das Log nachvollziehbar.
+
 `APP_ENV=production` (Standard im Image) prüft beim Start: kein `AUTH_DISABLED`, ein zufälliger
 `SECRET_KEY` mit mindestens 32 Zeichen, beschreibbares `DATA_DIR`, mindestens ein Benutzer und eine
 lesbare `AUTH_USERS_FILE` (die Anwendung läuft als Benutzer-ID 10001 – eine Datei mit `chmod 600`,
@@ -43,22 +55,52 @@ Rechner wirkt und im Log die echte Adresse steht, wertet uvicorn `X-Forwarded-Fo
 Port der Anwendung auch ohne Proxy erreichbar ist: Dann könnte jeder seine Adresse fälschen.
 
 Stimmt `FORWARDED_ALLOW_IPS` nicht (oder sitzen alle hinter einem Terminalserver bzw. NAT), haben
-alle Clients dieselbe Adresse. Die Anmeldung bleibt trotzdem für alle möglich: Fehlversuche mit
-*anderen* Benutzernamen von dieser Adresse verzögern Anmeldungen nur (höchstens 2 s je Versuch);
-gesperrt – mit wachsender Wartezeit, höchstens 5 Minuten – wird nur der Benutzername, für den falsche
-Passwörter kamen. Ein Browser, mit dem sich der Benutzer schon einmal angemeldet hat, ist auch davon
-ausgenommen. Skripte und Überwachung mit HTTP Basic (am besten mit einem eigenen Benutzer) sperren
-nur Fehlversuche für genau diesen Benutzer von genau dieser Adresse. Nur wer von einer Adresse mit
-vielen parallelen Anfragen flutet, bekommt – wie bei jeder Überlast – 503 mit `Retry-After`.
+alle Clients dieselbe Adresse. Die Anmeldung bleibt trotzdem für alle möglich:
+
+- Fehlversuche mit *anderen* Benutzernamen von dieser Adresse (Namen durchprobieren, Tippfehler der
+  Kollegen) reihen die Anmeldeversuche dieser Adresse nur in eine Warteschlange (Abstand höchstens
+  2 s). Wird sie länger als 20 s – jemand flutet von dieser Adresse mit vielen parallelen Anfragen –,
+  bekommen weitere Versuche ohne Passwortprüfung 503 mit `Retry-After: 5`.
+- **Vorrang:** Ein vorhandener Benutzername, für den von dieser Adresse in den letzten 15 Minuten kein
+  Fehlversuch kam, wird sofort geprüft – an der Warteschlange vorbei. Mit richtigem Passwort kommt
+  man so auch während einer Flut ohne Wartezeit hinein (Browser und HTTP Basic). Ein falsches
+  Passwort wird dort genauso beantwortet wie in der Warteschlange (gleiche Meldung, gleiche
+  Wartezeit, gleiches 503) – die Warteschlange verrät also nicht, welche Namen es gibt.
+- Wer sich selbst vertippt hat, verliert den Vorrang bis zur nächsten erfolgreichen Anmeldung bzw.
+  für 15 Minuten und stellt sich während einer Flut hinten an (bis zu 20 s oder 503). Dasselbe gilt,
+  wenn jemand von dieser Adresse gezielt falsche Passwörter für diesen Namen schickt.
+- Gesperrt – mit wachsender Wartezeit, höchstens 5 Minuten, 429 – wird nur ein Benutzername, für den
+  falsche Passwörter kamen: ab 5 Fehlversuchen von derselben Adresse (über das Formular *oder* HTTP
+  Basic), ab 10 von beliebigen Adressen (nur für das Formular; HTTP Basic wird dann nur verzögert).
+- Ein Browser, mit dem sich der Benutzer schon einmal angemeldet hat (Geräte-Cookie), ist von all
+  dem ausgenommen und wird nur durch Fehlversuche in diesem Browser gebremst.
+- Skripte und Überwachung mit HTTP Basic deshalb mit einem eigenen Benutzer betreiben, dessen Namen
+  niemand im Formular eintippt: Fehlversuche für genau diesen Namen von genau dieser Adresse sperren
+  ihn dort.
 
 ## Zeitlimits (`EMBED_TIMEOUT`, `RERANK_TIMEOUT`, `LLM_TIMEOUT`)
 
-Eine Frage wird synchron beantwortet und wartet nacheinander auf den Embedding-Dienst, den Reranker
-und das Sprachmodell – im ungünstigsten Fall also `EMBED_TIMEOUT` + `RERANK_TIMEOUT` + `LLM_TIMEOUT`
-(Standard 60 + 30 + 120 = 210 s). Das Zeitlimit des Proxys muss über dieser Summe liegen (plus
+Eine Frage wird synchron beantwortet. Dabei laufen bis zu **4 Suchen** nacheinander – die Frage
+selbst, bei Zusammenfassungen eine Überblickssuche und bei genannten Beteiligten („Was hat der
+Bauherr geschrieben?“) je eine Suche für bis zu zwei Rollen. Jede Suche wartet auf den
+Embedding-Dienst und den Reranker, am Ende kommt das Sprachmodell.
+
+**Gesamtbudget je Frage: `ASK_DEADLINE` (Standard 180 s).** Kein Aufruf eines KI-Dienstes läuft
+über dieses Budget hinaus: Jeder Aufruf bekommt höchstens die verbleibende Zeit, die zusätzlichen
+Suchen laufen nur, solange für das Sprachmodell genug übrig ist, und ist das Budget aufgebraucht,
+kommen die gefundenen Stellen wie bei einem Ausfall des Sprachmodells. Ohne Budget
+(`ASK_DEADLINE=0`) dauert eine Frage höchstens `4 × (EMBED_TIMEOUT + RERANK_TIMEOUT) + LLM_TIMEOUT`
+(Standard 4 × (60 + 30) + 120 = 480 s).
+
+Die Startzeile im Log nennt den Wert für die tatsächlichen Einstellungen („längste Frage bis … s“,
+`docker compose logs app | grep Konfiguration`). Das Zeitlimit des Proxys muss darüber liegen (plus
 Reserve), sonst bricht er mit 504 ab und der Nutzer sieht statt der gefundenen Stellen eine
-Fehlerseite. Caddy: `response_header_timeout 240s` (im Beispiel gesetzt). Wer die Zeitlimits der
-Dienste erhöht, erhöht auch das des Proxys. nginx hat standardmäßig 60 s – dort:
+Fehlerseite. Caddy: `response_header_timeout 240s` (im Beispiel gesetzt, passend zu
+`ASK_DEADLINE=180`). Wer `ASK_DEADLINE` erhöht, erhöht auch das Zeitlimit des Proxys. Manche Browser
+brechen eine Anfrage nach 5 Minuten selbst ab (Firefox: 300 s) – deshalb `ASK_DEADLINE` unter 300 s
+halten.
+
+nginx hat standardmäßig 60 s – dort:
 
 ```nginx
 location / {
@@ -66,7 +108,7 @@ location / {
     proxy_set_header Host $host;                       # sonst lehnt die App Formulare als fremd ab
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_read_timeout 240s;                           # > EMBED_ + RERANK_ + LLM_TIMEOUT (210 s)
+    proxy_read_timeout 240s;                           # > längste Frage (Startzeile; ASK_DEADLINE=180 s)
 }
 ```
 
@@ -108,11 +150,13 @@ dort `projektakte.sqlite3-wal` und `-shm` löschen, `docker compose start app`.
   oder der Indexierungs-Thread nicht läuft. Der Docker-`HEALTHCHECK` nutzt denselben Endpunkt.
   Die Abfrage kostet unabhängig von der Datenmenge nur Millisekunden (kein Tabellenscan);
   `pending_vectors` ist der Stand nach dem letzten Indexierungslauf (`null` vor dem ersten).
-- Das Zugriffsprotokoll enthält keine Query-Strings (also keine Suchbegriffe); erfolgreiche
-  Health-Abfragen werden nicht protokolliert. Logs werden im Beispiel auf 5 × 10 MB begrenzt.
+- Das Zugriffsprotokoll enthält keine Query-Strings (also keine Suchbegriffe) und keine Dateinamen:
+  Aus `/dokumente/12/datei/Protokoll Meier.pdf` wird `/dokumente/12/datei/` (Dateinamen von
+  Mailanhängen enthalten oft Personennamen). Erfolgreiche Health-Abfragen werden nicht protokolliert.
+  Logs werden im Beispiel auf 5 × 10 MB begrenzt; sie enthalten Benutzernamen und Adressen.
 - Caddy schreibt kein Zugriffsprotokoll, aber Proxy-Fehler (502/504, etwa während die Anwendung
-  neu startet) mit der Anfrage. Das `Caddyfile` kürzt dort die Adresse um den Query-String und lässt
-  die Request-Header weg (`log default` mit `format filter`). Wer im Caddyfile ein Zugriffsprotokoll
-  (`log` im Site-Block) einschaltet, muss denselben Filter dort eintragen.
+  neu startet) mit der Anfrage. Das `Caddyfile` kürzt dort die Adresse um Query-String und Dateinamen
+  und lässt die Request-Header weg (`log default` mit `format filter`). Wer im Caddyfile ein
+  Zugriffsprotokoll (`log` im Site-Block) einschaltet, muss denselben Filter dort eintragen.
 - Die Startzeile im Log nennt Version und wirksame Konfiguration (ohne Geheimnisse):
   `docker compose logs app | grep Konfiguration`.

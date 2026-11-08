@@ -1,10 +1,10 @@
 #!/bin/sh
 # Builds the image, starts a container (demo data, fake AI, APP_ENV=production from the image) and
 # checks the installed packages (= constraints.txt), /health, /health/ready, the HEALTHCHECK command,
-# /health/deps, the access control, security headers, the German error page, the access log (no
-# search terms, also after a raw quote), a question with sources, the backup, the users file as in
-# the README example and the refused starts (AUTH_DISABLED outside dev, data directory not
-# writable, users file not mounted).
+# /health/deps, the access control, security headers, the German error page, the favicon (also for
+# the sandboxed viewer pages), the access log (no search terms, also after a raw quote, no file
+# names), a question with sources, the backup, the users file as in the README example and the
+# refused starts (AUTH_DISABLED outside dev, data directory not writable, users file not mounted).
 set -eu
 cd "$(dirname "$0")/.."
 IMAGE="${IMAGE:-projektakte:smoke}"
@@ -51,7 +51,9 @@ echo "$NOTFOUND" | grep -q 'Diese Seite gibt es nicht' && echo "$NOTFOUND" | gre
   || fail "unbekannte Adresse ohne deutsche Fehlerseite: $(echo "$NOTFOUND" | tail -c 120)"
 [ "$(curl -sS -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:$PORT/favicon.ico")" = "200 image/png" ] \
   || fail "favicon fehlt"
-echo "Fehler:  deutsche Seite für unbekannte Adressen, favicon vorhanden"
+curl -sS -D - -o /dev/null "http://127.0.0.1:$PORT/favicon.ico" | grep -qi '^cross-origin-resource-policy: cross-origin' \
+  || fail "favicon ohne Cross-Origin-Resource-Policy: cross-origin (Betrachterseiten mit sandbox)"
+echo "Fehler:  deutsche Seite für unbekannte Adressen, favicon vorhanden (auch für Betrachterseiten)"
 for _ in $(seq 1 100); do
   RUNS=$(curl -sS -u "smoke:$PW" "http://127.0.0.1:$PORT/api/status" | python3 -c \
     'import json,sys; d=json.load(sys.stdin)["indexing"]; print(d["runs"] if not d["running"] else 0)')
@@ -63,12 +65,15 @@ curl -sS -u "smoke:$PW" -H 'Content-Type: application/json' "http://127.0.0.1:$P
   'import json,sys; d=json.load(sys.stdin); print("frage:  ", d["status"], "|", d["answer"][:90], "|", (d["sources"] or d.get("context") or [{}])[0].get("label"))'
 curl -sS -o /dev/null -u "smoke:$PW" "http://127.0.0.1:$PORT/api/search?q=Zebrafink-Suchbegriff"
 curl -sS -o /dev/null --path-as-is -u "smoke:$PW" "http://127.0.0.1:$PORT/api/search?q=abc\"Rohzitat-Suchbegriff"
+curl -sS -o /dev/null -H 'Accept: text/html' "http://127.0.0.1:$PORT/dokumente/1/datei/Personalakte%20Zebrafink.pdf"
 sleep 0.5
 docker logs "$CID" 2>&1 | grep -q 'GET /api/search HTTP' || fail "Zugriff fehlt im Log"
-if docker logs "$CID" 2>&1 | grep -q 'Zebrafink\|Rohzitat'; then fail "Suchbegriff steht im Log"; fi
+if docker logs "$CID" 2>&1 | grep -q 'Zebrafink\|Rohzitat'; then fail "Suchbegriff oder Dateiname steht im Log"; fi
+docker logs "$CID" 2>&1 | grep -q 'GET /dokumente/1/datei/ HTTP' || fail "Dateiabruf fehlt im Log"
 docker logs "$CID" 2>&1 | grep -q "Projektakte $(cat VERSION) – Konfiguration: APP_ENV=production" \
   || fail "Version/Konfiguration fehlt in der Startzeile"
-echo "Log:     Zugriffe ohne Query-String"
+docker logs "$CID" 2>&1 | grep -q "längste Frage bis [0-9]*s" || fail "längste Frage fehlt in der Startzeile"
+echo "Log:     Zugriffe ohne Query-String und ohne Dateinamen"
 docker exec "$CID" python -m projektakte.backup /data/sicherungen | sed 's/^/backup:  /'
 
 # refused starts: clear German message, exit code 2

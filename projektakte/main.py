@@ -256,7 +256,11 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> Response:
-        return Response(favicon_png(), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+        # cross-origin: the sandboxed viewer pages of original files have an opaque origin, and the
+        # browser drops an icon marked same-origin there (console error). The icon is public anyway.
+        return Response(favicon_png(), media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400",
+                                 "Cross-Origin-Resource-Policy": "cross-origin"})
 
     from .api import router as api_router
     from .auth_web import router as auth_router

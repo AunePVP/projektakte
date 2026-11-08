@@ -2,14 +2,16 @@
 {
 	# Caddy writes no access log here (only with a "log" directive in the site block), but its own
 	# log records proxy errors (502/504, e.g. while the app restarts) together with the request.
-	# Search terms are project and personal data: cut the query string off the URI and leave out
-	# the request headers (Referer and HX-Current-URL carry the query string as well).
+	# Search terms and file names are project and personal data: cut the query string off the URI
+	# and the file name off /dokumente/<id>/datei/<Dateiname> (one regexp – Caddy 2.8 allows one
+	# filter per field), and leave out the request headers (Referer and HX-Current-URL carry the
+	# query string as well).
 	log default {
 		output stderr
 		format filter {
 			wrap json
 			fields {
-				request>uri regexp \?.* ""
+				request>uri regexp (/dokumente/[0-9]+/datei/)[^?]*|\?.* $1
 				request>headers delete
 			}
 		}
@@ -28,10 +30,13 @@ projektakte.firma.lan {
 		-Server
 	}
 
-	# Caddy sets X-Forwarded-For/-Proto/-Host and keeps the Host header. A question waits for the
-	# embedding service, the reranker and the language model one after the other – up to
-	# EMBED_TIMEOUT + RERANK_TIMEOUT + LLM_TIMEOUT (defaults 60 + 30 + 120 = 210 s). This timeout
-	# must stay above that sum, otherwise the user gets a 504 instead of the sources found.
+	# Caddy sets X-Forwarded-For/-Proto/-Host and keeps the Host header. A question is answered
+	# synchronously: up to 4 searches (the question, an overview for summaries, up to two named
+	# parties such as "Bauherr"), each waiting for the embedding service and the reranker, then
+	# the language model. ASK_DEADLINE (default 180 s) caps a whole question: no AI call runs past
+	# it. This timeout must stay above ASK_DEADLINE, otherwise the user gets a 504 instead of the
+	# sources found. The start-up line of the app states the value for the actual settings
+	# ("längste Frage"); see deploy/README.md, "Zeitlimits".
 	reverse_proxy app:8000 {
 		transport http {
 			response_header_timeout 240s

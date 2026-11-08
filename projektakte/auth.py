@@ -13,11 +13,15 @@
   failures for one user name – from one address or from anywhere – make further attempts for that
   name wait (rejected without a password check). Failures of *other* names from the same address
   (name spraying, a shared terminal server/NAT address) only space attempts out by at most
-  ``SOFT_SPACING_CAP`` seconds; a correct password still gets through. A browser that logged in
-  successfully before carries a signed device cookie and is throttled on its own; HTTP Basic
-  clients (scripts, monitoring) are only rejected after failures for their own user name from
-  their own address. At most a few PBKDF2 checks run at the same time; waiting attempts hold no
-  worker thread. The failure table is bounded and cleaned up.
+  ``SOFT_SPACING_CAP`` seconds; a correct password still gets through. Even a flood from that
+  address does not hold up a colleague: an existing user name without a recent failure from the
+  address is checked at once, past the address's queue ("priority", ``PRIORITY_CLAIMS`` attempts
+  per name until one succeeds); a wrong password there is answered exactly like a queued attempt,
+  so the queue does not reveal which names exist. A browser that logged in successfully before
+  carries a signed device cookie and is throttled on its own; HTTP Basic clients (scripts,
+  monitoring) are only rejected after failures for their own user name from their own address. At
+  most a few PBKDF2 checks run at the same time; waiting attempts hold no worker thread. The
+  failure table is bounded and cleaned up.
 * Everything except ``/health``, ``/health/ready``, ``/login``, ``/favicon.ico`` and ``/static``
   requires a login. API clients may also send HTTP Basic credentials.
 * ``AUTH_DISABLED=1`` switches the check off – only with ``APP_ENV=dev`` (``test`` for the
@@ -74,6 +78,9 @@ VERIFY_SLOTS = max(1, min(4, (os.cpu_count() or 2) // 2))  # concurrent PBKDF2 c
 VERIFY_QUEUE_SECONDS = 10.0  # longer waits for a slot are answered with "busy"
 SOFT_SPACING_CAP = 2.0  # seconds: the most a "soft" brake spaces out attempts of one key
 SOFT_QUEUE_SECONDS = 20.0  # longer queues behind a soft brake (a flood from one address) → "busy"
+# checks of one existing name past its address's queue until one fails or succeeds (2: a double
+# submit of the login form also gets through during a flood)
+PRIORITY_CLAIMS = 2
 BUSY_LOG_INTERVAL = 60.0  # seconds between two "busy" warnings in the log (no log flood)
 KEY_HINT = 'Neuen Schlüssel erzeugen: python -c "import secrets; print(secrets.token_urlsafe(48))"'
 
@@ -214,7 +221,8 @@ class Backoff:
     ``hard``: while the delay lasts, attempts are rejected without a password check (429). A *soft*
     brake never rejects a correct password: attempts only queue up – spaced ``spacing()`` apart – and
     are then checked normally. Only when the queue grows beyond SOFT_QUEUE_SECONDS (a flood) are
-    further attempts turned away as "busy", like any overload."""
+    further attempts turned away as "busy", like any overload – except priority attempts of existing
+    names past the address's queue (``Auth._claim_priority``)."""
     free: int
     base: float
     cap: float
@@ -277,12 +285,17 @@ class LoginThrottle:
             waits = [e.until - now for k in keys if (e := self._entries.get(k)) is not None]
         return max([0.0, *waits])
 
-    def reserve(self, policies: Mapping[str, Backoff], max_wait: float) -> float | None:
+    def now(self) -> float:
+        return self._clock()
+
+    def reserve(self, policies: Mapping[str, Backoff], max_wait: float, *,
+                now: float | None = None) -> float | None:
         """Takes the next place in the queue of every soft brake in ``policies`` that is active and
         returns how long this attempt has to wait for it (0 = now). Attempts of such a key are thus
         spaced at least ``policy.spacing(failures)`` apart, however many arrive in parallel. None –
-        and nothing reserved – if the wait would exceed ``max_wait``."""
-        now = self._clock()
+        and nothing reserved – if the wait would exceed ``max_wait``. ``now``: reserve as of an
+        earlier moment (the attempt's arrival); the wait is relative to it."""
+        now = self._clock() if now is None else now
         with self._lock:
             queued: list[tuple[_Strikes, float]] = []
             start = now
@@ -331,6 +344,39 @@ class LoginThrottle:
         with self._lock:
             for key in keys:
                 self._entries.pop(key, None)
+
+    def claim(self, clean: str, marker: str, limit: int = 1) -> bool:
+        """Atomically: if ``clean`` (a failure counter) has no recent entry and ``marker`` has been
+        claimed fewer than ``limit`` times recently, claims it once more and returns True. Claims
+        last until ``release`` (one), ``success`` (all) or until forgotten (``forget_after``).
+        Markers count no failure and never brake."""
+        now = self._clock()
+        with self._lock:
+            entry = self._entries.get(clean)
+            if entry is not None and now - entry.last <= self.forget_after:
+                return False
+            claims = self._entries.get(marker)
+            if claims is None or now - claims.last > self.forget_after:
+                claims = _Strikes()
+            if claims.count >= limit:
+                return False
+            self._forget_stale(now)
+            self._entries.pop(marker, None)
+            claims.count += 1
+            claims.last = now
+            self._entries[marker] = claims  # most recent at the end (see _forget_stale)
+            while len(self._entries) > self.max_entries:
+                self._entries.popitem(last=False)
+        return True
+
+    def release(self, marker: str) -> None:
+        """Returns one claim (the attempt was turned away before its check)."""
+        with self._lock:
+            claims = self._entries.get(marker)
+            if claims is not None:
+                claims.count -= 1
+                if claims.count <= 0:
+                    del self._entries[marker]
 
     def _forget_stale(self, now: float) -> None:
         # entries are ordered by their last failure, and a wait (≤ cap) ends long before forget_after
@@ -453,6 +499,7 @@ class Auth:
         self._slots = anyio.Semaphore(VERIFY_SLOTS)
         self._known_names = {name.lower() for name in users}
         self._busy_logged = -BUSY_LOG_INTERVAL
+        self._check_seconds = 0.0  # running estimate of one password check
 
     @classmethod
     def from_settings(cls, s) -> "Auth":
@@ -488,26 +535,7 @@ class Auth:
         """Checks a login attempt (form, or HTTP Basic with ``basic=True``). Attempts behind a soft
         brake wait (asynchronously) for their turn. The PBKDF2 work runs in a worker thread, at most
         VERIFY_SLOTS at a time; waiting for a slot holds no thread."""
-        keys = self._throttle_keys(user, client, device, basic=basic)
-        if blocked := self._blocked(keys):
-            return blocked
-        delay = self.throttle.reserve(keys, SOFT_QUEUE_SECONDS)
-        if delay is None:
-            return self._busy("zu viele Anmeldeversuche von derselben Adresse")
-        if delay > 0:
-            await self._sleep(delay)
-        try:
-            with anyio.fail_after(VERIFY_QUEUE_SECONDS):
-                await self._slots.acquire()
-        except TimeoutError:
-            return self._busy("zu viele gleichzeitige Passwortprüfungen")
-        try:
-            if blocked := self._blocked(keys):  # failures counted while this attempt was queued
-                return blocked
-            ok = await anyio.to_thread.run_sync(self._verify, user, password)
-        finally:
-            self._slots.release()
-        return self._record(keys, user, ok)
+        return await self._attempt(user, password, client, device, basic=basic, sleep=self._sleep, limited=True)
 
     async def authenticate_basic(self, header: str | None, client: str = "") -> LoginResult:
         creds = parse_basic(header)
@@ -516,27 +544,107 @@ class Auth:
         return await self.authenticate(creds[0], creds[1], client, basic=True)
 
     def check_credentials(self, user: str, password: str, client: str = "", *, basic: bool = False) -> bool:
-        """Synchronous variant (scripts, tests): same throttling (waits behind a soft brake by
-        sleeping), no concurrency limit."""
-        keys = self._throttle_keys(user, client, None, basic=basic)
-        if self._blocked(keys):
-            return False
-        delay = self.throttle.reserve(keys, SOFT_QUEUE_SECONDS)
-        if delay is None:
-            return False
-        if delay > 0:
-            self._sync_sleep(delay)
-        return self._record(keys, user, self._verify(user, password)).ok
+        """Synchronous variant (scripts, tests – not from inside an event loop): same throttling
+        (waits behind a soft brake by sleeping), no concurrency limit."""
+        async def sleep(seconds: float) -> None:
+            self._sync_sleep(seconds)
+
+        async def run() -> LoginResult:
+            return await self._attempt(user, password, client, None, basic=basic, sleep=sleep, limited=False)
+
+        return anyio.run(run).ok
 
     def basic_user(self, header: str | None, client: str = "") -> str | None:
         creds = parse_basic(header)
         return creds[0] if creds and self.check_credentials(creds[0], creds[1], client, basic=True) else None
 
+    async def _attempt(self, user: str, password: str, client: str, device: str | None, *, basic: bool,
+                       sleep: Callable[[float], Awaitable[None]], limited: bool) -> LoginResult:
+        keys = self._throttle_keys(user, client, device, basic=basic)
+        if blocked := self._blocked(keys):
+            return blocked
+        if marker := self._claim_priority(keys, user):
+            return await self._priority_attempt(keys, user, password, marker, sleep=sleep, limited=limited)
+        delay = self.throttle.reserve(keys, SOFT_QUEUE_SECONDS)
+        if delay is None:
+            return await self._turn_away(sleep, "zu viele Anmeldeversuche von derselben Adresse")
+        if delay > 0:
+            await sleep(delay)
+        checked = await self._check(keys, user, password, limited=limited)
+        return checked if isinstance(checked, LoginResult) else self._record(keys, user, checked)
+
+    def _claim_priority(self, keys: Mapping[str, Backoff], user: str) -> str | None:
+        """Priority past the address's queue (a flood from a shared address must not hold up a
+        colleague) – for an existing user name without a recent failure from this address, at most
+        PRIORITY_CLAIMS attempts until one succeeds. Returns the claim's marker key, or None."""
+        pair = next((key for key in keys if key.startswith("pair:")), None)
+        if pair is None or user not in self.users:
+            return None
+        marker = "prio:" + pair[len("pair:"):]
+        return marker if self.throttle.claim(pair, marker, PRIORITY_CLAIMS) else None
+
+    async def _priority_attempt(self, keys: Mapping[str, Backoff], user: str, password: str, marker: str, *,
+                                sleep: Callable[[float], Awaitable[None]], limited: bool) -> LoginResult:
+        """Checks at once instead of queueing behind the address's other attempts (the client
+        brake). A wrong password is answered as late as – and like – an attempt that had queued
+        (``reserve`` as of the arrival, then failed): the same "busy", the same wait, the same
+        counted failure as for any other name, so this lane reveals nothing about which names
+        exist. Other soft brakes (HTTP Basic: failures for the name elsewhere) still apply."""
+        arrival = self.throttle.now()
+        queue = {key: policy for key, policy in keys.items() if not key.startswith("client:")}
+        own = self.throttle.reserve(queue, SOFT_QUEUE_SECONDS)
+        if own is None:
+            self.throttle.release(marker)
+            return await self._turn_away(sleep, "zu viele Anmeldeversuche für denselben Namen")
+        if own > 0:
+            await sleep(own)
+        checked = await self._check(keys, user, password, limited=limited)
+        if isinstance(checked, LoginResult):  # turned away unchecked: the priority is not used up
+            self.throttle.release(marker)
+            return checked
+        if checked:
+            return self._record(keys, user, True)
+        client = {key: policy for key, policy in keys.items() if key.startswith("client:")}
+        late = self.throttle.reserve(client, SOFT_QUEUE_SECONDS, now=arrival)
+        if late is None:  # uncounted like any "busy" attempt – but the claim stays used up
+            return self._busy("zu viele Anmeldeversuche von derselben Adresse")
+        if late > own:
+            await sleep(late - own)
+        return self._record(keys, user, False)
+
+    async def _check(self, keys: Mapping[str, Backoff], user: str, password: str, *,
+                     limited: bool) -> bool | LoginResult:
+        """The password check – or a LoginResult if the attempt is turned away unchecked (throttled
+        meanwhile, no free slot). ``limited``: in a worker thread, at most VERIFY_SLOTS at a time."""
+        if not limited:
+            return self._blocked(keys) or self._verify(user, password)
+        try:
+            with anyio.fail_after(VERIFY_QUEUE_SECONDS):
+                await self._slots.acquire()
+        except TimeoutError:
+            return self._busy("zu viele gleichzeitige Passwortprüfungen")
+        try:
+            if blocked := self._blocked(keys):  # failures counted while this attempt was queued
+                return blocked
+            return await anyio.to_thread.run_sync(self._verify, user, password)
+        finally:
+            self._slots.release()
+
+    async def _turn_away(self, sleep: Callable[[float], Awaitable[None]], reason: str) -> LoginResult:
+        """"busy" before any check – answered no sooner than a checked attempt would be (a priority
+        attempt that failed is turned away after its check; the timing must not tell them apart)."""
+        if self._check_seconds > 0:
+            await sleep(self._check_seconds)
+        return self._busy(reason)
+
     def _verify(self, user: str, password: str) -> bool:
+        started = time.perf_counter()
         encoded = self.users.get(user)
         if len(user) > MAX_USERNAME_LENGTH or len(password) > MAX_PASSWORD_LENGTH:
             encoded = None  # still hash (the dummy) so the response time gives nothing away
         ok = verify_password(password[:MAX_PASSWORD_LENGTH], encoded or _dummy_hash())
+        took = time.perf_counter() - started  # running estimate of one check (see _turn_away)
+        self._check_seconds = took if not self._check_seconds else 0.8 * self._check_seconds + 0.2 * took
         return ok and encoded is not None
 
     def _throttle_keys(self, user: str, client: str, device: str | None, *,
@@ -566,8 +674,9 @@ class Auth:
         return LoginResult("busy", retry_after=5)
 
     def _record(self, keys: Mapping[str, Backoff], user: str, ok: bool) -> LoginResult:
-        if ok:
-            self.throttle.success(k for k in keys if not k.startswith("client:"))
+        if ok:  # the address's counter stays: other names' failures from there are not forgiven
+            done = [key for key in keys if not key.startswith("client:")]
+            self.throttle.success(done + ["prio:" + key[len("pair:"):] for key in done if key.startswith("pair:")])
             return LoginResult("ok", user=user)
         wait, started = self.throttle.failure(keys)
         for key, count in started:

@@ -219,8 +219,15 @@ def test_shared_address_end_to_end(client):
 
 
 def test_busy_answer_for_a_flood(client, monkeypatch):
-    monkeypatch.setattr(client.app.state.auth.throttle, "reserve", lambda keys, max_wait: None)
-    r = form_login(client, "demo", PW)
+    """The address's queue is full (round 3: the flooder gets "busy", colleagues get in – see
+    test_sicherheit_r3_flood.py)."""
+    def reserve(keys, max_wait, now=None):
+        return None if any(key.startswith("client:") for key in keys) else 0.0
+
+    monkeypatch.setattr(client.app.state.auth.throttle, "reserve", reserve)
+    r = form_login(client, "zufall", "falsch")
     assert r.status_code == 503 and r.headers["Retry-After"] == "5" and "sehr viele Anmeldungen" in r.text
-    r = client.get("/api/version", headers=basic("monitor", MONITOR_PW))
+    r = client.get("/api/version", headers=basic("skript", "falsch"))
     assert r.status_code == 503 and r.headers["Retry-After"] == "5"
+    assert form_login(TestClient(client.app), "demo", PW).status_code == 303
+    assert client.get("/api/version", headers=basic("monitor", MONITOR_PW)).status_code == 200
