@@ -439,3 +439,37 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   beantwortet, damit sich keine Namen erraten lassen.
 - *Pixel-Hash statt Datei-Hash* für den Demo-Fluchtwegplan im Test: zlib-Varianten komprimieren
   verschieden, die Rasterung ist ganzzahlig und damit plattformunabhängig.
+
+**Runde 4 (Schlussprüfung: Review und Live-Vorführung)**
+- *Zeitnot ändert nicht die Aussage*: Bleibt keine Zeit für die Überblickssuche einer Zusammenfassung,
+  bekommt das Sprachmodell die Fundstellen der Frage selbst (auch unter `ASK_MIN_RERANK`) mit dem
+  Hinweis „aus Zeitgründen übersprungen“. Vorher endete die Frage mit „nichts gefunden“ – eine falsche
+  Aussage über die Akte, obwohl die Reserve des Modells unberührt war. Dasselbe gilt sichtbar für die
+  Suche nach genannten Beteiligten.
+- *Eigene Meldung für das aufgebrauchte Budget* („Das Zeitbudget der Frage ist aufgebraucht …“) statt
+  „KI-Dienst nicht erreichbar“; der Status bleibt `llm_unavailable`, damit der Vertrag von `/api/ask`
+  gleich bleibt. Gleiche Hinweise mehrerer Suchen erscheinen einmal; Sekunden in Meldungen gerundet
+  und mit Komma.
+- *Formaterkennung innerhalb eines Timeouts*: Alle Versuche einer Erkennung (Reranker, Embeddings)
+  teilen sich die Zeit des einen Aufrufs. Sonst konnte ein Dienst mit unerwarteter Antwort das
+  Dreifache seines Timeouts – und damit mehr als `ASK_DEADLINE` – verbrauchen.
+- *`ASK_DEADLINE` mindestens 10 s*: kleinere Werte werden angehoben statt abgelehnt (die Anwendung
+  startet weiter), mit Warnung in der Startzeile; ebenso eine Warnung, wenn `LLM_TIMEOUT` nicht unter
+  `ASK_DEADLINE` liegt. Bei 1 s scheiterte vorher jede Frage still nach 0 s.
+- *Verneinte Zitate gehören zur Absage*: Ein zitierter Teilsatz zählt nur als Teilantwort, wenn er
+  etwas aussagt – „weder [1] noch [2] nennen ihn“ oder „auch [3] erwähnt ihn nicht“ beschreibt nur,
+  was fehlt (außer es folgt ein Gegensatz: „…, laut [3] aber im August“). Gilt für Teilsätze im ersten
+  Satz und für die folgenden Sätze. Belegte negative Tatsachen („Es liegen keine Mängel mehr vor
+  [1].“) bleiben Antworten.
+- *Bilder einer Scan-Seite nach Schlüssel entdoppeln, Grenzen vor dem Dekodieren*: pypdf dekodiert
+  ein Bild bei jedem Zugriff neu; eine 16-KB-Datei, die ein großes Bild 200-mal zeichnet, belegte
+  1,8 GB. Jetzt wird jedes verschiedene Bild einmal dekodiert und gesendet; vor dem Dekodieren gelten
+  je Seite höchstens 200 Bilder und 150 Megapixel nach der Größenangabe im PDF (ein A0-Plan mit
+  300 dpi passt). Was darüber liegt, wird nicht dekodiert, sondern mit Hinweis ausgelassen, ohne
+  Wiederholung – die Datei ändert sich dadurch nicht.
+- *Demo liest Bilder*: Mit `DEMO_MODE=1` und `AI_MODE=fake` ist `LLM_VISION` standardmäßig an (die
+  Fake-Transkription ist festgelegt), damit der Demo-Fluchtwegplan nicht als „übersprungen“
+  erscheint. Mit echten Diensten bleibt `LLM_VISION` eine bewusste Entscheidung.
+- *Evaluation mit Budget*: `python -m projektakte.evaluate` misst mit `ASK_DEADLINE` und den
+  Synonymen wie die Anwendung und zählt die Fragen, bei denen das Budget griff.
+

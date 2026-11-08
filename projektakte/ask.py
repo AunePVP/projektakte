@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 
 from .ai import AIServiceError
+from .ai.http import seconds_text
 from .search import MIN_CALL_SECONDS, time_left, Hit, hybrid_search, load_hits, merge_adjacent
 from .textutil import (
     SUMMARY_WORDS,
@@ -71,6 +72,14 @@ SYSTEM_PROMPT = (
 )
 NOT_FOUND_TEXT = "Dazu habe ich in den Unterlagen nichts gefunden."
 LLM_DOWN_TEXT = "KI-Dienst nicht erreichbar – hier die gefundenen Stellen zum Nachlesen."
+NO_AI_TEXT = "Keine KI-Dienste eingerichtet – hier die gefundenen Stellen zum Nachlesen."
+BUDGET_TEXT = ("Das Zeitbudget der Frage ist aufgebraucht, bevor das Sprachmodell antworten konnte – "
+               "hier die gefundenen Stellen zum Nachlesen.")
+BUDGET_NOTE = ("Die Suche hat das Zeitbudget der Frage (ASK_DEADLINE) aufgebraucht – die KI-Dienste "
+               "antworten zu langsam.")
+SUMMARY_SKIPPED_NOTE = "Überblickssuche aus Zeitgründen übersprungen (Zeitbudget der Frage, ASK_DEADLINE)."
+ROLES_SKIPPED_NOTE = ("Suche nach den genannten Beteiligten aus Zeitgründen übersprungen (Zeitbudget der "
+                      "Frage, ASK_DEADLINE).")
 TRUNCATED_TEXT = ("Das Sprachmodell hat keine vollständige Antwort geliefert (Ausgabe abgebrochen) – "
                   "hier die gefundenen Stellen zum Nachlesen.")
 WEAK_HITS_NOTE = ("Keine Fundstelle passt gut genug für eine belegte Antwort – gezeigt werden die besten "
@@ -122,6 +131,19 @@ _NF_WEAK = re.compile(
 _CONTRAST = re.compile(r"\b(aber|jedoch|allerdings|lediglich|nur|dafür)\b", re.I)
 # clauses of one sentence: "Die Abnahme ist für März vorgesehen [2]; ein genauer Tag ist nicht genannt."
 _CLAUSE_SEP = re.compile(r"\s*;\s*|\s+[–—-]\s+")
+# a cited clause that only says what the sources do *not* contain belongs to the refusal, it is no
+# partial answer: "Die Quellen enthalten keine Angabe zum Hersteller; weder [1] noch [2] nennen ihn.",
+# "… Auch [3] erwähnt ihn nicht." (unless a contrast follows: "…, laut [3] aber im August")
+_NEGATED_MENTION = re.compile(
+    r"\bweder\b|\bschweig\w*|"
+    r"\b(?:nennt|nennen|erwähnt|erwähnen|enthält|enthalten|liefert|liefern|beschreibt|beschreiben|sagt|sagen|"
+    r"gibt|geben|macht|machen|führt|führen|behandelt|behandeln|geht|gehen|äußert|äußern)\b"
+    r"(?:\s+[^\s.;!?]+){0,4}?\s+(?:nicht|kein\w*|nichts)\b|"
+    r"\b(?:nicht|nirgends|nirgendwo)\s+(?:\w+\s+){0,2}?(?:genannt|erwähnt|enthalten|angegeben|aufgeführt|"
+    r"beschrieben|ersichtlich|zu\s+entnehmen|thematisiert|behandelt|geregelt)\b|"
+    r"\b(?:kein\w*|nichts)\s+(?:\w+\s+){0,2}?(?:angaben?|informationen?|hinweise?|aussagen?|auskunft|"
+    r"erwähnung)\b",
+    re.I)
 _SENTENCE_END = re.compile(r"(?<!\b[Nn]r)(?<!\bz\.\sB)(?<!\bbzw)(?<!\bca)(?<!\d)[.!?](?=\s|$)")
 
 
@@ -229,7 +251,7 @@ def is_not_found(answer: str, n_sources: int) -> bool:
     rest_cited = bool(cited_numbers(rest, n_sources))
     m = _NF_SOURCE.search(first)
     if m:
-        if rest_cited:
+        if any(_cited_statement(c, n_sources) for c in _clauses(rest)):
             return False
         if first_cited and _CONTRAST.search(first[m.end():]):
             return False
@@ -240,16 +262,35 @@ def is_not_found(answer: str, n_sources: int) -> bool:
 
 
 def _cited_clause_besides(sentence: str, refusal: re.Match, n_sources: int) -> bool:
-    """Does a clause of the sentence other than the refusal itself carry a citation? ("Die Quellen nennen
-    kein genaues Datum; laut Protokoll ist die Abnahme für März vorgesehen [2].")"""
+    """Does a clause of the sentence other than the refusal itself state a cited fact? ("Die Quellen
+    nennen kein genaues Datum; laut Protokoll ist die Abnahme für März vorgesehen [2]." – but not
+    "…; weder [1] noch [2] nennen ihn.")"""
     start = 0
     for sep in list(_CLAUSE_SEP.finditer(sentence)) + [None]:
         end = sep.start() if sep else len(sentence)
         overlaps = start < refusal.end() and refusal.start() < end
-        if not overlaps and cited_numbers(sentence[start:end], n_sources):
+        if not overlaps and _cited_statement(sentence[start:end], n_sources):
             return True
         start = sep.end() if sep else end
     return False
+
+
+def _cited_statement(clause: str, n_sources: int) -> bool:
+    """A clause with a citation that says something – not only which sources lack the answer."""
+    if not cited_numbers(clause, n_sources):
+        return False
+    neg = _NEGATED_MENTION.search(clause)
+    return neg is None or bool(_CONTRAST.search(clause[neg.end():]))
+
+
+def _clauses(text: str) -> list[str]:
+    """Sentences of ``text`` split further at ';' and dashes."""
+    sentences, start = [], 0
+    for m in _SENTENCE_END.finditer(text):
+        sentences.append(text[start:m.end()])
+        start = m.end()
+    sentences.append(text[start:])
+    return [c for s in sentences for c in _CLAUSE_SEP.split(s) if c.strip()]
 
 
 def _source_dict(n: int, h: Hit, question: str = "", quoted: str = "") -> dict:
@@ -471,16 +512,30 @@ def ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, project
         rerank_top_k: int = 30, synonyms_file: str | None = None, deadline_s: float = 0) -> AskResult:
     """``deadline_s`` (ASK_DEADLINE, 0 = off) caps the whole question: every AI call gets at most the
     remaining time, extra searches (overview, parties) only run while enough time is left for the
-    language model, and without time left the found passages come back like with an LLM outage."""
+    language model, and without time left the found passages come back with a note on the budget.
+    ``ai`` None (no AI services at all): full-text search only, the passages come back unanswered."""
+    result = _ask(conn, ai, vector_key, question, project=project, top_k=top_k, context_chars=context_chars,
+                  min_rerank=min_rerank, rerank_top_k=rerank_top_k, synonyms_file=synonyms_file,
+                  deadline_s=deadline_s)
+    result.notes = list(dict.fromkeys(result.notes))  # the same note from several searches once
+    return result
+
+
+def _ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, project: str | None, top_k: int,
+         context_chars: int, min_rerank: float, rerank_top_k: int, synonyms_file: str | None,
+         deadline_s: float) -> AskResult:
     deadline = time.monotonic() + deadline_s if deadline_s and deadline_s > 0 else None
-    llm_reserve = min(ai.llm.timeout, deadline_s / 2) if deadline and ai is not None else 0
+    # the language model keeps its own timeout, but at most half of the budget, for the searches
+    # before it: they may not eat the time it needs
+    llm_reserve = min(ai.llm.timeout, deadline_s / 2) if deadline is not None and ai is not None else 0
+    search_deadline = _search_deadline(deadline, llm_reserve)
     across_projects = project is None and is_project_question(question)
     enumeration = project is None and is_enumeration_question(question)
     temporal = is_temporal_question(question)
     summary = is_summary_question(question) and not across_projects
     candidates = max(rerank_top_k, ENUMERATION_RERANK_TOP_K) if across_projects else rerank_top_k
     res = hybrid_search(conn, ai, vector_key, question, project=project, k=candidates,
-                        rerank_top_k=candidates, synonyms_file=synonyms_file, deadline=_search_deadline(deadline, llm_reserve))
+                        rerank_top_k=candidates, synonyms_file=synonyms_file, deadline=search_deadline)
     result = AskResult(question=question, project=project, answer="", found=False, status="not_found",
                        notes=list(res.notes))
     hits = res.hits
@@ -498,10 +553,13 @@ def ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, project
             log.info("Keine Fundstelle erreicht ASK_MIN_RERANK=%s", min_rerank)
             result.notes.append(WEAK_HITS_NOTE)
         return result
-    if summary and _time_for_more(deadline, llm_reserve):
-        hits = _summary_hits(conn, ai, vector_key, hits or res.hits, project, rerank_top_k, synonyms_file,
-                             topic=has_topic(conn, question), top_k=top_k,
-                             deadline=_search_deadline(deadline, llm_reserve))
+    if summary:
+        if _time_for_more(deadline, llm_reserve):
+            hits = _summary_hits(conn, ai, vector_key, hits or res.hits, project, rerank_top_k, synonyms_file,
+                                 topic=has_topic(conn, question), top_k=top_k, deadline=search_deadline)
+        else:  # the model still gets the question's own passages (also those below ASK_MIN_RERANK)
+            hits = hits or res.hits
+            result.notes.append(SUMMARY_SKIPPED_NOTE)
     hits = merge_adjacent(hits)
     if across_projects:
         k = max(top_k, min(2 * top_k, ENUMERATION_MAX_SOURCES))
@@ -516,28 +574,41 @@ def ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, project
         result.answer = NOT_FOUND_TEXT
         result.context = _context(merge_adjacent(res.hits)[:MISS_CONTEXT], question)
         return result
-    if not across_projects and _time_for_more(deadline, llm_reserve):
-        hits = merge_adjacent(hits + _role_hits(conn, ai, vector_key, question, hits, project, rerank_top_k,
-                                                synonyms_file, deadline=_search_deadline(deadline, llm_reserve)))
+    if not across_projects:
+        if _time_for_more(deadline, llm_reserve):
+            hits = merge_adjacent(hits + _role_hits(conn, ai, vector_key, question, hits, project, rerank_top_k,
+                                                    synonyms_file, deadline=search_deadline))
+        elif named_roles(question):
+            result.notes.append(ROLES_SKIPPED_NOTE)
     prompt, used = build_prompt(question, hits, context_chars)
     result.context = _context(used, question)
     if enumeration:
         n_projects = len({h.project for h in used if h.project})
         result.notes.append(f"Aufzählung über Projekte: berücksichtigt sind die besten Fundstellen aus "
                             f"{n_projects} Projekten – eine vollständige Liste liefert die Suche.")
+    if ai is None:
+        result.answer, result.found, result.status = NO_AI_TEXT, None, "llm_unavailable"
+        return result
     llm_timeout = time_left(deadline, ai.llm.timeout)
     if llm_timeout == 0:
-        log.warning("Zeitbudget der Frage (ASK_DEADLINE) vor dem Sprachmodell erschöpft")
-        result.answer, result.found, result.status = LLM_DOWN_TEXT, None, "llm_unavailable"
-        result.notes.append("Die Suche hat das Zeitbudget der Frage aufgebraucht – hier die Fundstellen.")
+        log.warning("Zeitbudget der Frage (ASK_DEADLINE=%gs) vor dem Sprachmodell erschöpft", deadline_s)
+        result.answer, result.found, result.status = BUDGET_TEXT, None, "llm_unavailable"
+        result.notes.append(BUDGET_NOTE)
         return result
+    capped = llm_timeout is not None and llm_timeout < ai.llm.timeout
     try:
         chat = ai.llm.chat([{"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": prompt}], timeout=llm_timeout)
     except AIServiceError as exc:
         log.warning("Sprachmodell nicht erreichbar: %s", exc)
-        result.answer, result.found, result.status = LLM_DOWN_TEXT, None, "llm_unavailable"
-        result.notes.append(llm_error_note(exc))
+        timed_out = "Zeitüberschreitung" in str(exc)
+        if capped and timed_out:  # the budget, not LLM_TIMEOUT, ended the wait
+            result.answer, result.found, result.status = BUDGET_TEXT, None, "llm_unavailable"
+            result.notes.append(f"Das Sprachmodell hat innerhalb des Zeitbudgets der Frage (ASK_DEADLINE = "
+                                f"{seconds_text(deadline_s)} s) nicht geantwortet.")
+        else:
+            result.answer, result.found, result.status = LLM_DOWN_TEXT, None, "llm_unavailable"
+            result.notes.append(llm_error_note(exc))
         return result
     result.usage, result.latency_ms = chat.usage, chat.latency_ms
     _interpret(result, chat, len(used))

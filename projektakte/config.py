@@ -107,8 +107,11 @@ class Settings:
     log_level: str = "INFO"
     # allow an empty/missing MAIL_DIR to remove all eml mails (otherwise protected, see ops-06)
     mail_allow_empty: bool = False
-    # overall time budget of one question in seconds (all searches + language model); 0 = off
+    # overall time budget of one question in seconds (all searches + language model); 0 = off.
+    # Values below ASK_DEADLINE_MIN are raised to it (startup warning); the configured value is kept
+    # in ask_deadline_requested for that warning.
     ask_deadline: float = 180.0
+    ask_deadline_requested: float = 180.0
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
@@ -136,6 +139,17 @@ DEFAULT_QUERY_INSTRUCTION = (
 )
 
 
+# below this, searches and the language model share too little time to be of use (half of the budget
+# is kept for the language model, an AI call needs at least a second – search.MIN_CALL_SECONDS)
+ASK_DEADLINE_MIN = 10.0
+
+
+def _ask_deadline(raw: float) -> float:
+    if raw <= 0:
+        return 0.0
+    return max(raw, ASK_DEADLINE_MIN)
+
+
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     e = dict(os.environ if env is None else env)
     data_dir = Path(e.get("DATA_DIR", "./data"))
@@ -160,7 +174,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         ai_mode=(e.get("AI_MODE") or "real").strip().lower(),
         llm_url=(e.get("LLM_URL") or "http://192.168.178.62:8000/v1").rstrip("/"),
         llm_model=e.get("LLM_MODEL") or "qwen3.8-flash-next",
-        llm_vision=_bool(e.get("LLM_VISION")),
+        # the demo with fake services reads its plans and scans by default (deterministic transcript)
+        llm_vision=(_bool(e.get("LLM_VISION")) if (e.get("LLM_VISION") or "").strip()
+                    else demo_mode and (e.get("AI_MODE") or "").strip().lower() == "fake"),
         llm_timeout=_float(e.get("LLM_TIMEOUT"), 120.0),
         llm_max_tokens=_int(e.get("LLM_MAX_TOKENS"), 800),
         llm_extra_body=extra_body,
@@ -190,7 +206,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         cookie_secure=_bool(e.get("COOKIE_SECURE")) if (e.get("COOKIE_SECURE") or "").strip() else None,
         log_level=(e.get("LOG_LEVEL") or "INFO").strip().upper(),
         mail_allow_empty=_bool(e.get("MAIL_ALLOW_EMPTY")),
-        ask_deadline=max(0.0, _float(e.get("ASK_DEADLINE"), 180.0)),
+        ask_deadline=_ask_deadline(_float(e.get("ASK_DEADLINE"), 180.0)),
+        ask_deadline_requested=max(0.0, _float(e.get("ASK_DEADLINE"), 180.0)),
         plmail_url=(e.get("PLMAIL_URL") or "").rstrip("/"),
         plmail_token=e.get("PLMAIL_TOKEN", ""),
         plmail_timeout=_float(e.get("PLMAIL_TIMEOUT"), 30.0),

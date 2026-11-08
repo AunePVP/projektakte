@@ -9,7 +9,7 @@ import math
 import threading
 import time
 
-from .http import AIServiceError, HTTPStatusError, Timer, bearer, post_json
+from .http import AIServiceError, CallBudget, HTTPStatusError, Timer, bearer, post_json
 
 FORMATS = ("openai", "tei")
 
@@ -80,9 +80,10 @@ class EmbeddingClient:
         return out
 
     def _detect_and_call(self, texts: list[str], timeout: float) -> list[list[float]]:
+        budget = CallBudget(timeout, self.base)  # all calls of a detection together: at most ``timeout``
         if self.format:
             try:
-                return self._call(self.format, texts, timeout)
+                return self._call(self.format, texts, budget.left())
             except HTTPStatusError as exc:
                 # server may have been swapped (different format) – re-detect unless forced
                 if self.forced or exc.status not in (404, 405, 415, 422):
@@ -90,7 +91,7 @@ class EmbeddingClient:
         errors = []
         for fmt in FORMATS:
             try:
-                vecs = self._call(fmt, texts, timeout)
+                vecs = self._call(fmt, texts, budget.left())
                 self.format = fmt
                 return vecs
             except AIServiceError as exc:

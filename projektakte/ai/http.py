@@ -26,6 +26,33 @@ class HTTPStatusError(AIServiceError):
         self.body = body
 
 
+def seconds_text(seconds: float) -> str:
+    """'60', '37,5' – for messages the user may see: at most one decimal, German comma."""
+    r = round(seconds, 1)
+    return str(int(r)) if r == int(r) else f"{r:.1f}".replace(".", ",")
+
+
+def timeout_error(timeout: float, url: str) -> AIServiceError:
+    return AIServiceError(f"Zeitüberschreitung nach {seconds_text(timeout)} s: {url}")
+
+
+class CallBudget:
+    """One logical request may take several HTTP calls (format detection after an unexpected answer);
+    together they never take longer than the timeout of that request."""
+
+    MIN_SECONDS = 0.1  # less left than this: give up instead of starting another call
+
+    def __init__(self, timeout: float, url: str):
+        self.timeout, self.url = timeout, url
+        self.end = time.monotonic() + timeout
+
+    def left(self) -> float:
+        rest = self.end - time.monotonic()
+        if rest < self.MIN_SECONDS:
+            raise timeout_error(self.timeout, self.url)
+        return rest
+
+
 def request(
     method: str,
     url: str,
@@ -51,7 +78,7 @@ def request(
     except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
         if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(reason):
-            raise AIServiceError(f"Zeitüberschreitung nach {timeout:g} s: {url}") from None
+            raise timeout_error(timeout, url) from None
         raise AIServiceError(f"nicht erreichbar: {url} ({reason})") from None
 
 

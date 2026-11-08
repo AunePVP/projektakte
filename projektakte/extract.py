@@ -28,7 +28,9 @@ VISION_PROMPT = (
 #    retried instead of being recorded as "no text" – documents stored by version 1 are read again.
 # 3: pages with more images than MAX_IMAGES_PER_PAGE (strip scans) are put together into one page
 #    image; pages read only partly are marked incomplete – documents of version 2 are read again.
-EXTRACT_VERSION = 3
+# 4: an image drawn several times is decoded and sent once; per-page limits on the declared image
+#    sizes before decoding – incomplete documents of version 3 are read again.
+EXTRACT_VERSION = 4
 # Images of one PDF page that are sent to the model one by one (scanners write one image per page).
 # A page with more images – scanners and PDF tools that cut a page into strips or tiles – is put
 # together into one image at the images' positions on the page and sent as that.
@@ -36,6 +38,13 @@ MAX_IMAGES_PER_PAGE = 3
 # Larger page images are scaled down before they are sent (an A0 plan scanned at 300 dpi has about
 # 140 megapixels; multimodal models work with far fewer and requests must stay reasonably small).
 MAX_IMAGE_PIXELS = 16_000_000
+# Bounds per page, checked against the sizes the PDF declares *before* anything is decoded: a tiny PDF
+# may draw one large image hundreds of times or declare huge images, and decoding all of them would
+# exhaust the memory of the app process (mail attachments are read there automatically). An image
+# drawn several times is decoded and sent once.
+MAX_PAGE_IMAGES = 200  # different images of one page that are decoded
+MAX_PAGE_PLACEMENTS = 2000  # positions at which they are drawn (for putting the page together)
+MAX_PAGE_PIXELS = 150_000_000  # declared pixels of all decoded images of a page (an A0 plan at 300 dpi)
 _SENDABLE = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
 
 
@@ -212,6 +221,7 @@ class _ScanResult:
     no_text: int = 0  # the model read the page images but answered nothing
     undecodable: int = 0  # page images could not be decoded (Pillow/jbig2dec missing, broken image)
     model_failed: int = 0  # the model call failed (timeout, server down)
+    too_large: int = 0  # all images of the page over MAX_PAGE_PIXELS (declared size, not decoded)
     decode_error: str = ""  # first decoding problem, for the message
     # pages read only partly: some of their images could not be decoded, their model call failed, or
     # they could not be put together into one page image and were left out (counts of images)
@@ -219,10 +229,11 @@ class _ScanResult:
     partial_undecodable: int = 0
     partial_failed: int = 0
     partial_left_out: int = 0
+    partial_over_limit: int = 0
 
     @property
     def unread(self) -> int:
-        return self.no_text + self.undecodable + self.model_failed
+        return self.no_text + self.undecodable + self.model_failed + self.too_large
 
     @property
     def retry(self) -> bool:
@@ -240,6 +251,9 @@ class _ScanResult:
         if self.partial_left_out:
             parts.append(f"{self.partial_left_out} Bild(er) nicht ausgewertet (mehr als {MAX_IMAGES_PER_PAGE} "
                          "Bilder je Seite, nicht zu einem Seitenbild zusammensetzbar)")
+        if self.partial_over_limit:
+            parts.append(f"{self.partial_over_limit} Bild(er) nicht ausgewertet (mehr als {MAX_PAGE_IMAGES} "
+                         f"Bilder bzw. {MAX_PAGE_PIXELS // 1_000_000} Megapixel je Seite)")
         return f"{self.partial} Seite(n) nur teilweise gelesen ({'; '.join(parts)})"
 
     def reason(self) -> str:
@@ -250,8 +264,10 @@ class _ScanResult:
             parts.append("Bildauswertung fehlgeschlagen")
         if self.no_text:
             parts.append("Bildauswertung ergab keinen Text")
+        if self.too_large:
+            parts.append(f"Bilder zu groß (über {MAX_PAGE_PIXELS // 1_000_000} Megapixel je Seite)")
         if len(parts) > 1:  # say which reason applies to how many pages
-            counts = [n for n in (self.undecodable, self.model_failed, self.no_text) if n]
+            counts = [n for n in (self.undecodable, self.model_failed, self.no_text, self.too_large) if n]
             parts = [f"{n}× {p}" for n, p in zip(counts, parts)]
         return "; ".join(parts)
 
@@ -333,14 +349,25 @@ def _mul(m, n) -> tuple[float, ...]:
     return (a * A + b * C, a * B + b * D, c * A + d * C, c * B + d * D, e * A + f * C + E, e * B + f * D + F)
 
 
-def _drawn_images(page) -> list[tuple[object, tuple[float, ...]]]:
+def _declared_pixels(settings) -> int | None:
+    """Width × height as an image dictionary declares them (nothing decoded), None if unknown."""
+    try:
+        w = settings.get("/Width", settings.get("/W"))
+        h = settings.get("/Height", settings.get("/H"))
+        return max(0, int(w)) * max(0, int(h)) if w is not None and h is not None else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _drawn_images(page) -> list[tuple[object, tuple[float, ...], int | None]]:
     """The images a page actually draws, in drawing order: (key for ``page.images``, transformation
-    matrix). Follows q/Q/cm and form XObjects (keys as pypdf names them: "/Im1", ["/Fm1", "/Im1"],
-    inline images "~0~"). Resources listed but never drawn (some PDF tools share one resource
-    dictionary between all pages) are not included. Raises if the content cannot be followed."""
+    matrix, declared pixels). Follows q/Q/cm and form XObjects (keys as pypdf names them: "/Im1",
+    ["/Fm1", "/Im1"], inline images "~0~"). Resources listed but never drawn (some PDF tools share one
+    resource dictionary between all pages) are not included; an image drawn several times appears once
+    per drawing. Raises if the content cannot be followed."""
     from pypdf.generic import ContentStream
 
-    found: list[tuple[object, tuple[float, ...]]] = []
+    found: list[tuple[object, tuple[float, ...], int | None]] = []
     inline = 0
 
     def walk(content, resources, ctm, path: list[str], seen: tuple) -> None:
@@ -357,7 +384,8 @@ def _drawn_images(page) -> list[tuple[object, tuple[float, ...]]]:
                 ctm = _mul(tuple(float(x) for x in operands), ctm)
             elif op == b"INLINE IMAGE":
                 if not path:  # pypdf only lists inline images of the page itself
-                    found.append((f"~{inline}~", ctm))
+                    settings = operands.get("settings") if isinstance(operands, dict) else None
+                    found.append((f"~{inline}~", ctm, _declared_pixels(settings) if settings is not None else None))
                     inline += 1
             elif op == b"Do" and operands and xobjects is not None:
                 name = str(operands[0])
@@ -367,7 +395,7 @@ def _drawn_images(page) -> list[tuple[object, tuple[float, ...]]]:
                     continue
                 subtype = xobj.get("/Subtype")
                 if subtype == "/Image":
-                    found.append(((name if not path else [*path, name]), ctm))
+                    found.append(((name if not path else [*path, name]), ctm, _declared_pixels(xobj)))
                 elif subtype == "/Form" and len(path) < MAX_FORM_DEPTH:
                     ref = getattr(xobj, "indirect_reference", None)
                     if ref is not None and ref in seen:
@@ -424,24 +452,36 @@ def _compose(placed: list[tuple[object, tuple[float, ...]]]):
     size = (max(1, round(w_pt * scale)), max(1, round(h_pt * scale)))
     colour = any(img.mode not in ("1", "L", "LA", "I", "I;16", "F") for img, *_ in boxes)
     canvas = Image.new("RGB" if colour else "L", size, "white")
+    ready: dict[tuple, tuple] = {}  # an image drawn several times the same way is prepared once
     for img, right, down, turned, x0, y0, wp, hp in boxes:
-        if turned:  # image columns run down the page: swap axes first
-            img = img.transpose(Image.Transpose.TRANSPOSE)
-            right, down = down, right
-        if right[0] < 0:
-            img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-        if down[1] > 0:  # PDF y grows upwards: the image's rows run up the page
-            img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
         target = (max(1, round(wp * scale)), max(1, round(hp * scale)))
-        mask = None
-        if img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info):
-            img = img.convert("RGBA")
-            mask = img.getchannel("A").resize(target, Image.Resampling.BILINEAR)
-        if img.mode == "1":
-            img = img.convert("L")  # scaling bilevel scans keeps text readable in grey
-        img = img.convert(canvas.mode).resize(target, Image.Resampling.LANCZOS)
-        canvas.paste(img, (round((x0 - left) * scale), round((top - y0) * scale)), mask)
+        if turned:
+            right, down = down, right
+        key = (id(img), turned, right[0] < 0, down[1] > 0, target)
+        if key not in ready:
+            ready[key] = _prepared(img, turned, right[0] < 0, down[1] > 0, target, canvas.mode)
+        tile, mask = ready[key]
+        canvas.paste(tile, (round((x0 - left) * scale), round((top - y0) * scale)), mask)
     return canvas
+
+
+def _prepared(img, turned: bool, flip_x: bool, flip_y: bool, target: tuple[int, int], mode: str):
+    """An image turned, flipped and scaled for its place on the page, with its transparency mask."""
+    from PIL import Image
+
+    if turned:  # image columns run down the page: swap axes first
+        img = img.transpose(Image.Transpose.TRANSPOSE)
+    if flip_x:
+        img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    if flip_y:  # PDF y grows upwards: the image's rows run up the page
+        img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    mask = None
+    if img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info):
+        img = img.convert("RGBA")
+        mask = img.getchannel("A").resize(target, Image.Resampling.BILINEAR)
+    if img.mode == "1":
+        img = img.convert("L")  # scaling bilevel scans keeps text readable in grey
+    return img.convert(mode).resize(target, Image.Resampling.LANCZOS), mask
 
 
 def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
@@ -465,7 +505,7 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
                 drawn = []
             listed = list(images.keys())
             if not drawn and listed:
-                drawn = [(key, None) for key in listed]
+                drawn = [(key, None, None) for key in listed]
         except Exception as exc:  # noqa: BLE001 – broken resources: the page cannot be read now
             log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, i, exc)
             result.decode_error = result.decode_error or _decode_problem(exc)
@@ -473,7 +513,7 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
             continue
         if not drawn:
             continue
-        payloads, undecodable, left_out = _page_payloads(images, drawn, name, i, result)
+        payloads, undecodable, left_out, over_limit = _page_payloads(images, drawn, name, i, result)
         texts, failed = [], 0
         for data, mime in payloads:
             try:
@@ -486,56 +526,97 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
                 texts.append(text)
         if texts:
             result.pages.append(Page(i, "\n".join(texts)))
-            if undecodable or failed or left_out:
+            if undecodable or failed or left_out or over_limit:
                 result.partial += 1
                 result.partial_undecodable += undecodable
                 result.partial_failed += failed
                 result.partial_left_out += left_out
+                result.partial_over_limit += over_limit
                 log.warning("%s Seite %d nur teilweise gelesen (%d nicht lesbar, %d fehlgeschlagen, %d nicht "
-                            "ausgewertet)", name, i, undecodable, failed, left_out)
+                            "ausgewertet)", name, i, undecodable, failed, left_out + over_limit)
         elif undecodable:
             result.undecodable += 1
         elif failed:
             result.model_failed += 1
+        elif over_limit and not payloads:
+            result.too_large += 1
         else:
             result.no_text += 1
     return result
 
 
 def _page_payloads(images, drawn, name: str, number: int, result: _ScanResult):
-    """The images of one page as (bytes, MIME type) for the model, plus the number of images that
-    could not be decoded and the number left out. More than MAX_IMAGES_PER_PAGE images are put
-    together into one page image; if that is not possible, the largest ones are sent."""
-    decoded, undecodable = [], 0
-    for key, ctm in drawn:
+    """The images of one page as (bytes, MIME type) for the model, plus the numbers of images that
+    could not be decoded, that were left out (more than MAX_IMAGES_PER_PAGE, not put together) and
+    that were over the page limits. Each different image is decoded and sent once,
+    however often the page draws it; images beyond MAX_PAGE_IMAGES/MAX_PAGE_PIXELS (declared sizes)
+    are left out undecoded. More than MAX_IMAGES_PER_PAGE different images are put together into one
+    page image; if that is not possible, the largest ones are sent."""
+    keys, placements, declared = _unique_drawn(drawn)
+    chosen, over_limit, pixels = [], 0, 0
+    for key in keys:
+        size = declared.get(_key_id(key)) or 0
+        if len(chosen) >= MAX_PAGE_IMAGES or pixels + size > MAX_PAGE_PIXELS:
+            over_limit += 1
+            continue
+        chosen.append(key)
+        pixels += size
+    if over_limit:
+        log.warning("%s Seite %d: %d Bild(er) nicht ausgewertet (mehr als %d Bilder bzw. %d Megapixel je Seite)",
+                    name, number, over_limit, MAX_PAGE_IMAGES, MAX_PAGE_PIXELS // 1_000_000)
+    decoded, undecodable = [], 0  # (image, its placements)
+    for key in chosen:
         try:
-            decoded.append((images[key], ctm))
+            decoded.append((images[key], placements[_key_id(key)]))
         except Exception as exc:  # noqa: BLE001 – missing Pillow/jbig2dec, unsupported or broken image
             log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, exc)
             result.decode_error = result.decode_error or _decode_problem(exc)
             undecodable += 1
-    if len(drawn) > MAX_IMAGES_PER_PAGE and decoded:
+    if len(chosen) > MAX_IMAGES_PER_PAGE and decoded:
         combined = None
-        if all(ctm is not None and getattr(image, "image", None) is not None for image, ctm in decoded):
+        placed = [(image.image, ctm) for image, ctms in decoded for ctm in ctms]
+        if (len(placed) <= MAX_PAGE_PLACEMENTS
+                and all(ctm is not None and getattr(image, "image", None) is not None for image, ctms in decoded
+                        for ctm in ctms)):
             try:
-                combined = _compose([(image.image, ctm) for image, ctm in decoded])
+                combined = _compose(placed)
             except Exception as exc:  # noqa: BLE001 – e.g. out of memory: fall back to the largest images
                 log.warning("%s Seite %d: Bilder nicht zusammensetzbar (%s)", name, number, exc)
         if combined is not None:
             try:
-                return [_encode(combined)], undecodable, 0
+                return [_encode(combined)], undecodable, 0, over_limit
             except Exception as exc:  # noqa: BLE001
                 log.warning("%s Seite %d: Seitenbild nicht erzeugbar (%s)", name, number, exc)
         decoded.sort(key=lambda x: -_pixels(x[0]))  # stable: equal sizes keep drawing order
     payloads = []
-    for image, _ctm in decoded[:MAX_IMAGES_PER_PAGE]:
+    for image, _ctms in decoded[:MAX_IMAGES_PER_PAGE]:
         try:
             payloads.append(_image_payload(image))
         except Exception as exc:  # noqa: BLE001 – unsupported format, conversion failed
             log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, exc)
             result.decode_error = result.decode_error or _decode_problem(exc)
             undecodable += 1
-    return payloads, undecodable, max(0, len(decoded) - MAX_IMAGES_PER_PAGE)
+    return payloads, undecodable, max(0, len(decoded) - MAX_IMAGES_PER_PAGE), over_limit
+
+
+def _key_id(key) -> object:
+    """Hashable form of a ``page.images`` key (form XObject paths are lists)."""
+    return tuple(key) if isinstance(key, list) else key
+
+
+def _unique_drawn(drawn):
+    """The different images of a page in order of their first drawing, their placements (matrices,
+    None if unknown) and their declared pixels."""
+    keys, placements, declared = [], {}, {}
+    for key, ctm, pixels in drawn:
+        kid = _key_id(key)
+        if kid not in placements:
+            keys.append(key)
+            placements[kid] = []
+            declared[kid] = pixels
+        if ctm is None or ctm not in placements[kid]:  # the same image at the same place: once
+            placements[kid].append(ctm)
+    return keys, placements, declared
 
 
 def _pixels(image) -> int:

@@ -157,6 +157,7 @@ class Record:
     llm_ms: float | None
     fact: bool | None = None  # expected fact in an "answered" answer (None for questions without answer)
     fact_in_context: bool | None = None  # expected fact in one of the passages given to the model
+    budget_hit: bool = False  # the question's time budget (ASK_DEADLINE) cut a search or the model short
 
     @property
     def top5(self) -> bool | None:
@@ -174,7 +175,7 @@ class Record:
 def evaluate_question(conn: sqlite3.Connection, ai, vector_key: str, q: dict, settings) -> Record:
     t0 = time.perf_counter()
     res = hybrid_search(conn, ai, vector_key, q["question"], project=q.get("project"), k=settings.rerank_top_k,
-                        rerank_top_k=settings.rerank_top_k)
+                        rerank_top_k=settings.rerank_top_k, synonyms_file=getattr(settings, "synonyms_file", None))
     search_ms = (time.perf_counter() - t0) * 1000
     rel = [h.rerank for h in res.hits if h.rerank is not None and q["sources"]
            and any(source_matches(conn, h, s, q) for s in q["sources"])]
@@ -183,7 +184,8 @@ def evaluate_question(conn: sqlite3.Connection, ai, vector_key: str, q: dict, se
     t0 = time.perf_counter()
     r = ask(conn, ai, vector_key, q["question"], project=q.get("project"), top_k=settings.ask_top_k,
             context_chars=settings.ask_context_chars, min_rerank=settings.ask_min_rerank,
-            rerank_top_k=settings.rerank_top_k)
+            rerank_top_k=settings.rerank_top_k, synonyms_file=getattr(settings, "synonyms_file", None),
+            deadline_s=getattr(settings, "ask_deadline", 0))  # measured as the app answers
     ask_ms = (time.perf_counter() - t0) * 1000
     chk = check_answer(conn, q, r)
     fact = None if q.get("not_found") else (r.status == "answered" and answer_matches(q, r.answer))
@@ -195,7 +197,8 @@ def evaluate_question(conn: sqlite3.Connection, ai, vector_key: str, q: dict, se
         status=r.status, passed=chk.passed, reasons=chk.reasons, answer=r.answer,
         cited=[f"[{s['n']}] {s['label']}" for s in r.sources],
         relevant_rerank=max(rel) if rel else None, other_rerank=max(other) if other else None,
-        search_ms=search_ms, ask_ms=ask_ms, llm_ms=r.latency_ms, fact=fact, fact_in_context=in_context)
+        search_ms=search_ms, ask_ms=ask_ms, llm_ms=r.latency_ms, fact=fact, fact_in_context=in_context,
+        budget_hit=any("Zeitbudget" in n or "ASK_DEADLINE" in n for n in r.notes))
 
 
 def _pct(values: list[float], p: float) -> float:
@@ -290,6 +293,7 @@ def summarize(records: list[Record], *, target_correct: float = TARGET_CORRECT,
         "thresholds": thresholds,
         "ask_ms_median": statistics.median([r.ask_ms for r in records]) if records else None,
         "ask_ms_max": max((r.ask_ms for r in records), default=None),
+        "budget_hit": sum(1 for r in records if r.budget_hit),
         "by_category": {c: f"{sum(1 for r in records if r.category == c and r.passed)}/"
                            f"{sum(1 for r in records if r.category == c)}"
                         for c in sorted({r.category for r in records})},
@@ -367,6 +371,8 @@ def print_summary(summary: dict, out=None, *, services: dict | None = None) -> N
         w("  Nach Suchbereich (Zielkriterium): " + ", ".join(f"{k} {d['correct']}/{d['n']}"
                                                          for k, d in s["by_scope"].items()) + "\n")
     w(f"  Laufzeit je Frage: Median {_fmt(s['ask_ms_median'], 0)} ms, max {_fmt(s['ask_ms_max'], 0)} ms\n")
+    if s.get("budget_hit"):
+        w(f"  Zeitbudget der Frage (ASK_DEADLINE) erreicht: {s['budget_hit']} Fragen – Dienste zu langsam\n")
     w("\nReranker-Scores (min / p10 / Median / p90 / max)\n")
     for key, label in (("rerank_relevant", "erwartete Quelle"), ("rerank_other_in_positive", "andere Treffer"),
                        ("rerank_top_in_negative", "bester Treffer bei Fragen ohne Antwort")):

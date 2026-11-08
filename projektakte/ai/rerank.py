@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 
-from .http import AIServiceError, HTTPStatusError, Timer, bearer, post_json
+from .http import AIServiceError, CallBudget, HTTPStatusError, Timer, bearer, post_json
 
 FORMATS = ("tei", "cohere")
 MAX_CHARS = 2000  # rerankers truncate anyway; keep requests small
@@ -85,9 +85,10 @@ class RerankClient:
         return scores
 
     def _detect_and_call(self, query: str, texts: list[str], timeout: float) -> list[float]:
+        budget = CallBudget(timeout, self.url)  # all calls of a detection together: at most ``timeout``
         if self.format:
             try:
-                return self._call(self.format, query, texts, timeout)
+                return self._call(self.format, query, texts, budget.left())
             except HTTPStatusError as exc:
                 if self.forced or exc.status not in (400, 404, 413, 415, 422):
                     raise
@@ -99,7 +100,7 @@ class RerankClient:
         errors = []
         for fmt in FORMATS:
             try:
-                scores = self._call(fmt, query, texts, timeout)
+                scores = self._call(fmt, query, texts, budget.left())
                 self.format = fmt
                 return scores
             except AIServiceError as exc:

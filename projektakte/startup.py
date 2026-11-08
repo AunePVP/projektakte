@@ -103,10 +103,32 @@ def ask_worst_case_seconds(settings) -> float:
     return min(worst, deadline) if deadline > 0 else worst
 
 
+def deadline_warnings(settings) -> list[str]:
+    """ASK_DEADLINE that does not fit the other settings – said at start-up, not found out by users."""
+    from .ai.http import seconds_text
+    from .config import ASK_DEADLINE_MIN
+
+    out = []
+    deadline = getattr(settings, "ask_deadline", 0) or 0
+    requested = getattr(settings, "ask_deadline_requested", deadline)
+    if 0 < requested < ASK_DEADLINE_MIN:
+        out.append(f"ASK_DEADLINE={seconds_text(requested)} ist zu knapp für Suche und Sprachmodell – "
+                   f"verwendet werden {seconds_text(deadline)} s (0 schaltet das Zeitbudget ab)")
+    if deadline > 0 and settings.llm_timeout >= deadline:
+        out.append(f"LLM_TIMEOUT={seconds_text(settings.llm_timeout)} s ist nicht kleiner als ASK_DEADLINE="
+                   f"{seconds_text(deadline)} s: das Sprachmodell bekommt höchstens die Restzeit der Frage "
+                   f"(bei langsamer Suche {seconds_text(deadline / 2)} s) – ASK_DEADLINE erhöhen oder "
+                   f"LLM_TIMEOUT senken")
+    return out
+
+
 def log_startup(settings, auth) -> None:
     """One INFO line with the version and the effective configuration – URLs without credentials,
     no secrets."""
     from . import __version__
+
+    for warning in deadline_warnings(settings):
+        log.warning(warning)
 
     if auth.disabled:
         access = "AUS (AUTH_DISABLED=1)"

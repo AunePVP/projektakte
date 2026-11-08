@@ -86,11 +86,17 @@ Bauherr geschrieben?“) je eine Suche für bis zu zwei Rollen. Jede Suche warte
 Embedding-Dienst und den Reranker, am Ende kommt das Sprachmodell.
 
 **Gesamtbudget je Frage: `ASK_DEADLINE` (Standard 180 s).** Kein Aufruf eines KI-Dienstes läuft
-über dieses Budget hinaus: Jeder Aufruf bekommt höchstens die verbleibende Zeit, die zusätzlichen
-Suchen laufen nur, solange für das Sprachmodell genug übrig ist, und ist das Budget aufgebraucht,
-kommen die gefundenen Stellen wie bei einem Ausfall des Sprachmodells. Ohne Budget
+über dieses Budget hinaus: Jeder Aufruf bekommt höchstens die verbleibende Zeit (auch eine
+Formaterkennung mit mehreren Versuchen bleibt zusammen in dieser Zeit), die zusätzlichen Suchen
+(Überblick, Beteiligte) laufen nur, solange für das Sprachmodell genug übrig ist – sonst bekommt das
+Modell die Fundstellen der Frage selbst, mit dem Hinweis „aus Zeitgründen übersprungen“. Für das
+Sprachmodell bleibt immer `LLM_TIMEOUT`, höchstens aber die Hälfte des Budgets reserviert. Ist das
+Budget aufgebraucht, meldet die Antwort „Das Zeitbudget der Frage ist aufgebraucht …“ und zeigt die
+gefundenen Stellen. Werte unter 10 s hebt die Anwendung auf 10 s an (Warnung beim Start); ist
+`LLM_TIMEOUT` nicht kleiner als `ASK_DEADLINE`, warnt die Startzeile ebenfalls. Ohne Budget
 (`ASK_DEADLINE=0`) dauert eine Frage höchstens `4 × (EMBED_TIMEOUT + RERANK_TIMEOUT) + LLM_TIMEOUT`
-(Standard 4 × (60 + 30) + 120 = 480 s).
+(Standard 4 × (60 + 30) + 120 = 480 s). `python -m projektakte.evaluate --real` misst mit demselben
+Budget und nennt die Fragen, bei denen es erreicht wurde.
 
 Die Startzeile im Log nennt den Wert für die tatsächlichen Einstellungen („längste Frage bis … s“,
 `docker compose logs app | grep Konfiguration`). Das Zeitlimit des Proxys muss darüber liegen (plus

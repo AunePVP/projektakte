@@ -179,7 +179,8 @@ Erkennt der Client das Format nicht oder rät falsch, lässt es sich mit `EMBED_
 automatisch neu berechnet (Fingerabdruck des Dienstes). Fällt der Reranker aus, sucht Projektakte
 ohne ihn weiter; fällt der Embedding-Dienst aus, nur im Volltext; fällt das Sprachmodell aus,
 antwortet die Fragefunktion mit „KI-Dienst nicht erreichbar“ und zeigt die Fundstellen. Bilder
-(Scans, Pläne) werden erst mit `LLM_VISION=1` an das Modell geschickt.
+(Scans, Pläne) werden erst mit `LLM_VISION=1` an das Modell geschickt (in der Demo mit
+`AI_MODE=fake` ist das die Vorgabe: die Fake-Transkription des Fluchtwegplans ist festgelegt).
 
 **Denkmodelle (Qwen3):** `LLM_EXTRA_BODY={"chat_template_kwargs":{"enable_thinking":false}}` setzen
 oder `LLM_MAX_TOKENS` erhöhen. Sonst endet die Ausgabe manchmal nur mit Denkschritten; Projektakte
@@ -278,7 +279,10 @@ PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1` über das multimodale Mo
 als „übersprungen“ vermerkt. Die Bilder gescannter PDF-Seiten liest Pillow aus (JPEG/PNG unverändert,
 TIFF/CCITT, JPEG 2000 und CMYK umgewandelt, große Bilder verkleinert; Streifen- und Kachelscans
 werden zu einem Seitenbild zusammengesetzt; JBIG2 über `jbig2dec`, das im Docker-Image enthalten
-ist). Ist ein Teilbild nicht lesbar, gilt die Seite als „nur teilweise gelesen“ und wird später
+ist). Ein mehrfach gezeichnetes Bild wird nur einmal dekodiert und gesendet; vor dem Dekodieren
+gelten je Seite höchstens 200 verschiedene Bilder und 150 Megapixel laut PDF-Angabe (ein kleiner
+PDF-Anhang kann sonst Gigabytes Speicher belegen), was darüber liegt, wird mit Hinweis ausgelassen.
+Ist ein Teilbild nicht lesbar, gilt die Seite als „nur teilweise gelesen“ und wird später
 erneut versucht. Jedes Dokument merkt sich sein Extraktionsprofil: Wird `LLM_VISION`
 eingeschaltet oder das Modell gewechselt, liest der nächste Lauf alle bisher übersprungenen bzw.
 unvollständigen Dokumente nach (auch Mail-Anhänge); Fehler werden mit wachsendem Abstand
@@ -344,7 +348,7 @@ Ergebnis (`status` in `/api/ask`):
 | `no_citation` | Antwort ohne Quellenverweis | „Antwort ohne Quellenangabe – bitte prüfen“ + mögliche Fundstellen |
 | `not_found` | nichts passt (auch Absagen wie „Dazu liegen keine Informationen vor“) | Meldung + mögliche Fundstellen + Link zur Suche |
 | `truncated` | Ausgabe abgeschnitten oder nur Denkschritte | Meldung + mögliche Fundstellen |
-| `llm_unavailable` | Sprachmodell nicht erreichbar | Meldung + mögliche Fundstellen |
+| `llm_unavailable` | Sprachmodell nicht erreichbar oder Zeitbudget der Frage (`ASK_DEADLINE`) aufgebraucht | Meldung + mögliche Fundstellen |
 
 Quellenverweise werden in vielen Formen erkannt (`[2]`, `[1–3]`, `[Quelle 2]`, „Quelle 2“) und zu
 `[n]` vereinheitlicht. `context` enthält immer alle Fundstellen, die das Modell gesehen hat.
@@ -434,7 +438,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `AI_MODE` | `real` | `fake` = Fake-KI-Dienste im selben Prozess starten, URLs werden ignoriert |
 | `LLM_URL` | `http://192.168.178.62:8000/v1` | Sprachmodell (OpenAI-kompatibel) |
 | `LLM_MODEL` | `qwen3.8-flash-next` | Modellname |
-| `LLM_VISION` | `0` | `1` = Modell kann Bilder lesen (Rückfall für Scans/Pläne) |
+| `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Rückfall für Scans/Pläne) |
 | `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | `120` / `800` | Sekunden / Antwortlänge |
 | `LLM_EXTRA_BODY` | – | JSON, das in jede Chat-Anfrage gemischt wird, z. B. `{"chat_template_kwargs":{"enable_thinking":false}}` |
 | `EMBED_URL` | `http://192.168.178.62:8001` | Embedding-Dienst (ohne `/v1`) |
@@ -450,7 +454,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
 | `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
 | `ASK_TOP_K` / `ASK_CONTEXT_CHARS` / `ASK_MIN_RERANK` | `6` / `8000` / `0.01` | Quellen je Frage / Zeichenbudget im Prompt / Mindest-Score des Rerankers |
-| `ASK_DEADLINE` | `180` | Gesamtbudget einer Frage in Sekunden (alle Suchen + Sprachmodell); `0` = aus. Unter 300 s halten (Browser-Grenze), Proxy-Zeitlimit darüber |
+| `ASK_DEADLINE` | `180` | Gesamtbudget einer Frage in Sekunden (alle Suchen + Sprachmodell); `0` = aus, mindestens 10 s. Über `LLM_TIMEOUT`, unter 300 s halten (Browser-Grenze), Proxy-Zeitlimit darüber |
 | `SEARCH_MIN_RERANK` | `0.05` | Suchseite: Treffer mit niedrigerem Reranker-Score ausblenden (nur wenn der Reranker antwortet; auf Wunsch einblendbar) |
 | `SYNONYMS_FILE` | – | eigene Abkürzungen/Synonyme für den Volltext (siehe „Suche“) |
 | `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
@@ -482,7 +486,9 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
   Lebendprüfung.
 - **Zeitlimits:** Eine Frage wird synchron beantwortet (bis zu 4 Suchen mit Embedding und Reranker,
   dann das Sprachmodell). `ASK_DEADLINE` (Standard 180 s) begrenzt die ganze Frage: Kein
-  KI-Aufruf läuft darüber hinaus, ohne Restzeit kommen die gefundenen Stellen. Das Lese-Timeout eines
+  KI-Aufruf läuft darüber hinaus, zusätzliche Suchen entfallen bei Zeitnot (mit Hinweis), ohne
+  Restzeit kommen die gefundenen Stellen mit der Meldung „Zeitbudget der Frage aufgebraucht“. Zu
+  knappe Werte (unter 10 s, oder nicht über `LLM_TIMEOUT`) meldet die Startzeile. Das Lese-Timeout eines
   vorgeschalteten Proxys muss darüber liegen (nginx-Standard 60 s → `proxy_read_timeout 240s`; im
   Caddy-Beispiel `response_header_timeout 240s`), sonst bricht der Proxy mit 504 ab; die Startzeile
   nennt den Wert („längste Frage bis … s“). nginx vor einem Docker-Container: `FORWARDED_ALLOW_IPS`
