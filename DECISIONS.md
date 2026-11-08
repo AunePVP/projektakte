@@ -418,3 +418,24 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   rutschen sonst Mails nach vorne und „Weiter“ überspringt sie. `/api/inbox` bleibt offsetbasiert.
 - *Kennungstreffer immer sichtbar*: Ein echter Cross-Encoder bewertet Projektnummern oder Aktenzeichen
   nicht zuverlässig; ein wörtlicher Treffer ist aber eindeutig.
+
+**Runde 3 (nach der zweiten Gegenprüfung)**
+- *Gesamtbudget je Frage (`ASK_DEADLINE`, 180 s)* statt einer Summe von Einzel-Zeitlimits: Mit bis zu
+  4 Suchen konnte eine Frage im schlimmsten Fall 600 s dauern – länger als jeder Proxy und die
+  5-Minuten-Grenze der Browser. Jeder KI-Aufruf bekommt höchstens die Restzeit, Zusatzsuchen laufen
+  nur, solange für das Sprachmodell genug übrig ist (Reserve: die Hälfte des Budgets bzw.
+  `LLM_TIMEOUT`); ohne Restzeit kommen die Fundstellen wie bei einem Ausfall.
+- *Reranker-Timeout ohne zweite Formaterkennung*: Nur eine unerwartete Antwortform deutet auf einen
+  getauschten Server; eine Zeitüberschreitung wurde sonst zweimal abgewartet.
+- *Teil-Absagen*: Trägt ein anderer Teilsatz (getrennt durch „;“ oder „–“) ein gültiges Zitat, ist es
+  eine Antwort – echte Modelle schreiben so („… vorgesehen [2]; ein genauer Tag ist nicht genannt“).
+- *Werbeerkennung*: Starke Signale nur aus Massenmail-Kopfzeilen und Marketingadressen; schwache
+  Signale (Werbewörter, Vertriebs-/Redaktions-/Automatikadressen, Shop-Domains) zählen nur bei
+  Absendern ohne Projektverlauf **und** wenn die Mail kein Projekt konkret nennt (Unterscheidungswort
+  des Namens, Anschrift oder Ansprechperson). Bekannte Grenze: Enthält Werbung zufällig ein solches
+  Wort (etwa „Hotels mit Seeblick“), gilt das als Projektbezug.
+- *Vorrang bei der Anmeldung*: Ein vorhandener Name ohne eigenen Fehlversuch von dieser Adresse wird
+  an der Warteschlange vorbei geprüft; ein falsches Passwort dort wird wie in der Warteschlange
+  beantwortet, damit sich keine Namen erraten lassen.
+- *Pixel-Hash statt Datei-Hash* für den Demo-Fluchtwegplan im Test: zlib-Varianten komprimieren
+  verschieden, die Rasterung ist ganzzahlig und damit plattformunabhängig.

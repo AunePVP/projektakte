@@ -103,9 +103,30 @@ KI-Dienste ist hier nicht möglich (dafür gibt es jetzt `python -m projektakte.
 - Oberfläche: Eingang blättert per Schlüssel, Kennungstreffer immer sichtbar, bereinigte Ausschnitte und
   Dokumentansicht, Originaldatei mit Dateinamen in der URL, mobile Ansicht ohne Wortbrüche.
 
+### Runde 3 (nach der zweiten Gegenprüfung)
+- Fragen: Gesamtbudget je Frage `ASK_DEADLINE` (Standard 180 s) – kein KI-Aufruf läuft darüber hinaus,
+  vorher bis zu 600 s im schlimmsten Fall; ein Reranker-Timeout löst keine zweite Formaterkennung mehr
+  aus. Teil-Absagen echter Modelle („Fakt [2]; ein genauer Tag ist nicht genannt“) bleiben Antworten.
+  Fake-KI: Maße passend zur Dimension, „Wann wurde …?“ nur mit dem Datum des Ereignisses (keine
+  Pflichten), nur das genannte Projekt, keine Floskeln/Signaturen/Rollenzeilen, viele freie
+  Überblicksfragen, Unterzeichner-Fragen; `SYNONYMS_FILE` wirkt auch in Fake-Reranker und -Chat;
+  Ausschnitte zeigen die Aussage statt der Signatur; `evaluate` mit Exit 2 bei 0 Fragen. Prüfsatz 0,64.
+- Daten: Mailtexte ohne Zeichensatz-Angabe behalten ihre Umlaute; Streifen-/Kachelscans und teilweise
+  unlesbare Seiten werden erkannt und wiederholt; `jbig2dec` im Image; Verschiebe-Erkennung über die
+  Message-ID nur mit gleichem Datum und gleicher Größe; Werbeerkennung prinzipieller (schwache Signale
+  nur ohne Projektbezug); Demo-Bereinigung entfernt auch Anhang-Cachedateien und meldet sich auf der
+  Statusseite.
+- Sicherheit: Vorrang für Benutzernamen ohne eigenen Fehlversuch – eine Flut von derselben Adresse
+  hält Kollegen und Monitoring nicht auf; keine Dateinamen im Zugriffsprotokoll und Caddy-Fehlerlog;
+  Favicon auch auf den Datei-Betrachterseiten; Proxy-Zeitlimit 240 s passend zu `ASK_DEADLINE`.
+- Oberfläche: Seitenzeile im Eingang nach „Verwerfen“ richtig, Ausschnitte an Wortgrenzen und ohne
+  Mailkopf, keine doppelten Absätze auf der Dokumentseite, „Datei öffnen“ nur bei vorhandener Datei
+  („Anhang ausstehend“).
+- Demo: Fluchtwegplan nach DIN ISO 23601/ISO 7010 neu gezeichnet (Version 5).
+
 ### Tests
-- 744 Tests (739 bestanden, 4 Integrationstests übersprungen, 1 xfail), parallel mit pytest-xdist
-  (≈ 30 s auf 4 Kernen; `PYTEST_WORKERS=0` für einen Prozess).
+- 918 Tests (913 bestanden, 4 Integrationstests übersprungen, 1 xfail), parallel mit pytest-xdist
+  (≈ 35 s auf 4 Kernen; `PYTEST_WORKERS=0` für einen Prozess).
   Ein Test ist bewusst „xfail“: das 80-%-Ziel der Fake-KI auf dem zurückgehaltenen Prüfsatz.
 
 ## [0.3.0] – 2026-11-08 – Zuordnung in plMail

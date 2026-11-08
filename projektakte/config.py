@@ -107,6 +107,8 @@ class Settings:
     log_level: str = "INFO"
     # allow an empty/missing MAIL_DIR to remove all eml mails (otherwise protected, see ops-06)
     mail_allow_empty: bool = False
+    # overall time budget of one question in seconds (all searches + language model); 0 = off
+    ask_deadline: float = 180.0
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
@@ -188,6 +190,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         cookie_secure=_bool(e.get("COOKIE_SECURE")) if (e.get("COOKIE_SECURE") or "").strip() else None,
         log_level=(e.get("LOG_LEVEL") or "INFO").strip().upper(),
         mail_allow_empty=_bool(e.get("MAIL_ALLOW_EMPTY")),
+        ask_deadline=max(0.0, _float(e.get("ASK_DEADLINE"), 180.0)),
         plmail_url=(e.get("PLMAIL_URL") or "").rstrip("/"),
         plmail_token=e.get("PLMAIL_TOKEN", ""),
         plmail_timeout=_float(e.get("PLMAIL_TIMEOUT"), 30.0),

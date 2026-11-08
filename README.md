@@ -125,7 +125,8 @@ mit dem Neustart; in `production` ist er Pflicht). Skripte können die API mit H
 z. B. `curl -u anna https://projektakte.lan/health/deps`.
 
 - **Abmelden** beendet alle Sitzungen des Benutzers serverseitig (auf allen Geräten, auch kopierte
-  Cookies). Eine Anmeldung gilt höchstens `SESSION_HOURS` (Standard 12, maximal 720).
+  Cookies). Eine Anmeldung gilt höchstens `SESSION_HOURS` (Standard 12, maximal 720). Deshalb ein
+  Konto je Person, auch für Vorführungen – sonst fliegen beim Abmelden alle anderen mit heraus.
 - **Anmeldebremse statt Sperre:** Fehlversuche für einen Benutzernamen verlängern die Wartezeit für
   diesen Namen exponentiell (je Rechner und Benutzer sowie je Benutzer, höchstens 5 Minuten).
   Fehlversuche mit anderen Namen von derselben Adresse (Terminalserver, NAT, Proxy) verzögern
@@ -133,7 +134,10 @@ z. B. `curl -u anna https://projektakte.lan/health/deps`.
   der Fehlversuche ist, kommt immer hinein. Ein Browser, mit dem man sich schon einmal angemeldet hat,
   wird durch Fehlversuche anderer nicht ausgesperrt. Skripte und Überwachung mit HTTP Basic (am besten
   mit eigenem Benutzer) sperren nur Fehlversuche für genau diesen Benutzer von genau dieser Adresse.
-  Passwortprüfungen laufen nur wenige gleichzeitig; bei Überlast kommt 503 mit `Retry-After`.
+  Passwortprüfungen laufen nur wenige gleichzeitig; bei Überlast kommt 503 mit `Retry-After`. Ein
+  vorhandener Benutzername ohne eigenen Fehlversuch von dieser Adresse wird auch während einer Flut
+  sofort geprüft (Formular und Basic); 5 Fehlversuche für einen Namen von derselben Adresse sperren
+  ihn dort – das Monitoring deshalb mit eigenem Konto betreiben.
 - **Hinter einem Reverse-Proxy** `FORWARDED_ALLOW_IPS` auf dessen Adresse setzen, damit Anmeldebremse
   und Log die echte Client-Adresse sehen (siehe deploy/README.md).
 - **Schutz vor fremden Formularen:** Zustandsändernde Anfragen anderer Seiten (`Sec-Fetch-Site`
@@ -191,18 +195,18 @@ docker compose exec app python -m projektakte.evaluate --real      # im Containe
 
 Der Befehl prüft zuerst die Dienste, indexiert den Demo-Datensatz mit den konfigurierten Diensten in
 einen eigenen Index (`$DATA_DIR/eval`, nie die Produktionsdaten; `--data-dir`, `--no-index`,
-`--only ID`, `--category stand` zum Eingrenzen) und lässt den Evaluationssatz (94 Fragen) laufen;
+`--only ID`, `--category stand` zum Eingrenzen) und lässt den Evaluationssatz (104 Fragen) laufen;
 `--set holdout` nimmt den zurückgehaltenen Prüfsatz eines unabhängigen Autors (40 Fragen), mit
 `--summary-only` nur Summen ohne Fragetexte. Exit-Code 0 = Ziele erreicht (≥ 80 % beantwortbare
 Fragen richtig, ≥ 90 % unbeantwortbare abgelehnt; `--min-correct`, `--min-refused`), 1 = verfehlt,
-2 = Dienst nicht erreichbar. Ausgabe je
+2 = Dienst nicht erreichbar oder keine Frage ausgewählt. Ausgabe je
 Frage: erwartete Quelle in den Top 5, Fakt und Quelle in der Antwort, Status, Rerank-Scores,
 Laufzeit; zusammengefasst die Score-Verteilung und eine Schwellwerttabelle. Damit
 `ASK_MIN_RERANK`, `SEARCH_MIN_RERANK` und `ASSIGN_MIN_SIMILARITY` für die echten Modelle einstellen.
-Mit den Fakes: eigener Satz 94/94; zurückgehaltener Prüfsatz 16 von 28 beantwortbaren Fragen richtig
-(0,57 – das 80-%-Ziel ist für die Fake-KI nicht erreicht, der Test ist mit Begründung als „xfail“
-markiert, nicht abgesenkt), 12 von 12 unbeantwortbaren korrekt abgelehnt, keine erfundene Antwort;
-die erwartete Quelle steht in 96 % der Fälle unter den ersten 5 Treffern.
+Mit den Fakes: eigener Satz 104/104; zurückgehaltener Prüfsatz 18 von 28 beantwortbaren Fragen
+richtig (0,64 – das 80-%-Ziel ist für die Fake-KI nicht erreicht, der Test ist mit Begründung als
+„xfail“ markiert, nicht abgesenkt), 12 von 12 unbeantwortbaren korrekt abgelehnt, keine erfundene
+Antwort; die erwartete Quelle steht immer unter den ersten 5 Treffern.
 
 ## Fake-KI-Dienste
 
@@ -227,7 +231,10 @@ IDF-Gewichte; Projektnummer und -name zählen nicht), beantwortet Fragen nach de
 mit der neuesten Quelle und zitiert den passenden Satz einmal mit `[n]` („Laut Baugenehmigung
 (S. 2), Auflage 7 …: … [1]“), sonst „Nicht gefunden.“; mit `usage` und `<think>`-Block. Er lehnt im
 Zweifel ab: Fragen nach einem Wert (Kosten, Anzahl, Datum, Hersteller …) beantwortet er nur mit einem
-Wert dieser Art beim gefragten Thema. Frei formulierte Fragen versteht er etwa in 6 von 10 Fällen –
+Wert dieser Art beim gefragten Thema (Maße passend zur gefragten Dimension, „Wann wurde …?“ nur mit
+dem Datum des Ereignisses, nie mit einer Pflicht), antwortet nur aus einem genannten Projekt und
+zitiert nie Floskeln, Signaturen oder Rollenzeilen. Frei formulierte Fragen versteht er etwa in 6–7
+von 10 Fällen –
 **für eine Vorführung mit eigenen Fragen aus dem Publikum die echten Dienste anbinden**. Die
 Antwortqualität echter Modelle sagt der Fake nicht voraus – dafür gibt es `python -m projektakte.evaluate`.
 
@@ -269,9 +276,10 @@ Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften und 
 Textdateien in UTF-8, UTF-16/32 (auch Windows-„Unicode“) oder cp1252. Bilder (PNG/JPG/TIFF) und
 PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1` über das multimodale Modell gelesen, sonst
 als „übersprungen“ vermerkt. Die Bilder gescannter PDF-Seiten liest Pillow aus (JPEG/PNG unverändert,
-TIFF/CCITT, JPEG 2000 und CMYK umgewandelt, große Bilder verkleinert, höchstens 3 je Seite);
-JBIG2-Scans brauchen das Programm `jbig2dec`, sonst gilt die Seite als „Bilder nicht lesbar“ und wird
-später erneut versucht. Jedes Dokument merkt sich sein Extraktionsprofil: Wird `LLM_VISION`
+TIFF/CCITT, JPEG 2000 und CMYK umgewandelt, große Bilder verkleinert; Streifen- und Kachelscans
+werden zu einem Seitenbild zusammengesetzt; JBIG2 über `jbig2dec`, das im Docker-Image enthalten
+ist). Ist ein Teilbild nicht lesbar, gilt die Seite als „nur teilweise gelesen“ und wird später
+erneut versucht. Jedes Dokument merkt sich sein Extraktionsprofil: Wird `LLM_VISION`
 eingeschaltet oder das Modell gewechselt, liest der nächste Lauf alle bisher übersprungenen bzw.
 unvollständigen Dokumente nach (auch Mail-Anhänge); Fehler werden mit wachsendem Abstand
 wiederholt (15 min … höchstens 7 Tage). Mails werden aus `MAIL_DIR` (alle
@@ -442,6 +450,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
 | `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
 | `ASK_TOP_K` / `ASK_CONTEXT_CHARS` / `ASK_MIN_RERANK` | `6` / `8000` / `0.01` | Quellen je Frage / Zeichenbudget im Prompt / Mindest-Score des Rerankers |
+| `ASK_DEADLINE` | `180` | Gesamtbudget einer Frage in Sekunden (alle Suchen + Sprachmodell); `0` = aus. Unter 300 s halten (Browser-Grenze), Proxy-Zeitlimit darüber |
 | `SEARCH_MIN_RERANK` | `0.05` | Suchseite: Treffer mit niedrigerem Reranker-Score ausblenden (nur wenn der Reranker antwortet; auf Wunsch einblendbar) |
 | `SYNONYMS_FILE` | – | eigene Abkürzungen/Synonyme für den Volltext (siehe „Suche“) |
 | `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
@@ -471,14 +480,16 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
   Millisekunden; `pending_vectors` ist der Stand nach dem letzten Indexierungslauf. Das Docker-Image
   hat einen HEALTHCHECK (`python -m projektakte.healthcheck`). `/health` bleibt die schnelle
   Lebendprüfung.
-- **Zeitlimits:** Eine Frage wird synchron beantwortet und wartet nacheinander auf Embedding-Dienst,
-  Reranker und Sprachmodell, im ungünstigsten Fall also `EMBED_TIMEOUT` + `RERANK_TIMEOUT` +
-  `LLM_TIMEOUT` (Standard 60 + 30 + 120 = 210 s). Das Lese-Timeout eines vorgeschalteten Proxys muss
-  über dieser Summe liegen (nginx-Standard 60 s → `proxy_read_timeout 240s`; im Caddy-Beispiel
-  `response_header_timeout 240s`), sonst bricht der Proxy mit 504 ab. nginx vor einem
-  Docker-Container: `FORWARDED_ALLOW_IPS` auf die Gateway-Adresse des Docker-Netzes setzen.
+- **Zeitlimits:** Eine Frage wird synchron beantwortet (bis zu 4 Suchen mit Embedding und Reranker,
+  dann das Sprachmodell). `ASK_DEADLINE` (Standard 180 s) begrenzt die ganze Frage: Kein
+  KI-Aufruf läuft darüber hinaus, ohne Restzeit kommen die gefundenen Stellen. Das Lese-Timeout eines
+  vorgeschalteten Proxys muss darüber liegen (nginx-Standard 60 s → `proxy_read_timeout 240s`; im
+  Caddy-Beispiel `response_header_timeout 240s`), sonst bricht der Proxy mit 504 ab; die Startzeile
+  nennt den Wert („längste Frage bis … s“). nginx vor einem Docker-Container: `FORWARDED_ALLOW_IPS`
+  auf die Gateway-Adresse des Docker-Netzes setzen.
 - **Logs:** einheitliches Format mit Zeitstempel; das Zugriffsprotokoll enthält keine
-  Query-Strings (also keine Suchbegriffe, auch nicht im Fehlerlog des Caddy-Beispiels); beim Start
+  Query-Strings und keine Dateinamen (also keine Suchbegriffe, auch nicht im Fehlerlog des
+  Caddy-Beispiels); beim Start
   stehen Version und wirksame Konfiguration im Log (ohne Geheimnisse).
 - **Reproduzierbares Image:** `constraints.txt` pinnt alle Laufzeitpakete einschließlich der
   transitiven Abhängigkeiten.
