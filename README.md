@@ -72,6 +72,11 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 python -m projektakte.index      # ein Durchlauf im Vordergrund (Projekte, später Dokumente/Mails)
 ```
 
+Unterstützte Formate: TXT, Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften
+und Tabellen), EML. Bilder (PNG/JPG/TIFF) und PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1`
+über das multimodale Modell gelesen, sonst als „übersprungen“ vermerkt. Unveränderte Dateien
+(Größe/Änderungszeit, dann SHA-256) werden nicht erneut gelesen.
+
 ## API (Auszug)
 
 | Methode und Pfad | Zweck |
@@ -80,6 +85,8 @@ python -m projektakte.index      # ein Durchlauf im Vordergrund (Projekte, spät
 | `GET /health/deps` | Zustand der KI-Dienste (erreichbar, Format, Antwortzeit) |
 | `GET /api/projects?q=` | Projektliste, optional gefiltert nach Nummer/Name |
 | `GET /api/projects/{nummer}` | ein Projekt |
+| `GET /api/projects/{nummer}/documents` | Dokumente eines Projekts mit Status (ok/übersprungen/Fehler) |
+| `GET /api/documents/{id}` | ein Dokument mit seinen Abschnitten (Seite, Überschrift, Text) |
 
 ## Demo-Datensatz
 

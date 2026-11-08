@@ -65,3 +65,22 @@ Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
   Eine Nummer darf nicht an Buchstaben/Ziffern kleben (`BS-2024-01370` ist keine Nummer).
 - **Verschwundene Projekte werden inaktiv**, nicht gelöscht – ihre Mails und Zuordnungen bleiben.
 - **Additive Migrationen** statt ORM: eine Liste von SQL-Skripten, Stand in `PRAGMA user_version`.
+
+## Schritt 5 – Textextraktion und Abschnitte
+
+- **Abschnitte entlang von Absätzen**: PDF-Zeilenumbrüche werden zu Absätzen zusammengefügt,
+  Listenpunkte („Auflage 7 …“, „TOP 2 …“, „1.“) bleiben eigene Einheiten. Einheiten werden bis
+  900 Zeichen gepackt; der nächste Abschnitt beginnt mit dem letzten Absatz des vorigen, wenn dieser
+  ≤ 250 Zeichen hat. Überschriften (Markdown `#`, DOCX-Formatvorlagen „Heading“/„Überschrift“)
+  beginnen einen neuen Abschnitt und werden als Kontext gespeichert. Abschnitte überschreiten nie
+  eine Seitengrenze, damit die Seitenangabe stimmt.
+- **Eigene Faltung für den Volltext** (`textutil.fold`: Kleinschreibung, Umlaute ohne Punkte, ß→ss),
+  weil FTS5 `remove_diacritics` „ß“ nicht auflöst. Index und Anfragen nutzen dieselbe Faltung.
+- **FTS-Titelspalte** mit Dateiname, Projektnummer, Projektname und Überschrift – so finden Fragen
+  wie „… der Grundschule“ auch Abschnitte, deren Text das Wort nicht enthält.
+- **Bildauswertung nur als Rückfall**: Klassische Extraktion zuerst; Seiten mit < 20 Zeichen gelten
+  als Scan. Ohne `LLM_VISION=1` werden solche Dateien mit Begründung als „übersprungen“ geführt und
+  in der Oberfläche angezeigt, die Indexierung läuft sauber weiter.
+- **Fehlertoleranz**: Jede Datei wird für sich verarbeitet; Fehler landen als Status `error` mit
+  Meldung am Dokument, nicht als Abbruch.
+- Dateien > 80 MB, versteckte Dateien und Office-Sperrdateien (`~$…`) werden übersprungen.

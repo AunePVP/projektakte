@@ -11,6 +11,7 @@ import time
 from . import db
 from .ai.services import AIServices
 from .config import Settings
+from .documents import index_all_documents
 from .registry import scan_projects, sync_projects
 
 log = logging.getLogger("projektakte.indexer")
@@ -23,6 +24,8 @@ def run_index(settings: Settings, ai: AIServices | None = None) -> dict:
     with db.session(settings.db_path) as conn:
         folders = scan_projects(settings.projects_dir, settings.project_number_pattern)
         stats["projects"] = sync_projects(conn, folders)
+        conn.commit()
+        stats["documents"] = index_all_documents(conn, llm=ai.llm if ai else None)
     stats["seconds"] = round(time.time() - started, 2)
     log.info("Indexierung fertig: %s", stats)
     return stats

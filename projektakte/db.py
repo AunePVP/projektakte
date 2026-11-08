@@ -23,6 +23,49 @@ MIGRATIONS: list[str] = [
     );
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
     """,
+    # 2 – documents, sections (chunks) and full-text index
+    """
+    CREATE TABLE documents (
+        id          INTEGER PRIMARY KEY,
+        path        TEXT NOT NULL UNIQUE,
+        project     TEXT,
+        mail_id     INTEGER,
+        rel_path    TEXT NOT NULL,
+        filename    TEXT NOT NULL,
+        ext         TEXT NOT NULL,
+        size        INTEGER,
+        mtime       REAL,
+        sha256      TEXT,
+        doc_date    TEXT,
+        pages       INTEGER,
+        status      TEXT NOT NULL DEFAULT 'ok',
+        message     TEXT,
+        method      TEXT,
+        indexed_at  TEXT
+    );
+    CREATE INDEX documents_project ON documents(project);
+    CREATE INDEX documents_mail ON documents(mail_id);
+    CREATE TABLE chunks (
+        id          INTEGER PRIMARY KEY,
+        doc_id      INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+        mail_id     INTEGER,
+        project     TEXT,
+        ord         INTEGER NOT NULL,
+        page        INTEGER,
+        heading     TEXT,
+        text        TEXT NOT NULL,
+        embedding   BLOB
+    );
+    CREATE INDEX chunks_doc ON chunks(doc_id);
+    CREATE INDEX chunks_mail ON chunks(mail_id);
+    CREATE INDEX chunks_project ON chunks(project);
+    CREATE VIRTUAL TABLE chunks_fts USING fts5(
+        title, body, tokenize = 'unicode61 remove_diacritics 2'
+    );
+    CREATE TRIGGER chunks_after_delete AFTER DELETE ON chunks BEGIN
+        DELETE FROM chunks_fts WHERE rowid = old.id;
+    END;
+    """,
 ]
 
 

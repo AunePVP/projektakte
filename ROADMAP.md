@@ -19,7 +19,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
   erwarteten Projekten und Quellen.
 - [x] **4. Projektregister** – Ordner unter `PROJECTS_DIR` scannen, Projekte (Nummer, Name, Pfad) in
   SQLite speichern; `GET /api/projects`, `GET /api/projects/{nummer}`.
-- [ ] **5. Textextraktion und Abschnitte** – TXT/MD/PDF (pypdf)/DOCX (python-docx) lesen, in
+- [x] **5. Textextraktion und Abschnitte** – TXT/MD/PDF (pypdf)/DOCX (python-docx) lesen, in
   überlappende Abschnitte mit Seitenangabe zerlegen, in SQLite + FTS5 speichern; inkrementell über
   Datei-Hash.
 - [ ] **6. Embeddings** – Client für den Embedding-Dienst (Format siehe docs/ki-dienste.md), Vektoren
