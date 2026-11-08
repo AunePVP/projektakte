@@ -96,6 +96,14 @@ class Settings:
     # plMail → Projektakte integration API (Bearer token) and the public base URL for links
     integration_token: str = field(default="", repr=False)
     public_url: str = ""
+    # search page: hide hits whose reranker score is below this (only when the reranker answered)
+    search_min_rerank: float = 0.05
+    # optional file with abbreviations/synonyms for the full-text query ("BMA = Brandmeldeanlage")
+    synonyms_file: str = ""
+    # minimum absolute similarity for a mail suggestion (in addition to share/lead); 0 = off
+    assign_min_similarity: float = 0.0
+    # reverse proxy: comma-separated IPs whose X-Forwarded-* headers are trusted (uvicorn)
+    forwarded_allow_ips: str = ""
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
@@ -139,7 +147,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     return Settings(
         port=_int(e.get("PORT"), 8000),
         data_dir=data_dir,
-        app_env=e.get("APP_ENV", "dev"),
+        app_env=(e.get("APP_ENV") or "dev").strip().lower(),
         projects_dir=Path(e.get("PROJECTS_DIR") or default_projects),
         mail_dir=Path(e.get("MAIL_DIR") or default_mails),
         project_number_pattern=e.get("PROJECT_NUMBER_PATTERN") or DEFAULT_PROJECT_NUMBER_PATTERN,
@@ -184,6 +192,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         assign_mode=_assign_mode(e.get("ASSIGN_MODE"), bool(e.get("PLMAIL_URL") and e.get("PLMAIL_TOKEN"))),
         integration_token=e.get("INTEGRATION_TOKEN", ""),
         public_url=(e.get("PUBLIC_URL") or "").rstrip("/"),
+        search_min_rerank=_float(e.get("SEARCH_MIN_RERANK"), 0.05),
+        synonyms_file=e.get("SYNONYMS_FILE", ""),
+        assign_min_similarity=_float(e.get("ASSIGN_MIN_SIMILARITY"), 0.0),
+        forwarded_allow_ips=e.get("FORWARDED_ALLOW_IPS", ""),
         llm_api_key=e.get("LLM_API_KEY", ""),
         embed_api_key=e.get("EMBED_API_KEY", ""),
         rerank_api_key=e.get("RERANK_API_KEY", ""),
