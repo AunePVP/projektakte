@@ -299,7 +299,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `PLMAIL_URL` | – | Basisadresse von plMail (z. B. `https://mail.example.local`) |
 | `PLMAIL_TOKEN` | – | App-Passwort `plmail_…` (Secret, nur aus der Umgebung) |
 | `PLMAIL_TIMEOUT` / `PLMAIL_PAGE_SIZE` | `30` / `100` | Sekunden / Mails je Abfrage |
-| `PLMAIL_WEB_URL` | – | Link-Vorlage zum Öffnen einer Mail in plMail (`{accountId}`, `{emailId}`) |
+| `PLMAIL_WEB_URL` | – | Link-Vorlage zum Öffnen einer Mail in plMail, z. B. `https://mail.lan/mail/message/{emailId}` |
 | `ASSIGN_MODE` | `auto`, mit plMail `manual` | `manual` = keine automatische Zuordnung (plMail-Mails werden in plMail zugeordnet) |
 | `INTEGRATION_TOKEN` | – | Token, mit dem plMail `/api/integration/*` aufruft (Secret) |
 | `PUBLIC_URL` | Anfrage-URL | eigene Adresse für Links in API-Antworten |

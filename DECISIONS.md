@@ -283,3 +283,11 @@ Versionsnummer bleibt daher unter 1.0 (0.2.0), bis die echten Dienste geprüft s
 - **`manual` als Standard, sobald plMail angebunden ist** (überschreibbar mit `ASSIGN_MODE`); ohne
   plMail (Demo mit eml-Ordner) bleibt `auto`. Im Modus `manual` ist auch eine Projektnummer nur ein
   Vorschlag. Ein Moduswechsel bewertet alle Mails neu.
+- **plMail-Fork gelesen** (Stand `224a1c9`), damit der Auftrag passt: Email-State ist dort ein
+  explizites Change-Log (`MailChangeRecorder::emailChanged`), Vendor-URNs müssen in
+  `Capability::SUPPORTED` stehen, `Email/get` ignoriert unbekannte Eigenschaften und hat mit
+  `replyFrom` schon ein Opt-in-Muster, Fork-Regeln verlangen `fork_`-Tabellen und markierte
+  Änderungen. Der Fork bevorzugt sonst eigene JMAP-Methoden statt neuer Email-Eigenschaften
+  (FORK.md 22); hier ist die Eigenschaft trotzdem richtig, weil die Zuordnung über `Email/changes`
+  bemerkt werden muss – das kostet drei kleine markierte Änderungen am Original.
+- **Mail-Link in plMail**: `https://<plmail>/mail/message/{emailId}` (Route `MailController::message`).

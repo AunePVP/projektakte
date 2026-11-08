@@ -134,7 +134,7 @@ Abgleich wie bisher, die Mails bleiben dann offen.
 | Projektakte | `PLMAIL_URL`, `PLMAIL_TOKEN` | JMAP-Zugang (App-Passwort eines plMail-Benutzers, der alle relevanten Konten sieht) |
 | Projektakte | `ASSIGN_MODE` | `manual` (Standard, sobald plMail angebunden ist) oder `auto` |
 | Projektakte | `INTEGRATION_TOKEN` | gemeinsames Geheimnis für `/api/integration/*` (z. B. `openssl rand -hex 32`) |
-| Projektakte | `PLMAIL_WEB_URL` | Link-Vorlage zum Öffnen einer Mail in plMail, z. B. `https://mail.lan/mail/{accountId}/{emailId}` |
+| Projektakte | `PLMAIL_WEB_URL` | Link-Vorlage zum Öffnen einer Mail in plMail, bei plMail `https://mail.lan/mail/message/{emailId}` (`{accountId}` ist ebenfalls möglich) |
 | Projektakte | `PUBLIC_URL` | eigene Adresse für Links in den API-Antworten (sonst die Anfrage-URL) |
 | plMail | `PROJEKTAKTE_URL`, `PROJEKTAKTE_TOKEN` | Basis-URL von Projektakte und dasselbe `INTEGRATION_TOKEN` |
 
