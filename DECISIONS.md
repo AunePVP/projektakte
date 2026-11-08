@@ -1,7 +1,44 @@
 # Entscheidungen
 
-Kurz begründete Entscheidungen des Maintainers, die nicht in VISION.md festgelegt sind.
-Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
+Kurz begründete Entscheidungen des Maintainers, die nicht in VISION.md festgelegt sind – erst eine
+Zusammenfassung, darunter die Details je Roadmap-Schritt.
+
+## Zusammenfassung
+
+1. **Fakes sind echte HTTP-Server** (`python -m projektakte.fake_ai`), Tests starten sie auf
+   `127.0.0.1`. Dieselben Clients mit Formaterkennung laufen in Tests, mit `AI_MODE=fake` und gegen
+   die echten Dienste. Umschalten nur über `LLM_URL`/`EMBED_URL`/`RERANK_URL` & Co.
+2. **Formaterkennung zur Laufzeit** für Embeddings (OpenAI/TEI) und Reranker (TEI/Cohere, Anfrage
+   und Antwort getrennt), robust gegen `<think>`, Timeouts und Ausfälle; `/health/deps` zeigt das
+   erkannte Format. Ein Fingerabdruck des Embedding-Dienstes löst nach dem Umschalten automatisch
+   die Neuberechnung aller Vektoren aus.
+3. **Nur Standardbibliothek, wo es reicht**: HTTP (`urllib`), PDF/DOCX/PNG-Erzeugung für Demo-Daten,
+   Passwort-Hashes (PBKDF2), Sitzungs-Cookie (HMAC). Neue Abhängigkeiten (gepinnt): pypdf,
+   python-docx, numpy, jinja2, python-multipart.
+4. **SQLite für alles**: FTS5 für Volltext (mit eigener Faltung ä→a, ß→ss), Vektoren als BLOB und
+   für die Suche als NumPy-Matrix im Speicher, additive Migrationen über `PRAGMA user_version`.
+5. **Hybride Suche mit Reciprocal Rank Fusion** (keine Score-Kalibrierung nötig), Reranker auf die
+   30 besten Kandidaten, Rückfall ohne Reranker bzw. ohne Vektoren.
+6. **Mail-Vorschläge als „Abstimmung“** der ähnlichsten Abschnitte (BM25 + Vektor), mit Pflicht zu
+   gemeinsamen Begriffen und Absender-Historie; reine Vektor-Ähnlichkeit war mit den Fakes zu
+   unzuverlässig (3/8 statt 8/8). Menschliche Entscheidungen werden getrennt gespeichert.
+7. **Antworten nur mit Quellen**: nummerierte Quellen im Prompt, nur zitierte Quellen zurück,
+   „Nicht gefunden“ ohne LLM-Aufruf, wenn nichts passt; Antworten ohne Zitat werden markiert.
+8. **Ein Hintergrund-Thread** für die Indexierung (Start in < 2 s, auch während der Indexierung
+   antwortet `/health` sofort), keine Task-Queue.
+9. **Oberfläche serverseitig** mit lokal ausgeliefertem HTMX, alles auch ohne JavaScript; keine
+   externen Skripte (auch die Swagger-UI ist abgeschaltet).
+10. **Zugangsschutz ohne Standardpasswort**: Benutzer nur aus der Konfiguration; `/health` bleibt
+    öffentlich, `/health/deps` ist geschützt; HTTP Basic nur für API-Skripte.
+11. **plMail strikt lesend** über dokumentierte JMAP-Methoden; fehlende Funktionen sind in
+    docs/plmail-jmap.md als Vorschläge notiert.
+12. **Demo-Daten byte-genau reproduzierbar**, mit schweren Negativbeispielen und einem
+    Evaluationssatz aus 20 Fragen (darunter 2 ohne Antwort), der in den Tests vollständig besteht.
+
+Bekannte Grenzen: Die Schwellwerte (`ASSIGN_MIN_SHARE`, `ASSIGN_MIN_LEAD`, `ASK_MIN_RERANK`) sind mit
+den Fakes eingestellt und müssen mit echten Modellen und Daten überprüft werden. Die
+Antwortqualität mit dem Fake-LLM sagt nur etwas über den Ablauf, nicht über das echte Modell. Die
+Versionsnummer bleibt daher unter 1.0 (0.2.0), bis die echten Dienste geprüft sind.
 
 ## Allgemein
 

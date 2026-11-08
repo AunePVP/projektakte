@@ -5,15 +5,33 @@ Projektnummer** zusammen und beantwortet **Fragen zu Projekten mit Quellenangabe
 im lokalen Netz mit lokalen Modellen.
 
 - Was gebaut werden soll und warum: [VISION.md](VISION.md)
-- Reihenfolge: [ROADMAP.md](ROADMAP.md)
+- Reihenfolge: [ROADMAP.md](ROADMAP.md) · Entscheidungen: [DECISIONS.md](DECISIONS.md) ·
+  Änderungen: [CHANGELOG.md](CHANGELOG.md)
 - KI-Dienste (LLM, Embeddings, Reranker): [docs/ki-dienste.md](docs/ki-dienste.md)
 - Anbindung des Mailprogramms plMail: [docs/plmail-jmap.md](docs/plmail-jmap.md)
 
 ## Stand
 
-Phase A in Arbeit (siehe [ROADMAP.md](ROADMAP.md)): Projektregister, Dokument- und Mail-Indexierung,
-Zuordnung, hybride Suche, Fragen mit Quellen, Hintergrund-Indexierung und Weboberfläche.
-Getroffene Entscheidungen: [DECISIONS.md](DECISIONS.md), Änderungen: [CHANGELOG.md](CHANGELOG.md).
+**Phase A ist umgesetzt** (alle 14 Roadmap-Schritte): Projektregister, Text- und Mail-Indexierung
+(TXT/MD/PDF/DOCX/EML, Anhänge), Embeddings, Mail-Zuordnung mit Zuordnungs-Eingang, hybride Suche mit
+Reranker, Fragen mit Quellen, Hintergrund-Indexierung, Weboberfläche, Zugangsschutz und plMail über
+JMAP. Entwickelt und getestet gegen Fake-KI-Dienste; die echten Dienste werden nur per
+Konfiguration angebunden (siehe unten). Offen vor dem produktiven Einsatz: Formate der echten
+Dienste prüfen und eintragen, Schwellwerte mit echten Daten überprüfen
+([docs/ki-dienste.md](docs/ki-dienste.md#stand-der-formatprüfung)).
+
+## Schnellstart (Demo in einem Container)
+
+```bash
+docker build -t projektakte .
+docker run -p 8000:8000 -e DEMO_MODE=1 -e AI_MODE=fake -e AUTH_DISABLED=1 projektakte
+```
+
+Danach `http://localhost:8000/` öffnen. `DEMO_MODE=1` erzeugt den frei erfundenen Demo-Datensatz,
+`AI_MODE=fake` startet die Fake-KI-Dienste im selben Prozess, `AUTH_DISABLED=1` ist nur für einen
+schnellen lokalen Blick gedacht (sonst Benutzer einrichten, siehe „Anmeldung“).
+`scripts/docker-smoke.sh` baut das Image und prüft Start, `/health`, `/health/deps`, den
+Zugangsschutz und eine Frage mit Quellenangabe.
 
 ## Starten
 
@@ -22,10 +40,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 PORT=8000 .venv/bin/python -m projektakte
 ```
 
-Oder als Container:
+Oder als Container mit echten Daten (Projektordner und Mails nur lesend eingebunden):
 
 ```bash
-docker build -t projektakte . && docker run -p 8000:8000 -v $PWD/data:/data projektakte
+docker run -p 8000:8000 -v $PWD/data:/data \
+  -v /srv/projekte:/projekte:ro -e PROJECTS_DIR=/projekte \
+  -e AUTH_USERS_FILE=/run/secrets/users -e SECRET_KEY=… projektakte
 ```
 
 ## Tests
@@ -35,14 +55,204 @@ sh scripts/test.sh
 ```
 
 Das Skript legt eine virtuelle Umgebung (zwischengespeichert nach Inhalt der requirements-Dateien)
-an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
+an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste: Sie starten die Fakes auf
+`127.0.0.1`. Dabei laufen auch der Evaluationssatz (`tests/eval.json`, erwartete Quelle unter den
+ersten 5 Treffern, Antwort enthält den erwarteten Fakt) und die Zuordnungs-Qualitätskriterien aus
+VISION.md Abschnitt 9. Ein ausdrücklich markierter Integrationstest gegen die echten Dienste läuft
+nur mit `PROJEKTAKTE_INTEGRATION=1` (siehe docs/ki-dienste.md).
+
+## Oberfläche
+
+- **Projekte** – Liste mit Filter (Nummer/Name) und Suche über alle Projekte.
+- **Projektseite** – Fragefeld (Antwort mit nummerierten, verlinkten Quellen), Zeitachse aus
+  Dokumenten und Mails, Dokumente (mit Hinweis auf übersprungene Scans), Mails mit Zuordnungsart.
+- **Zuordnungs-Eingang** – Mails ohne sichere Projektnummer mit Vorschlag und Begründung;
+  Bestätigen, Verwerfen, anderes Projekt wählen oder „Kein Projektbezug“.
+- **Fragen** und **Suche** – projektübergreifend oder auf ein Projekt beschränkt.
+- **Status** – Indexierung, Bestand und Zustand der KI-Dienste (und plMail).
+
+Mail- und Dokumentseiten zeigen den Text bzw. die Abschnitte (mit Seitenangabe) und öffnen die
+Originaldatei. Serverseitig gerendert (Jinja2), HTMX liegt lokal unter `/static` (kein CDN); alle
+Formulare funktionieren auch ohne JavaScript. Ohne horizontales Scrollen auf Laptop und Handy.
+
+## Anmeldung
+
+Ohne Anmeldung gibt es keine Daten – öffentlich sind nur `/health`, `/login` und `/static`.
+Benutzer stehen in der Konfiguration, Passwörter nur als PBKDF2-Hash:
+
+```bash
+python -m projektakte.passwd anna        # fragt das Passwort ab, gibt "anna:pbkdf2_sha256$…" aus
+```
+
+Die Ausgabe kommt in `AUTH_USERS` (mehrere Einträge durch Komma getrennt) oder – praktischer für
+Docker, weil `$` in Compose-Dateien maskiert werden muss – zeilenweise in eine Datei, deren Pfad
+`AUTH_USERS_FILE` nennt. `SECRET_KEY` signiert das Sitzungs-Cookie (ohne ihn endet jede Sitzung
+mit dem Neustart). Skripte können die API mit HTTP Basic aufrufen, z. B.
+`curl -u anna http://localhost:8000/health/deps`. Nach 5 Fehlversuchen ist die Anmeldung für diesen
+Benutzer von dieser Adresse 5 Minuten gesperrt. `AUTH_DISABLED=1` schaltet den Schutz für die
+lokale Entwicklung aus (wird mit `APP_ENV=production` ignoriert).
+
+## Echte KI-Dienste anbinden
+
+Keine Codeänderung nötig – nur Umgebungsvariablen setzen (`AI_MODE` weglassen oder `real`):
+
+```bash
+LLM_URL=http://192.168.178.62:8000/v1 LLM_MODEL=qwen3.8-flash-next \
+EMBED_URL=http://192.168.178.62:8001 EMBED_MODEL=qwen3-embedding-4b \
+RERANK_URL=http://192.168.178.62:4343/rerank python -m projektakte
+```
+
+Danach `GET /health/deps` aufrufen (oder die Statusseite öffnen): Dort steht je Dienst `ok`, das
+**erkannte Format** (`openai-chat`; `openai`/`tei`; `tei`/`cohere`), die Antwortzeit und ggf. der
+Fehler samt Rückfallverhalten. Die Formate vorher von Hand prüfen
+(siehe [docs/ki-dienste.md](docs/ki-dienste.md)):
+
+```bash
+curl -s http://192.168.178.62:8000/v1/models
+curl -s http://192.168.178.62:8000/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-flash-next","messages":[{"role":"user","content":"Sag OK."}],"max_tokens":8}'
+curl -s http://192.168.178.62:8001/v1/embeddings -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3-embedding-4b","input":["Rauchableitung im Treppenraum"]}'
+curl -s http://192.168.178.62:8001/embed -H 'Content-Type: application/json' \
+  -d '{"inputs":["Rauchableitung im Treppenraum"]}'
+curl -s http://192.168.178.62:4343/rerank -H 'Content-Type: application/json' \
+  -d '{"query":"Rauchableitung","texts":["Text A","Text B"]}'
+curl -s http://192.168.178.62:4343/rerank -H 'Content-Type: application/json' \
+  -d '{"query":"Rauchableitung","documents":["Text A","Text B"],"top_n":2}'
+```
+
+Erkennt der Client das Format nicht oder rät falsch, lässt es sich mit `EMBED_FORMAT` bzw.
+`RERANK_FORMAT` festlegen. Beim ersten Lauf mit den echten Embeddings werden alle Vektoren
+automatisch neu berechnet (Fingerabdruck des Dienstes). Fällt der Reranker aus, sucht Projektakte
+ohne ihn weiter; fällt der Embedding-Dienst aus, nur im Volltext; fällt das Sprachmodell aus,
+antwortet die Fragefunktion mit „KI-Dienst nicht erreichbar“ und zeigt die Fundstellen. Bilder
+(Scans, Pläne) werden erst mit `LLM_VISION=1` an das Modell geschickt.
+
+## Fake-KI-Dienste
+
+Für Entwicklung und Tests gibt es deterministische Fakes aller drei Dienste auf einem Port:
+
+```bash
+python -m projektakte.fake_ai --port 8999
+LLM_URL=http://127.0.0.1:8999/v1 EMBED_URL=http://127.0.0.1:8999 \
+  RERANK_URL=http://127.0.0.1:8999/rerank python -m projektakte
+```
+
+Kürzer: `AI_MODE=fake` startet dieselben Fakes im Prozess der Anwendung. Optionen des Fake-Servers:
+`--embed-format openai|tei|both`, `--rerank-format tei|cohere|both`, `--no-think`, `--delay`.
+Die Fakes: Embeddings = Hash der (gestemmten) Wörter auf 256 Dimensionen, normalisiert; Reranker =
+Anteil der Fragewörter im Text (beide Antwortformate); Chat = zitiert die Quellen mit den meisten
+Fragewörtern mit `[n]` und `usage`, sonst „Nicht gefunden.“, Antworten mit `<think>`-Block.
+
+## plMail anbinden (JMAP)
+
+Zweite Mailquelle neben `MAIL_DIR`: In plMail unter **Einstellungen → App-Passwörter** ein
+App-Passwort anlegen und setzen:
+
+```bash
+PLMAIL_URL=https://mail.example.local PLMAIL_TOKEN=plmail_… python -m projektakte
+```
+
+Projektakte liest die Session (`/.well-known/jmap`, sonst `/jmap/session`), durchläuft **alle**
+Konten, holt beim ersten Mal alle Mails seitenweise (`Email/query` + `Email/get`, `PLMAIL_PAGE_SIZE`
+je Seite) und danach nur noch Änderungen (`Email/changes` ab dem gespeicherten `state`). Anhänge
+kommen über die `downloadUrl` der Session. Es werden ausschließlich lesende Methoden verwendet.
+`GET /health/deps` meldet plMail mit Zahl der Konten. Details: [docs/plmail-jmap.md](docs/plmail-jmap.md).
+
+## Wie es funktioniert
+
+### Indexieren
+
+Die Anwendung indexiert im Hintergrund: beim Start und danach alle `INDEX_INTERVAL` Sekunden
+(Standard 300; `0` = nur beim Start und auf Anforderung). Der Webserver ist sofort erreichbar.
+Mit `DEMO_MODE=1` wird der Demo-Datensatz vorher in `$DATA_DIR/demo` erzeugt, falls er fehlt.
+Stand und Zahlen: `GET /api/status`; sofort neu indexieren: `POST /api/reindex` oder
+`python -m projektakte.index` (ein Durchlauf im Vordergrund, ohne Webserver).
+
+Projekte sind Ordner unter `PROJECTS_DIR`, deren Name mit einer Projektnummer beginnt
+(`PROJECT_NUMBER_PATTERN`, auch eine Ebene tiefer, z. B. in Jahresordnern). Unterstützte Formate: TXT,
+Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften und Tabellen), EML.
+Bilder (PNG/JPG/TIFF) und PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1` über das
+multimodale Modell gelesen, sonst als „übersprungen“ vermerkt. Mails werden aus `MAIL_DIR` (alle
+`*.eml`, auch in Unterordnern) und optional aus plMail gelesen; Anhänge landen als Kopie in
+`$DATA_DIR/cache` und werden wie Dokumente indexiert. Texte werden in überlappende Abschnitte mit
+Seitenangabe zerlegt, in SQLite + FTS5 gespeichert und eingebettet. Unveränderte Dateien
+(Größe/Änderungszeit, dann SHA-256) werden nicht erneut gelesen. Quellordner werden nie verändert.
+
+### Suche
+
+Volltext (SQLite FTS5, BM25) und Vektorsuche liefern je bis zu 50 Kandidaten, die per Reciprocal
+Rank Fusion verschmolzen werden (höchstens 3 Abschnitte je Dokument/Mail). Die besten
+`RERANK_TOP_K` (30) gehen an den Reranker. Jeder Treffer nennt seine Quelle
+(„01 Genehmigung/Baugenehmigung.pdf, S. 2“ bzw. „Mail vom 18.06.2024 (Absender): Betreff“).
+
+### Fragen beantworten
+
+Die besten `ASK_TOP_K` (6) Treffer der Suche gehen – nummeriert und bis `ASK_CONTEXT_CHARS`
+(8000 Zeichen) – mit der Frage an das Sprachmodell. Es darf nur diese Quellen verwenden, muss sie als
+`[n]` zitieren und sonst „Nicht gefunden“ antworten. Die Antwort enthält die zitierten Quellen.
+Ohne passende Treffer (oder Reranker-Score unter `ASK_MIN_RERANK`) wird das Modell gar nicht erst
+gefragt.
+
+### Zuordnung der Mails
+
+1. **Sicher**: bekannte Projektnummer im Betreff, sonst im Text, sonst im Anhangnamen.
+2. **Vorschlag**: Sonst dient die Mail als Suchanfrage (Volltext + Vektor) gegen alle Abschnitte der
+   Projekte (Projektdateien und sicher zugeordnete Mails). Die besten Treffer stimmen für ihr Projekt;
+   liegt eines klar vorn (`ASSIGN_MIN_SHARE`, `ASSIGN_MIN_LEAD`) und teilt Begriffe mit der Mail, wird
+   es vorgeschlagen. Absender, die bisher nur zu einem Projekt geschrieben haben, zählen zusätzlich.
+3. **Zuordnungs-Eingang**: Vorschläge bestätigt oder verwirft ein Mensch; Entscheidungen bleiben
+   auch nach einem Neuaufbau des Index erhalten.
+
+Im Demo-Datensatz: alle 61 Mails mit Projektnummer richtig, keine der 7 Mails ohne Projektbezug
+zugeordnet oder vorgeschlagen, 8 von 8 inhaltlichen Vorschlägen richtig.
+
+## API
+
+| Methode und Pfad | Zweck |
+|---|---|
+| `GET /health` | Lebenszeichen, ruft nie KI-Dienste auf (öffentlich) |
+| `GET /health/deps` | Zustand der KI-Dienste und von plMail (erreichbar, Format, Antwortzeit) |
+| `GET /api/status` | Indexierungsstand (Phase, letzter Lauf, Fehler) und Zahlen |
+| `POST /api/reindex` | Indexierung sofort anstoßen |
+| `GET /api/projects?q=` | Projektliste, optional gefiltert nach Nummer/Name |
+| `GET /api/projects/{nummer}` | ein Projekt |
+| `GET /api/projects/{nummer}/documents` | Dokumente eines Projekts mit Status (ok/übersprungen/Fehler) |
+| `GET /api/documents/{id}` | ein Dokument mit seinen Abschnitten (Seite, Überschrift, Text) |
+| `GET /api/mails?project=&status=&q=` | Mails (neueste zuerst), filterbar |
+| `GET /api/mails/{id}` | eine Mail mit Text und Anhängen |
+| `GET /api/search?q=&project=&k=` | Hybride Suche (Volltext + Vektor, Reranker), Treffer mit Quelle |
+| `POST /api/ask` | Frage beantworten: `{"question": "…", "project": "BS-…"}` (Projekt optional) → Antwort, `found`, zitierte Quellen |
+| `GET /api/inbox` | Zuordnungs-Eingang: Mails ohne sichere Zuordnung, mit Vorschlag und Begründung |
+| `POST /api/mails/{id}/assign` | Entscheidung: `{"action": "confirm"}`, `{"action": "assign", "project": "BS-…"}`, `{"action": "reject"}` (Vorschlag verwerfen), `{"action": "none"}` (kein Projektbezug) |
+
+Die OpenAPI-Beschreibung liegt nach der Anmeldung unter `/openapi.json` (Swagger-UI ist
+abgeschaltet, weil sie Skripte aus dem Internet lädt).
+
+## Demo-Datensatz
+
+```bash
+python -m projektakte.demo            # schreibt nach $DATA_DIR/demo (Standard ./data/demo)
+python -m projektakte.demo --target /tmp/demo
+python -m projektakte.demo --eval tests/eval.json   # Evaluationssatz neu schreiben
+```
+
+Erzeugt deterministisch (fester Seed, ohne Zeitstempel in den Dateien) 8 frei erfundene
+Brandschutz-Projekte (Schule, Pflegeheim, Bürogebäude, Tiefgarage, Hotel, Industriehalle, Kita,
+Wohnhochhaus) unter `demo/projekte/<Nummer> <Name>/` mit Baugenehmigung (PDF, nummerierte
+Auflagen), Brandschutzkonzept (DOCX), Prüfbericht (Markdown), Besprechungsprotokoll (TXT) und
+einem Bild-„Scan“ eines Fluchtwegplans, außerdem 76 Mails (`demo/mails/*.eml`, 15 mit Anhängen):
+Projektnummer im Betreff (Mehrheit), nur im Text, nur im Anhangnamen, ohne Nummer aber inhaltlich
+eindeutig und ohne Projektbezug (Newsletter, Rechnung …). `demo/manifest.json` hält fest, welche Mail
+zu welchem Projekt gehört; `tests/eval.json` enthält 20 Fragen mit bekannter Antwort und Quelle.
+Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte Domain `.example`.
 
 ## Konfiguration (Umgebungsvariablen)
 
 | Variable | Standard | Bedeutung |
 |---|---|---|
 | `PORT` | `8000` | HTTP-Port |
-| `DATA_DIR` | `./data` | Index, Datenbank, Demo-Daten |
+| `DATA_DIR` | `./data` | Index, Datenbank, Anhang-Cache, Demo-Daten |
 | `APP_ENV` | `dev` | `dev`, `staging` oder `production` |
 | `PROJECTS_DIR` | `$DATA_DIR/projekte` (mit `DEMO_MODE=1`: `$DATA_DIR/demo/projekte`) | Projektordner (read-only) |
 | `MAIL_DIR` | `$DATA_DIR/mails` (mit `DEMO_MODE=1`: `$DATA_DIR/demo/mails`) | Ordner mit `.eml`-Dateien (read-only) |
@@ -63,7 +273,11 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `RERANK_FORMAT` | `auto` | `auto`, `tei` (`texts`) oder `cohere` (`documents`) |
 | `RERANK_MODEL` | – | nur falls der Server ein `model`-Feld verlangt |
 | `RERANK_TIMEOUT` / `RERANK_TOP_K` | `30` / `30` | Sekunden / Kandidaten für das Reranking |
+| `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
+| `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
+| `ASK_TOP_K` / `ASK_CONTEXT_CHARS` / `ASK_MIN_RERANK` | `6` / `8000` / `0.01` | Quellen je Frage / Zeichenbudget im Prompt / Mindest-Score des Rerankers |
+| `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
 | `AUTH_USERS` | – | Benutzer `name:pbkdf2_sha256$…`, durch Komma getrennt (Secret) |
 | `AUTH_USERS_FILE` | – | Datei mit einem Eintrag `name:hash` je Zeile |
 | `SECRET_KEY` | zufällig | Schlüssel für das Sitzungs-Cookie (Secret) |
@@ -73,198 +287,30 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `PLMAIL_URL` | – | Basisadresse von plMail (z. B. `https://mail.example.local`) |
 | `PLMAIL_TOKEN` | – | App-Passwort `plmail_…` (Secret, nur aus der Umgebung) |
 | `PLMAIL_TIMEOUT` / `PLMAIL_PAGE_SIZE` | `30` / `100` | Sekunden / Mails je Abfrage |
-| `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
-| `ASK_TOP_K` / `ASK_CONTEXT_CHARS` / `ASK_MIN_RERANK` | `6` / `8000` / `0.01` | Quellen je Frage / Zeichenbudget im Prompt / Mindest-Score des Rerankers |
-| `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
-| `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 
-## plMail anbinden (JMAP)
+## Aufbau des Codes
 
-Zweite Mailquelle neben `MAIL_DIR`: In plMail unter **Einstellungen → App-Passwörter** ein
-App-Passwort anlegen und setzen:
-
-```bash
-PLMAIL_URL=https://mail.example.local PLMAIL_TOKEN=plmail_… python -m projektakte
-```
-
-Projektakte liest die Session (`/.well-known/jmap`, sonst `/jmap/session`), durchläuft **alle**
-Konten, holt beim ersten Mal alle Mails seitenweise (`Email/query` + `Email/get`, `PLMAIL_PAGE_SIZE`
-je Seite) und danach nur noch Änderungen (`Email/changes` ab dem gespeicherten `state`). Anhänge
-kommen über die `downloadUrl` der Session. Es werden ausschließlich lesende Methoden verwendet.
-`GET /health/deps` meldet plMail mit Zahl der Konten. Details: [docs/plmail-jmap.md](docs/plmail-jmap.md).
-
-## Anmeldung
-
-Ohne Anmeldung gibt es keine Daten – öffentlich sind nur `/health`, `/login` und `/static`.
-Benutzer stehen in der Konfiguration, Passwörter nur als PBKDF2-Hash:
-
-```bash
-python -m projektakte.passwd anna        # fragt das Passwort ab, gibt "anna:pbkdf2_sha256$…" aus
-```
-
-Die Ausgabe kommt in `AUTH_USERS` (mehrere Einträge durch Komma getrennt) oder – praktischer für
-Docker, weil `$` in Compose-Dateien maskiert werden muss – zeilenweise in eine Datei, deren Pfad
-`AUTH_USERS_FILE` nennt. `SECRET_KEY` signiert das Sitzungs-Cookie (ohne ihn endet jede Sitzung
-mit dem Neustart). Skripte können die API mit HTTP Basic aufrufen, z. B.
-`curl -u anna http://localhost:8000/health/deps`. Nach 5 Fehlversuchen ist die Anmeldung für diesen
-Benutzer von dieser Adresse 5 Minuten gesperrt. `AUTH_DISABLED=1` schaltet den Schutz für die
-lokale Entwicklung aus (wird mit `APP_ENV=production` ignoriert).
-
-## Oberfläche
-
-Im Browser unter `http://localhost:8000/`:
-
-- **Projekte** – Liste mit Filter (Nummer/Name) und Suche über alle Projekte.
-- **Projektseite** – Fragefeld (Antwort mit nummerierten, verlinkten Quellen), Zeitachse aus
-  Dokumenten und Mails, Dokumente (mit Hinweis auf übersprungene Scans), Mails mit Zuordnungsart.
-- **Zuordnungs-Eingang** – Mails ohne sichere Projektnummer mit Vorschlag und Begründung;
-  Bestätigen, Verwerfen, anderes Projekt wählen oder „Kein Projektbezug“.
-- **Fragen** und **Suche** – projektübergreifend oder auf ein Projekt beschränkt.
-- **Status** – Indexierung, Bestand und Zustand der KI-Dienste.
-
-Mail- und Dokumentseiten zeigen den Text bzw. die Abschnitte (mit Seitenangabe) und öffnen die
-Originaldatei. Serverseitig gerendert (Jinja2), HTMX liegt lokal unter `/static` (kein CDN); alle
-Formulare funktionieren auch ohne JavaScript.
-
-## Indexieren
-
-Die Anwendung indexiert im Hintergrund: beim Start und danach alle `INDEX_INTERVAL` Sekunden
-(Standard 300; `0` = nur beim Start und auf Anforderung). Der Webserver ist sofort erreichbar.
-Mit `DEMO_MODE=1` wird der Demo-Datensatz vorher in `$DATA_DIR/demo` erzeugt, falls er fehlt.
-Stand und Zahlen: `GET /api/status`; sofort neu indexieren: `POST /api/reindex`.
-
-```bash
-python -m projektakte.index      # ein Durchlauf im Vordergrund (ohne Webserver)
-```
-
-Schnellster Weg zu einer laufenden Demo (ein Container, keine weiteren Dienste):
-
-```bash
-docker build -t projektakte .
-docker run -p 8000:8000 -e DEMO_MODE=1 -e AI_MODE=fake -e AUTH_DISABLED=1 projektakte
-```
-
-(`AUTH_DISABLED=1` nur für einen schnellen lokalen Blick; sonst Benutzer einrichten, siehe
-„Anmeldung“.) `scripts/docker-smoke.sh` baut das Image und prüft Start, `/health`, `/health/deps`,
-den Zugangsschutz und eine Frage mit Quellenangabe.
-
-Unterstützte Formate: TXT, Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften
-und Tabellen), EML. Bilder (PNG/JPG/TIFF) und PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1`
-über das multimodale Modell gelesen, sonst als „übersprungen“ vermerkt. Mails werden aus `MAIL_DIR`
-(alle `*.eml`, auch in Unterordnern) gelesen; Anhänge landen als Kopie in `$DATA_DIR/cache` und
-werden wie Dokumente indexiert. Quellordner werden nie verändert. Unveränderte Dateien
-(Größe/Änderungszeit, dann SHA-256) werden nicht erneut gelesen.
-
-### Suche
-
-Volltext (SQLite FTS5, BM25) und Vektorsuche liefern je bis zu 50 Kandidaten, die per Reciprocal
-Rank Fusion verschmolzen werden (höchstens 3 Abschnitte je Dokument/Mail). Die besten
-`RERANK_TOP_K` (30) gehen an den Reranker. Fällt der Reranker aus, bleibt die Reihenfolge der hybriden
-Suche; fällt der Embedding-Dienst aus, sucht Projektakte nur im Volltext. Jeder Treffer nennt seine
-Quelle („01 Genehmigung/Baugenehmigung.pdf, S. 2“ bzw. „Mail vom 18.06.2024 (Absender): Betreff“).
-
-### Fragen beantworten
-
-Die besten `ASK_TOP_K` (6) Treffer der Suche gehen – nummeriert und bis `ASK_CONTEXT_CHARS`
-(8000 Zeichen) – mit der Frage an das Sprachmodell. Es darf nur diese Quellen verwenden, muss sie als
-`[n]` zitieren und sonst „Nicht gefunden“ antworten. Die Antwort enthält die zitierten Quellen
-(Datei/Seite bzw. Mail/Datum). Ohne passende Treffer (oder Reranker-Score unter `ASK_MIN_RERANK`)
-wird das Modell gar nicht erst gefragt. Ist das Sprachmodell nicht erreichbar, kommen die
-Fundstellen mit dem Hinweis „KI-Dienst nicht erreichbar“.
-
-### Zuordnung der Mails
-
-1. **Sicher**: bekannte Projektnummer im Betreff, sonst im Text, sonst im Anhangnamen.
-2. **Vorschlag**: Sonst dient die Mail als Suchanfrage (Volltext + Vektor) gegen alle Abschnitte der
-   Projekte (Projektdateien und sicher zugeordnete Mails). Die besten Treffer stimmen für ihr Projekt;
-   liegt eines klar vorn und teilt Begriffe mit der Mail, wird es vorgeschlagen. Absender, die bisher
-   nur zu einem Projekt geschrieben haben, zählen zusätzlich.
-3. **Zuordnungs-Eingang**: Vorschläge bestätigt oder verwirft ein Mensch; Entscheidungen bleiben
-   auch nach einem Neuaufbau des Index erhalten.
-
-## API (Auszug)
-
-| Methode und Pfad | Zweck |
+| Modul | Aufgabe |
 |---|---|
-| `GET /health` | Lebenszeichen, ruft nie KI-Dienste auf |
-| `GET /health/deps` | Zustand der KI-Dienste (erreichbar, Format, Antwortzeit) |
-| `GET /api/status` | Indexierungsstand (Phase, letzter Lauf, Fehler) und Zahlen |
-| `POST /api/reindex` | Indexierung sofort anstoßen |
-| `GET /api/projects?q=` | Projektliste, optional gefiltert nach Nummer/Name |
-| `GET /api/projects/{nummer}` | ein Projekt |
-| `GET /api/projects/{nummer}/documents` | Dokumente eines Projekts mit Status (ok/übersprungen/Fehler) |
-| `GET /api/documents/{id}` | ein Dokument mit seinen Abschnitten (Seite, Überschrift, Text) |
-| `GET /api/mails?project=&status=&q=` | Mails (neueste zuerst), filterbar |
-| `GET /api/mails/{id}` | eine Mail mit Text und Anhängen |
-| `GET /api/search?q=&project=&k=` | Hybride Suche (Volltext + Vektor, Reranker), Treffer mit Quelle |
-| `POST /api/ask` | Frage beantworten: `{"question": "…", "project": "BS-…"}` (Projekt optional) → Antwort, `found`, zitierte Quellen |
-| `GET /api/inbox` | Zuordnungs-Eingang: Mails ohne sichere Zuordnung, mit Vorschlag und Begründung |
-| `POST /api/mails/{id}/assign` | Entscheidung: `{"action": "confirm"}`, `{"action": "assign", "project": "BS-…"}`, `{"action": "reject"}` (Vorschlag verwerfen), `{"action": "none"}` (kein Projektbezug) |
-
-## Demo-Datensatz
-
-```bash
-python -m projektakte.demo            # schreibt nach $DATA_DIR/demo (Standard ./data/demo)
-python -m projektakte.demo --target /tmp/demo
-python -m projektakte.demo --eval tests/eval.json   # Evaluationssatz neu schreiben
-```
-
-Erzeugt deterministisch (fester Seed, ohne Zeitstempel in den Dateien) 8 frei erfundene
-Brandschutz-Projekte (Schule, Pflegeheim, Bürogebäude, Tiefgarage, Hotel, Industriehalle, Kita,
-Wohnhochhaus) unter `demo/projekte/<Nummer> <Name>/` mit Baugenehmigung (PDF, nummerierte
-Auflagen), Brandschutzkonzept (DOCX), Prüfbericht (Markdown), Besprechungsprotokoll (TXT) und
-einem Bild-„Scan“ eines Fluchtwegplans, außerdem 76 Mails (`demo/mails/*.eml`, 15 mit Anhängen):
-Projektnummer im Betreff (Mehrheit), nur im Text, nur im Anhangnamen, ohne Nummer aber inhaltlich
-eindeutig und ohne Projektbezug (Newsletter, Rechnung …). `demo/manifest.json` hält fest, welche Mail
-zu welchem Projekt gehört; `tests/eval.json` enthält Fragen mit bekannter Antwort und Quelle. Alle Namen, Firmen und Orte sind erfunden; Mailadressen
-nutzen die reservierte Domain `.example`.
-
-## Fake-KI-Dienste
-
-Für Entwicklung und Tests gibt es deterministische Fakes aller drei Dienste auf einem Port:
-
-```bash
-python -m projektakte.fake_ai --port 8999
-LLM_URL=http://127.0.0.1:8999/v1 EMBED_URL=http://127.0.0.1:8999 \
-  RERANK_URL=http://127.0.0.1:8999/rerank python -m projektakte
-```
-
-Kürzer: `AI_MODE=fake` startet dieselben Fakes im Prozess der Anwendung. Optionen des Fake-Servers:
-`--embed-format openai|tei|both`, `--rerank-format tei|cohere|both`, `--no-think`, `--delay`.
-
-## Echte KI-Dienste anbinden
-
-Keine Codeänderung nötig – nur Umgebungsvariablen setzen (`AI_MODE` weglassen oder `real`):
-
-```bash
-LLM_URL=http://192.168.178.62:8000/v1 LLM_MODEL=qwen3.8-flash-next \
-EMBED_URL=http://192.168.178.62:8001 EMBED_MODEL=qwen3-embedding-4b \
-RERANK_URL=http://192.168.178.62:4343/rerank python -m projektakte
-```
-
-Danach `GET /health/deps` aufrufen: Dort steht je Dienst `ok`, das **erkannte Format**
-(`openai-chat`; `openai`/`tei`; `tei`/`cohere`), die Antwortzeit und ggf. der Fehler. Die Formate
-vorher von Hand prüfen (siehe [docs/ki-dienste.md](docs/ki-dienste.md)):
-
-```bash
-curl -s http://192.168.178.62:8000/v1/models
-curl -s http://192.168.178.62:8000/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3.8-flash-next","messages":[{"role":"user","content":"Sag OK."}],"max_tokens":8}'
-curl -s http://192.168.178.62:8001/v1/embeddings -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3-embedding-4b","input":["Rauchableitung im Treppenraum"]}'
-curl -s http://192.168.178.62:8001/embed -H 'Content-Type: application/json' \
-  -d '{"inputs":["Rauchableitung im Treppenraum"]}'
-curl -s http://192.168.178.62:4343/rerank -H 'Content-Type: application/json' \
-  -d '{"query":"Rauchableitung","texts":["Text A","Text B"]}'
-curl -s http://192.168.178.62:4343/rerank -H 'Content-Type: application/json' \
-  -d '{"query":"Rauchableitung","documents":["Text A","Text B"],"top_n":2}'
-```
-
-Erkennt der Client das Format nicht oder rät falsch, lässt es sich mit `EMBED_FORMAT` bzw.
-`RERANK_FORMAT` festlegen. Fällt der Reranker aus, sucht Projektakte ohne ihn weiter; fällt das
-Sprachmodell aus, antwortet die Fragefunktion mit „KI-Dienst nicht erreichbar“.
+| `projektakte/config.py` | alle Einstellungen aus der Umgebung |
+| `projektakte/ai/` | Clients für LLM, Embeddings, Reranker; Formaterkennung; `AIServices.check()` |
+| `projektakte/fake_ai/` | Fake-Dienste (`python -m projektakte.fake_ai`) |
+| `projektakte/demo/` | Demo-Generator (Projekte, Dokumente, Mails, Evaluationssatz) |
+| `projektakte/db.py` | SQLite, Migrationen |
+| `projektakte/registry.py` | Projektordner erkennen |
+| `projektakte/extract.py`, `chunking.py`, `documents.py` | Text extrahieren, Abschnitte, Dokument-Index |
+| `projektakte/vectors.py` | Embeddings speichern, Vektorsuche |
+| `projektakte/mails/` | Mail-Modell, eml-Quelle, plMail/JMAP-Quelle, Speicherung |
+| `projektakte/assign.py` | Mail-Zuordnung und Entscheidungen |
+| `projektakte/search.py`, `ask.py` | hybride Suche, Fragen beantworten |
+| `projektakte/indexer.py`, `background.py` | Indexierungslauf, Hintergrund-Thread |
+| `projektakte/auth.py`, `passwd.py` | Zugangsschutz |
+| `projektakte/api.py`, `web.py`, `templates/`, `static/` | JSON-API und Weboberfläche |
 
 ## Datenschutz
 
 Es werden keine echten Firmendaten für Entwicklung und Tests verwendet; der Demo-Datensatz ist frei
-erfunden. Projektordner und Postfächer werden nur gelesen, nie verändert.
+erfunden. Projektordner und Postfächer werden nur gelesen, nie verändert; es wird keine Mail
+gesendet. Keine Cloud-Dienste, keine Telemetrie, keine externen Skripte in der Oberfläche. Secrets
+kommen nur aus Umgebungsvariablen (bzw. einer Datei, deren Pfad dort steht) und erscheinen nicht in
+Logs. Fragen werden nicht protokolliert.

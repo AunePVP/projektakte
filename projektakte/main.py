@@ -46,7 +46,8 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
         yield
         indexer.stop()
 
-    app = FastAPI(title="Projektakte", version=__version__, lifespan=lifespan)
+    # no Swagger UI/ReDoc: they load scripts from a CDN; the schema stays at /openapi.json
+    app = FastAPI(title="Projektakte", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.settings = settings
     app.state.ai = ai
     app.state.indexer = indexer

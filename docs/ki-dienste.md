@@ -59,3 +59,34 @@ Reihenfolge der hybriden Suche weiterarbeiten (und das in `/health/deps` melden)
 Keine Tests gegen die echten Dienste in der normalen Testsuite. Für jeden Dienst gibt es einen Fake
 (z. B. deterministische Pseudo-Embeddings aus einem Hash der Wörter), sodass Retrieval-Tests
 reproduzierbar sind.
+
+## Stand der Formatprüfung
+
+Aus der Entwicklungsumgebung sind die Dienste nicht erreichbar; die tatsächlichen Antwortformate
+sind daher **noch nicht eingetragen**. Projektakte erkennt sie zur Laufzeit selbst:
+
+| Dienst | unterstützt | erkannt wird über |
+|---|---|---|
+| Sprachmodell | OpenAI Chat Completions, `<think>…</think>` wird entfernt | `GET /v1/models` + Mini-Chat |
+| Embeddings | OpenAI `/v1/embeddings` und TEI `/embed` (Reihenfolge: OpenAI, dann TEI) | erster Aufruf |
+| Reranker | Anfrage TEI (`texts`) oder Cohere/Jina (`documents`); Antwort Liste oder `results` | erster Aufruf |
+
+Nach dem Umschalten (README, Abschnitt „Echte KI-Dienste anbinden“) zeigt `GET /health/deps` das
+erkannte Format je Dienst; bitte hier eintragen. Zusätzlich gibt es einen ausdrücklich markierten
+Integrationstest gegen die echten Dienste:
+
+```bash
+PROJEKTAKTE_INTEGRATION=1 LLM_URL=http://192.168.178.62:8000/v1 EMBED_URL=http://192.168.178.62:8001 \
+  RERANK_URL=http://192.168.178.62:4343/rerank sh scripts/test.sh -m integration
+```
+
+Beim ersten Lauf mit den echten Embeddings erkennt Projektakte am Fingerabdruck, dass sich der
+Dienst geändert hat, und berechnet alle Vektoren neu. Die Schwellwerte für Mail-Vorschläge
+(`ASSIGN_MIN_SHARE`, `ASSIGN_MIN_LEAD`) und `ASK_MIN_RERANK` wurden mit den Fakes eingestellt und
+sollten mit echten Daten einmal überprüft werden.
+
+## Fake-Dienste
+
+`python -m projektakte.fake_ai --port 8999` bildet alle drei Schnittstellen auf einem Port nach
+(`--embed-format`, `--rerank-format`, `--no-think`, `--delay`); `AI_MODE=fake` startet dieselben
+Fakes im Prozess der Anwendung. Die Tests nutzen sie auf `127.0.0.1` mit zufälligem Port.

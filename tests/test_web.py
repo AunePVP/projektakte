@@ -105,3 +105,9 @@ def test_static_assets_are_local(client):
     assert 'src="/static/htmx.min.js"' in page and "https://" not in page.split("<main>")[0]
     assert client.get("/static/htmx.min.js").status_code == 200
     assert client.get("/static/app.css").status_code == 200
+
+
+def test_no_cdn_api_docs(client):
+    # Swagger-UI would load scripts from the internet; the schema stays available
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").json()["info"]["title"] == "Projektakte"

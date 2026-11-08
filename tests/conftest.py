@@ -8,6 +8,10 @@ from projektakte.config import load_settings
 from projektakte.fake_ai import start_background
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "integration: braucht die echten KI-Dienste (sonst übersprungen)")
+
+
 @pytest.fixture(autouse=True)
 def _isolated_data_dir(tmp_path, monkeypatch):
     """Never touch ./data of the working copy from tests."""

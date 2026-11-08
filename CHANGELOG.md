@@ -3,7 +3,18 @@
 Alle nennenswerten Änderungen. Format angelehnt an „Keep a Changelog“; ein Abschnitt je
 Roadmap-Schritt.
 
-## [Unveröffentlicht]
+## [0.2.0] – 2026-11-08 – Phase A umgesetzt
+
+### Abschluss
+- Markierter Integrationstest gegen die echten KI-Dienste (`tests/test_integration_real.py`, nur mit
+  `PROJEKTAKTE_INTEGRATION=1`).
+- docs/ki-dienste.md: Stand der Formatprüfung, Hinweise zum Umschalten und zu den Fakes.
+- README neu gegliedert (Schnellstart, Betrieb, Funktionsweise, API, Konfiguration, Codeaufbau);
+  DECISIONS.md mit Zusammenfassung.
+- Swagger-UI/ReDoc abgeschaltet (laden Skripte aus dem Internet); `/openapi.json` bleibt.
+- Version 0.2.0 (1.0 nach Prüfung mit den echten Diensten).
+- `docs/letzter-testlauf.txt`: Ausgabe des letzten Testlaufs (169 bestanden, 3 Integrationstests
+  übersprungen; Gegenprobe unter Python 3.12) und der Container-Prüfung.
 
 ### Schritt 14 – plMail über JMAP
 - Zweite Mailquelle über die JMAP-API von plMail (`PLMAIL_URL`, `PLMAIL_TOKEN` als Bearer):

@@ -6,6 +6,10 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
 
 ## Phase A – Aufbau
 
+Stand 2026-11-08: alle 14 Schritte umgesetzt (Version 0.2.0). Vor dem produktiven Einsatz: Formate
+der echten KI-Dienste prüfen und in docs/ki-dienste.md eintragen, Schwellwerte mit echten Daten
+überprüfen (siehe DECISIONS.md).
+
 - [x] **1. Konfiguration und Dienstestatus** – Alle Einstellungen aus Umgebungsvariablen
   (`projektakte/config.py` erweitern: `DATA_DIR`, `PROJECTS_DIR`, `MAIL_DIR`, `PROJECT_NUMBER_PATTERN`,
   `LLM_URL`, `LLM_MODEL`, `EMBED_URL`, `EMBED_MODEL`, `RERANK_URL`, `DEMO_MODE`). `GET /health/deps`
