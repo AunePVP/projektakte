@@ -8,7 +8,16 @@ Storing one mail has two steps:
    failure leaves no half-stored mail behind, so the mail is simply tried again on the next run.
 
 Callers commit right after each mail, so the write lock is only held for a few fast SQL statements
-and decisions in the inbox never wait for an extraction or a download.
+and decisions in the inbox never wait for an extraction or a download. The write transaction takes
+the lock up front (``BEGIN IMMEDIATE``): a deferred transaction that read first could not be
+upgraded once another connection had committed meanwhile (SQLITE_BUSY_SNAPSHOT – "database is
+locked" at once, without waiting). :func:`retry_locked` repeats a write that still finds the
+database locked, with a back-off, instead of counting the mail as failed.
+
+An attachment the source could not deliver (plMail answered with an error) is stored as a document
+without content – status ``pending`` ("Anhang ausstehend") while it is loaded again later, ``error``
+when there is no further attempt – so the mail itself is never held back and nothing disappears
+silently.
 """
 from __future__ import annotations
 
@@ -19,6 +28,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -27,7 +37,7 @@ from typing import Iterator
 
 from ..chunking import chunk_pages
 from ..documents import PreparedDocument, add_fts, fts_title, prepare_document, write_document
-from ..extract import Page
+from ..extract import Extracted, Page, extraction_profile
 from ..textutil import fold
 from .model import Attachment, MailRecord, de_datetime, local_day
 
@@ -38,6 +48,11 @@ MAX_EXT_BYTES = 16
 BULK_META = "mail_bulk:"  # meta key prefix: newsletter header of a mail (by source key)
 HEADER_FORMAT_META = "mail_header_format"
 HEADER_FORMAT = "de-local-1"  # "Datum: 26.02.2025 16:58" (local time) in the section text
+ATTACHMENT_DATES_META = "mail_attachment_dates"
+ATTACHMENT_DATES = "local-1"  # doc_date of attachments = local day of the mail (older: UTC day)
+PENDING = "pending"  # document status of an attachment that is loaded again later
+LOCK_RETRIES = 4  # attempts of a write that finds the database locked (after the busy timeout)
+LOCK_BACKOFF = 0.5  # seconds before the second attempt, doubled each time
 
 
 # -- names and cache ---------------------------------------------------------------------------------
@@ -93,8 +108,13 @@ def _body_title(project: str | None, project_name: str | None, subject: str, sen
 
 def _index_body(conn: sqlite3.Connection, mail_id: int, rec: MailRecord, project: str | None,
                 project_name: str | None) -> None:
+    chunks = chunk_pages([Page(None, mail_text(rec))])
+    old = conn.execute("SELECT ord, text FROM chunks WHERE mail_id = ? AND doc_id IS NULL ORDER BY ord, id",
+                       (mail_id,)).fetchall()
+    if [(r[0], r[1]) for r in old] == [(c.ord, c.text) for c in chunks]:
+        return  # same text (e.g. only an attachment arrived later): sections and vectors stay
     conn.execute("DELETE FROM chunks WHERE mail_id = ? AND doc_id IS NULL", (mail_id,))
-    for c in chunk_pages([Page(None, mail_text(rec))]):
+    for c in chunks:
         cid = conn.execute(
             "INSERT INTO chunks(doc_id, mail_id, project, ord, page, heading, text) VALUES(NULL,?,?,?,?,?,?)",
             (mail_id, project, c.ord, None, rec.subject, c.text)).lastrowid
@@ -130,13 +150,41 @@ def upgrade_mail_texts(conn: sqlite3.Connection) -> int:
     return changed
 
 
+def upgrade_attachment_dates(conn: sqlite3.Connection) -> int:
+    """Once per database: older versions dated mail attachments with the UTC day of the mail (a mail
+    at 00:30 in Berlin got the day before). Such dates are set to the local day, like newly stored
+    attachments. Returns the number of changed documents."""
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (ATTACHMENT_DATES_META,)).fetchone()
+    if row and row[0] == ATTACHMENT_DATES:
+        return 0
+    changed = 0
+    rows = conn.execute("SELECT d.id, d.doc_date, m.date FROM documents d JOIN mails m ON m.id = d.mail_id "
+                        "WHERE m.date IS NOT NULL").fetchall()
+    for doc_id, doc_date, date in rows:
+        day = local_day(date)
+        # only dates written by the older version (= UTC day); anything else is left alone
+        if day and doc_date == date[:10] and doc_date != day:
+            conn.execute("UPDATE documents SET doc_date = ? WHERE id = ?", (day, doc_id))
+            changed += 1
+    conn.execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                 (ATTACHMENT_DATES_META, ATTACHMENT_DATES))
+    conn.commit()
+    if changed:
+        log.info("Datum von %d Mail-Anhängen auf den Tag in Ortszeit umgestellt", changed)
+    return changed
+
+
 # -- transactions ------------------------------------------------------------------------------------
 @contextmanager
 def savepoint(conn: sqlite3.Connection, name: str = "store_mail") -> Iterator[None]:
-    """All writes inside the block, or none of them. Opens a transaction if none is open (the caller
-    commits, as before); nested use inside a running transaction is fine."""
+    """All writes inside the block, or none of them. Opens a write transaction if none is open (the
+    caller commits, as before); nested use inside a running transaction is fine.
+
+    The transaction is opened with ``BEGIN IMMEDIATE``: the write lock is taken (waiting up to the
+    busy timeout) before anything is read, so a commit of another connection between our first read
+    and our first write cannot make the write fail at once (SQLITE_BUSY_SNAPSHOT)."""
     if not conn.in_transaction:
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
     conn.execute(f"SAVEPOINT {name}")
     try:
         yield
@@ -145,6 +193,32 @@ def savepoint(conn: sqlite3.Connection, name: str = "store_mail") -> Iterator[No
         conn.execute(f"RELEASE {name}")
         raise
     conn.execute(f"RELEASE {name}")
+
+
+def is_locked(exc: BaseException) -> bool:
+    """Is this the database being locked/busy (another connection writes), not a real error?"""
+    return isinstance(exc, sqlite3.OperationalError) and any(w in str(exc).lower() for w in ("locked", "busy"))
+
+
+def retry_locked(conn: sqlite3.Connection, write, *, attempts: int = LOCK_RETRIES, backoff: float = LOCK_BACKOFF,
+                 on_retry=None):
+    """Run ``write()`` – a short write transaction that commits – and repeat it with a back-off
+    (0.5 s, 1 s, 2 s …) while the database stays locked beyond the busy timeout. Other errors and
+    the last attempt's error are raised; the transaction is rolled back before each new attempt and
+    ``on_retry()`` is called then (to drop in-memory state that was rolled back)."""
+    for attempt in range(attempts):
+        try:
+            return write()
+        except sqlite3.OperationalError as exc:
+            if not is_locked(exc) or attempt == attempts - 1:
+                raise
+            conn.rollback()
+            if on_retry is not None:
+                on_retry()
+            delay = backoff * 2 ** attempt
+            log.info("Datenbank belegt (%s) – neuer Versuch in %.1f s", exc, delay)
+            time.sleep(delay)
+    return None  # not reached
 
 
 # -- one mail ----------------------------------------------------------------------------------------
@@ -166,10 +240,25 @@ def prepare_mail(conn: sqlite3.Connection, rec: MailRecord, *, cache_dir: Path, 
     doc_date = local_day(rec.date)
     prepared = []
     for att in rec.attachments:
+        if att.unavailable:  # not delivered by the source: a document without content, no cache file
+            prepared.append((att, None, _unavailable_document(att, doc_date)))
+            continue
         target = cache_attachment(cache_dir, att)
         doc = prepare_document(rel_path=att.filename, data=att.data, mtime=None, llm=llm, doc_date=doc_date)
         prepared.append((att, target, doc))
     return PreparedMail(rec, row["id"] if row else None, False, prepared)
+
+
+def _unavailable_document(att: Attachment, doc_date: str | None) -> PreparedDocument:
+    """Placeholder for an attachment the source did not deliver: status ``pending`` while it is loaded
+    again later, else ``error``; the reason is the document's message. Not processed again by the
+    attachment re-extraction (there is nothing in the cache) – the mail source reloads it."""
+    name = Path(att.filename).name
+    return PreparedDocument(rel_path=att.filename, filename=name, ext=Path(name).suffix.lower(), size=att.size or 0,
+                            sha256="", mtime=None, doc_date=doc_date, pages=None, chunks=[],
+                            result=Extracted(status=PENDING if att.state != "gone" else "error",
+                                             message=att.unavailable),
+                            profile=extraction_profile(None))
 
 
 def write_mail(conn: sqlite3.Connection, prepared: PreparedMail) -> tuple[int, str]:
@@ -229,7 +318,8 @@ def _write_attachments(conn: sqlite3.Connection, mail_id: int, attachments, proj
                                 mail_id=mail_id)
         conn.execute("UPDATE documents SET message = COALESCE(message, ?) WHERE id = ? AND status != 'ok'",
                      (f"Anhang von Mail {mail_id}", doc_id))
-        conn.execute("UPDATE documents SET cache_path = ? WHERE id = ?", (str(target), doc_id))
+        # no file for an attachment that is still missing ("" – never NULL, links expect a path)
+        conn.execute("UPDATE documents SET cache_path = ? WHERE id = ?", (str(target) if target else "", doc_id))
     for path, doc_id in old.items():
         if path not in keep:
             conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))

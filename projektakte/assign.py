@@ -9,34 +9,46 @@
    hits vote for their project. The best project is proposed when it has at least
    ``ASSIGN_MIN_SHARE`` of the votes, leads by ``ASSIGN_MIN_LEAD`` *and* the evidence is substantial
    on its own: enough shared specific words (more for senders without any project history) and, if
-   configured, a minimum vector similarity (``ASSIGN_MIN_SIMILARITY``). Newsletters and advertising
-   (List-Unsubscribe/Precedence header, mass-mail sender addresses, advertising phrases from unknown
-   senders) get no content suggestion. A sender who so far only wrote about one project adds two
-   votes. A human confirms or rejects suggestions in the inbox.
-3. Human decisions are stored in ``assign_decisions`` per mail source key and per Message-ID
-   (key ``msgid:<id>``, so they survive a moved or renamed .eml file); they always win.
+   configured, a minimum vector similarity (``ASSIGN_MIN_SIMILARITY``). Shared words are counted and
+   shown cleanly: no fragments ("fachem" of "12-fachem"), no words found in the files of half of all
+   projects ("Gebäude"), only words the files write as a noun or name, no word contained in another
+   shared one, in their base form.
+   Newsletters and advertising get no content suggestion (see :func:`promotion`): one strong signal
+   (mass-mail address such as newsletter@/noreply@, List-Unsubscribe/Precedence header) or two
+   different weak ones (advertising wording, sales/editorial address, shop domain) – never for a
+   sender who wrote about a project before. A sender who so far only wrote about one project adds
+   two votes. A human confirms or rejects suggestions in the inbox.
+3. Human decisions are stored in ``assign_decisions`` per mail source key; they always win. They are
+   also stored per Message-ID (key ``msgid:<id>``): a mail that was removed and comes back under
+   another name gets its decision – but only if no other mail present has that decision itself and
+   the decided mail had the same content (or subject and date). Placeholder ids ("<>") are ignored.
 
 A run has two phases with short write transactions: first everything that is certain (cheap), then
 the content suggestions against an evidence set computed once per run. The expensive part of a
-suggestion only reads, so the inbox never waits long for the database.
+suggestion only reads, so the inbox never waits long for the database. A result is only written if
+the mail is still in the state it was read in (compare-and-set, including its decision): a human
+decision made meanwhile is never overwritten.
 """
 from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import sqlite3
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from .ai import AIServiceError
 from .documents import fts_title
+from .mails.model import valid_message_id
 from .mails.store import bulk_markers
 from .registry import number_regex
 from .search import fts_search, rrf
-from .textutil import QUESTION_WORDS, content_terms, fold, stem, term_in
+from .textutil import QUESTION_WORDS, STOPWORDS, content_terms, de_date, fold, stem, term_in
 from .vectors import VECTOR_INDEX, from_blob
 
 log = logging.getLogger("projektakte.assign")
@@ -47,18 +59,23 @@ PLMAIL_OPEN = "plmail_open"
 SENDER_BONUS_VOTES = 2.0 / 61  # worth two top-ranked hits
 # Version of the rules below. When it changes, every mail is evaluated once more (new reasons,
 # stricter suggestions); human decisions win as always, unchanged results are not written.
-ASSIGN_RULES = "2"
+ASSIGN_RULES = "3"
 COMMIT_EVERY = 50  # mails per write transaction at most …
 COMMIT_SECONDS = 0.5  # … and never longer than this
 VOTE_HITS = 15
 MIN_SHARED_TERMS = 3  # specific words a mail must share with the proposed project's sections
 MIN_SHARED_TERMS_NEW_SENDER = 4  # stricter for senders without any project history
+MIN_SHARED_TERMS_LISTED = 2  # plMail's suggestion list names other projects only with this many
 CLEAR_LEAD = 0.4  # lead of the best project that is described as "deutlich vor"
 SHOW_TERMS = 4
 # Words found in more than this share of all sections have no weight in BM25 (FTS5 clamps their
 # IDF to ~0) but make every query score nearly all sections – they are left out of the vote.
 MAX_TERM_SHARE = 0.5
 MIN_SECTIONS_FOR_STATS = 50  # below this, word statistics say nothing
+# A word in the files of at least this share of the active projects names none of them ("Gebäude",
+# "Aufstellfläche", "Besprechung"): it is neither counted nor shown as a shared word.
+WIDESPREAD_PROJECT_SHARE = 0.5
+MIN_PROJECTS_FOR_SPREAD = 4
 
 # Words of everyday office mail that do not point to a project (not counted as shared evidence).
 GENERIC_WORDS = frozenset(stem(fold(w)) for w in """
@@ -69,17 +86,30 @@ GENERIC_WORDS = frozenset(stem(fold(w)) for w in """
     juli august september oktober november dezember innerhalb passt bitte zusammen allen moglich
     mochte mochten wurde wurden ware hatte gerne leider bereits schon nochmal dazu darum hierzu deshalb
     aktuell aktuelle aktuellen nachste nachsten letzte letzten wahrend
+    besprechung besprechungen treffen telefonat abstimmung ruckmeldung ruckfrage unterlage unterlagen
+    dokument dokumente entwurf plan plane planung projekt projekte vorhaben sicht hinblick gebaude betrieb
 """.split())
-# Sender addresses of mass mailings (local part).
+# Sender addresses of mass mailings (local part) – a strong signal on its own.
 BULK_LOCAL_PARTS = frozenset("""
-    newsletter news noreply no-reply no_reply donotreply do-not-reply marketing mailing werbung angebot
-    angebote aktion aktionen promo promotion mailer-daemon bounce bounces
+    newsletter news noreply no-reply no_reply donotreply do-not-reply marketing mailing mailings werbung
+    promo promotion promotions mailer-daemon bounce bounces
 """.split())
-# Phrases of newsletters and advertising (matched case- and accent-insensitively).
+# Sales and editorial addresses – a weak signal only: offers of contractors about a project come
+# from such addresses too ("angebot@", "angebote@" are not even that).
+SALES_LOCAL_PARTS = frozenset("""
+    vertrieb verkauf sales shop onlineshop redaktion presse press event events seminar seminare akademie
+    kampagne campaign aktion aktionen
+""".split())
+# Wording of newsletters and advertising (matched case- and accent-insensitively) – weak signals: a
+# single one also occurs in project mail ("Sonderpreis für die Kita", "der Newsletter des Verbands"),
+# so two different ones are needed. Everyday words of the trade are deliberately missing: a BMA is
+# "abgemeldet" at the control centre, offers say "Angebot gilt bis …".
 ADVERTISING = ("Rabatt", "Sonderpreis", "Sonderangebot", "Sonderaktion", "Gutschein", "Frühbucher",
-               "jetzt bestellen", "jetzt anmelden", "jetzt sichern", "jetzt kaufen", "melden Sie sich jetzt",
-               "nur diesen Monat", "nur für kurze Zeit", "Angebot gilt", "in dieser Ausgabe", "Newsletter",
-               "abmelden", "abbestellen", "unsubscribe", "Webinar", "gratis", "kostenlos testen")
+               "jetzt bestellen", "jetzt anmelden", "jetzt sichern", "jetzt kaufen", "jetzt entdecken",
+               "melden Sie sich jetzt", "nur diesen Monat", "nur für kurze Zeit", "solange der Vorrat reicht",
+               "in dieser Ausgabe", "Newsletter", "abbestellen", "unsubscribe", "hier abmelden",
+               "im Browser ansehen", "Webinar", "gratis", "kostenlos", "Staffelpreis", "Stückpreis",
+               "versandkostenfrei", "Preisliste", "Fachartikel", "Onlineshop", "Online-Shop", "Produktneuheit")
 _ADVERTISING_FOLDED = tuple((fold(p), p) for p in ADVERTISING)
 # Freemail domains: a known domain there says nothing about the sender.
 FREEMAIL = frozenset("""
@@ -185,32 +215,64 @@ class SenderHistory:
     def projects(self, address: str) -> set[str]:
         return self.by_address.get((address or "").lower(), set())
 
+    def address_known(self, address: str) -> bool:
+        """Did this very address write about a project before?"""
+        return bool(self.projects(address))
+
     def known(self, address: str) -> bool:
         """Did this sender – or a colleague from the same company – write about a project before?"""
         address = (address or "").lower()
         return bool(self.by_address.get(address)) or bool(self.by_domain.get(_domain(address)))
 
 
+def _local_part(address: str) -> str:
+    return (address or "").lower().partition("@")[0]
+
+
 def _bulk_address(address: str) -> bool:
-    local = (address or "").lower().partition("@")[0]
+    """newsletter@, noreply@, marketing@ … – addresses of mass mailings (strong signal)."""
+    local = _local_part(address)
     return local in BULK_LOCAL_PARTS or re.split(r"[.+_-]", local)[0] in BULK_LOCAL_PARTS or \
         local.startswith(("newsletter", "noreply", "no-reply", "donotreply", "do-not-reply"))
 
 
-def promotion(subject: str, body: str, sender: str, *, bulk: str | None, sender_known: bool) -> str | None:
+def _sales_address(address: str) -> bool:
+    """vertrieb@, redaktion@, a shop domain … (weak signal)."""
+    local = _local_part(address)
+    return local in SALES_LOCAL_PARTS or re.split(r"[.+_-]", local)[0] in SALES_LOCAL_PARTS or \
+        "shop" in _domain(address)
+
+
+def promotion(subject: str, body: str, sender: str, *, bulk: str | None, sender_known: bool,
+              address_known: bool = False) -> str | None:
     """Why a mail looks like a newsletter or advertising (German, for the reason), or None.
 
-    A newsletter header or a mass-mail sender address is enough; advertising phrases count from a
-    sender without project history (one phrase) or from anyone (two different phrases)."""
-    if bulk:
-        return f"Kopfzeile „{bulk}“"
+    * Never for a sender who wrote about a project before (``address_known``).
+    * Strong signals, one is enough: a mass-mail sender address (newsletter@, noreply@, marketing@ …)
+      or a newsletter header (List-Unsubscribe, Precedence: bulk/junk) – the header not when
+      colleagues from the same company wrote about projects (``sender_known``: project distribution
+      lists set these headers too).
+    * Weak signals, at least two different ones and only from senders without any project history:
+      advertising wording ("Sonderpreis", "jetzt bestellen", "Staffelpreis", "Fachartikel" …), a
+      sales or editorial address (vertrieb@, redaktion@ …) or a shop domain. Words like "abmelden",
+      "Angebot" or an address angebot@ are no signal at all."""
+    if address_known:
+        return None
     if _bulk_address(sender):
         return f"Absender {sender}"
+    if bulk and not sender_known:
+        return f"Kopfzeile „{bulk}“"
+    if sender_known:
+        return None
     text = fold(f"{subject}\n{body}")
-    found = [shown for folded, shown in _ADVERTISING_FOLDED if folded in text]
-    if found and (not sender_known or len(found) >= 2):
-        return "Wörter wie " + ", ".join(f"„{w}“" for w in found[:2])
-    return None
+    words = [shown for folded, shown in _ADVERTISING_FOLDED if folded in text]
+    sales = _sales_address(sender)
+    if len(words) + sales < 2:
+        return None
+    parts = [f"Absender {sender}"] if sales else []
+    if words:
+        parts.append(("Wort " if len(words) == 1 else "Wörter wie ") + ", ".join(f"„{w}“" for w in words[:2]))
+    return ", ".join(parts)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -237,11 +299,35 @@ class TermFrequency:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        self.projects = conn.execute("SELECT COUNT(*) FROM projects WHERE active = 1").fetchone()[0]
         self._sections: dict[str, int] = {}
+        self._widespread: dict[str, bool] = {}
+
+    @staticmethod
+    def _match(term: str) -> str:
+        return f'"{term}"*' if len(term) >= 4 and not term.isdigit() else f'"{term}"'
+
+    def widespread(self, term: str) -> bool:
+        """Is ``term`` found in the sections of at least WIDESPREAD_PROJECT_SHARE of the active
+        projects ("Gebäude", "Aufstellfläche")? Such a word names no project. Counting stops as soon
+        as enough projects are found, and each word is looked up once per run."""
+        if self.projects < MIN_PROJECTS_FOR_SPREAD:
+            return False
+        if term not in self._widespread:
+            need = max(2, math.ceil(self.projects * WIDESPREAD_PROJECT_SHARE))
+            try:
+                n = self.conn.execute(
+                    "SELECT COUNT(*) FROM (SELECT DISTINCT c.project FROM chunks_fts f JOIN chunks c ON c.id = f.rowid "
+                    "WHERE chunks_fts MATCH ? AND c.project IN (SELECT number FROM projects WHERE active = 1) "
+                    "LIMIT ?)", (self._match(term), need)).fetchone()[0]
+            except sqlite3.OperationalError:
+                n = 0
+            self._widespread[term] = n >= need
+        return self._widespread[term]
 
     def sections(self, term: str) -> int:
         if term not in self._sections:
-            expr = f'"{term}"*' if len(term) >= 4 and not term.isdigit() else f'"{term}"'
+            expr = self._match(term)
             try:
                 n = self.conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE chunks_fts MATCH ?", (expr,)).fetchone()[0]
             except sqlite3.OperationalError:
@@ -264,19 +350,69 @@ def without_terms(text: str, stems: set[str]) -> str:
     return " ".join(tok for tok in _TOKEN.findall(text or "") if stem(fold(tok)) not in stems)
 
 
+def _words_as_written(text: str):
+    """Words of a text as written – without fragments after a number ("12-fachem" yields nothing,
+    not "fachem") and without words that start with a digit."""
+    text = text or ""
+    for m in _TOKEN.finditer(text):
+        tok = m.group(0)
+        if tok[0].isdigit():
+            continue
+        if m.start() >= 2 and text[m.start() - 1] == "-" and text[m.start() - 2].isdigit():
+            continue
+        yield tok
+
+
 def specific_terms(text: str, common: set[str] = frozenset()) -> dict[str, str]:
-    """Words of a mail that can identify a project: stem → word as written (first occurrence).
-    Stop words, everyday office words, words found almost everywhere (``common``), short words and
-    plain numbers are left out."""
-    shown: dict[str, str] = {}
-    for tok in _TOKEN.findall(text or ""):
-        shown.setdefault(stem(fold(tok)), tok)
+    """Words of a mail that can identify a project: stem → shortest spelling in the mail (in order of
+    first appearance). Stop words, everyday office words, words found almost everywhere
+    (``common``), short words, numbers and fragments after numbers are left out."""
     out: dict[str, str] = {}
-    for t in content_terms(text or "", QUESTION_WORDS):
+    for tok in _words_as_written(text):
+        w = fold(tok)
+        if w in STOPWORDS or w in QUESTION_WORDS:
+            continue
+        t = stem(w)
         if len(t) < 4 or t.isdigit() or t in GENERIC_WORDS or t in common:
             continue
-        out[t] = shown.get(t, t)
+        if t not in out or len(tok) < len(out[t]):
+            out[t] = tok
     return out
+
+
+def _spellings(texts) -> dict[str, Counter]:
+    """stem → spellings (as written, with counts) of the words in ``texts``."""
+    forms: dict[str, Counter] = {}
+    for text in texts:
+        for tok in _words_as_written(text):
+            w = fold(tok)
+            if len(w) >= 4 and w not in STOPWORDS:
+                forms.setdefault(stem(w), Counter())[tok] += 1
+    return forms
+
+
+def _base_form(forms: Counter, written: str) -> str:
+    """The spelling to show, from the project files' spellings and the mail's (``written``): the
+    shortest – usually the base form ("Hotelbetrieb", not "Hotelbetriebs"; "Schlafraum", not
+    "Schlafräumen") –, capitalised before lower case, then the most frequent in the files."""
+    return min({*forms, written}, key=lambda f: (len(f), not f[:1].isupper(), -forms.get(f, 0), f))
+
+
+def _named_in(term: str, forms: dict[str, Counter]) -> bool:
+    """Do the project files write ``term`` (or the compound it matches) capitalised at least once –
+    a noun or a name? Words they only write in lower case ("bestellt", "geöffnet") name nothing."""
+    exact = forms.get(term)
+    if exact:
+        return any(f[:1].isupper() for f in exact)
+    return any(f[:1].isupper() for u, c in forms.items()
+               if u.startswith(term) or (len(u) >= 6 and term.startswith(u)) for f in c)
+
+
+def _without_contained(stems: list[str]) -> list[str]:
+    """Drop a word contained at the start or end of another shared word ("Mieter" next to
+    "Mieterausbau", "Halle" next to "Logistikhalle") – the longer one says it already."""
+    return [t for t in stems if not any(u != t and len(u) > len(t) and (u.startswith(t) or u.endswith(t))
+                                        for u in stems)]
 
 
 @dataclass
@@ -296,7 +432,8 @@ def vote_projects(conn: sqlite3.Connection, text: str, qvec, sender_projects: se
 
     ``evidence`` (sections that may vote) and ``freq`` (word statistics) are computed once per run
     by the caller; words found almost everywhere are left out of the full-text query."""
-    common = (freq or TermFrequency(conn)).common(text)
+    freq = freq or TermFrequency(conn)
+    common = freq.common(text)
     fts = fts_search(conn, without_terms(text, common), k=VOTE_HITS, where=EVIDENCE_SQL, args=(exclude_mail_id,),
                      max_terms=40, keep_digits=False)
     vec = []
@@ -328,16 +465,21 @@ def vote_projects(conn: sqlite3.Connection, text: str, qvec, sender_projects: se
         return Evidence()
     ev = Evidence(ranked=[(p, v / total) for p, v in sorted(votes.items(), key=lambda kv: -kv[1])],
                   bonus_for=bonus_for)
-    # shared words: what the mail and each project's full-text hits have in common
+    # shared words: what the mail and each project's full-text hits have in common – no word found in
+    # half of all projects, none contained in another shared word, spelled as in the project files
     text_of = {r[0]: r[2] for r in rows}
-    project_terms: dict[str, set[str]] = {}
+    project_texts: dict[str, list[str]] = {}
     for cid, _ in fts:
         p = project_of.get(cid)
         if p:
-            project_terms.setdefault(p, set()).update(content_terms(text_of.get(cid, "")))
+            project_texts.setdefault(p, []).append(text_of.get(cid, ""))
     mail_terms = specific_terms(text, common)
-    for p, terms in project_terms.items():
-        ev.shared[p] = [shown for t, shown in mail_terms.items() if term_in(t, terms)]
+    for p, texts in project_texts.items():
+        forms = _spellings(texts)  # all words of 4+ letters: enough for term_in with mail words
+        stems = set(forms)
+        shared = [t for t in mail_terms if term_in(t, stems) and _named_in(t, forms) and not freq.widespread(t)]
+        ev.shared[p] = [_base_form(forms[t], mail_terms[t]) if t in forms else mail_terms[t]
+                        for t in _without_contained(shared)]
     for cid, score in vec:
         p = project_of.get(cid)
         if p:
@@ -421,7 +563,8 @@ def suggest(conn: sqlite3.Connection, mail: sqlite3.Row, attachment_names: list[
     """Suggestion for an indexed mail (uses the mail's own vectors). None = no vectors yet."""
     history = history or SenderHistory(conn, only=mail["sender"])
     known = history.known(mail["sender"])
-    promo = promotion(mail["subject"], mail["body"], mail["sender"], bulk=bulk, sender_known=known)
+    promo = promotion(mail["subject"], mail["body"], mail["sender"], bulk=bulk, sender_known=known,
+                      address_known=history.address_known(mail["sender"]))
     if promo:
         return judge(Evidence(), min_share=min_share, min_lead=min_lead, promo=promo)
     q = _mail_vector(conn, mail["id"])
@@ -454,7 +597,8 @@ def suggest_for_text(conn: sqlite3.Connection, ai, vector_key: str, pattern: str
     """Suggestions for a mail that is not (yet) indexed – used by plMail while a human reads a mail.
 
     Project numbers in subject, text or attachment names come first ("sicher"), then the content
-    vote ("hoch" for a clear suggestion, else "niedrig"). Newsletters and advertising get no content
+    vote ("hoch" for a clear suggestion, else "niedrig" – only projects sharing at least
+    ``MIN_SHARED_TERMS_LISTED`` specific words). Newsletters and advertising get no content
     suggestions. Nothing is stored and nothing is assigned: the human decides."""
     known = known_projects(conn)
     names = _names(conn)
@@ -468,7 +612,8 @@ def suggest_for_text(conn: sqlite3.Connection, ai, vector_key: str, pattern: str
                             "reason": f"Projektnummer {n} im {label}."})
     sender = (sender or "").strip().lower()
     history = SenderHistory(conn, only=sender)
-    if promotion(subject, body, sender, bulk=_bulk_from_headers(headers), sender_known=history.known(sender)):
+    if promotion(subject, body, sender, bulk=_bulk_from_headers(headers), sender_known=history.known(sender),
+                 address_known=history.address_known(sender)):
         return out[:limit]
     text = "\n".join([subject, body[:4000], " ".join(attachments)])
     qvec = None
@@ -484,8 +629,10 @@ def suggest_for_text(conn: sqlite3.Connection, ai, vector_key: str, pattern: str
         if len(out) >= limit:
             break
         shared = ev.shared.get(p, [])
-        if p in {o["number"] for o in out} or not shared:
+        if p in {o["number"] for o in out}:
             continue
+        if p != verdict.project and len(shared) < MIN_SHARED_TERMS_LISTED:
+            continue  # one common word ("Besprechung", "Abnahme") is no reason to name a project
         if p == verdict.project:
             confidence, reason = "hoch", "Inhaltlich am ähnlichsten"
         else:
@@ -507,19 +654,42 @@ def _external(m: sqlite3.Row) -> dict | None:
         return None
 
 
+DECISION_MAIL_META = "decision_mail:"  # meta: the mail a Message-ID decision was made for (JSON)
+
+
 def _msgid_key(message_id: str | None) -> str | None:
     message_id = (message_id or "").strip()
-    return f"msgid:{message_id}" if message_id else None
+    return f"msgid:{message_id}" if valid_message_id(message_id) else None
 
 
 def _decision(conn: sqlite3.Connection, m: sqlite3.Row) -> sqlite3.Row | None:
-    """The human decision for a mail: by source key, else by Message-ID (file moved or renamed)."""
-    for key in (m["source_key"], _msgid_key(m["message_id"])):
-        if key:
-            row = conn.execute("SELECT * FROM assign_decisions WHERE source_key = ?", (key,)).fetchone()
-            if row:
-                return row
-    return None
+    """The human decision for a mail: by its source key. Else one made for the same mail under
+    another source key (removed and exported again) – found by Message-ID, but only when no other
+    mail present has that decision itself (the original, a copy, another scan with the same
+    constant id) and the decided mail had the same content or the same subject and date."""
+    row = conn.execute("SELECT * FROM assign_decisions WHERE source_key = ?", (m["source_key"],)).fetchone()
+    if row:
+        return row
+    key = _msgid_key(m["message_id"])
+    if not key:
+        return None
+    row = conn.execute("SELECT * FROM assign_decisions WHERE source_key = ?", (key,)).fetchone()
+    if row is None:
+        return None
+    other = conn.execute("SELECT 1 FROM mails x JOIN assign_decisions d ON d.source_key = x.source_key "
+                         "WHERE x.message_id = ? AND x.id != ? AND x.deleted = 0 LIMIT 1",
+                         (m["message_id"], m["id"])).fetchone()
+    if other:
+        return None  # the decision belongs to that mail
+    meta = conn.execute("SELECT value FROM meta WHERE key = ?", (DECISION_MAIL_META + key,)).fetchone()
+    try:
+        decided = json.loads(meta[0]) if meta else None
+    except (TypeError, ValueError):
+        decided = None
+    if isinstance(decided, dict) and decided.get("sha256") != m["sha256"] and \
+            (decided.get("subject"), decided.get("date")) != (m["subject"], m["date"]):
+        return None  # same id, different mail
+    return row
 
 
 def _rejected(dec: sqlite3.Row | None) -> set[str]:
@@ -541,26 +711,43 @@ class Outcome:
     suggest_done: int = 1
 
 
-def _apply(conn: sqlite3.Connection, m: sqlite3.Row, o: Outcome) -> bool:
-    """Write an outcome; nothing is written when it equals the stored state. True if changed."""
+# The human decision of a mail as one comparable value (part of the compare-and-set in _apply).
+_DECISION_STATE = ("COALESCE((SELECT d.action || '|' || COALESCE(d.project, '') || '|' || d.rejected || '|' || "
+                   "COALESCE(d.decided_by, '') || '|' || COALESCE(d.decided_at, '') FROM assign_decisions d "
+                   "WHERE d.source_key = mails.source_key), '')")
+_MAIL_SQL = f"SELECT *, {_DECISION_STATE} AS decision_state FROM mails WHERE id = ? AND deleted = 0"
+
+
+def _apply(conn: sqlite3.Connection, m: sqlite3.Row, o: Outcome) -> bool | None:
+    """Write an outcome – only if the mail is still in the state ``m`` it was read in (status,
+    reason, project, content, plMail assignment and human decision: compare-and-set). Returns True
+    if written, False if the outcome equals the stored state, None if the mail changed meanwhile
+    (a human decided, it was imported again …) – then nothing is written."""
     score = round(o.score, 4) if o.score is not None else None
     current = (m["project"], m["assign_status"], m["assign_method"], m["assign_reason"], m["suggested_project"],
                m["suggestion_score"], m["suggest_done"])
     if current == (o.project, o.status, o.method, o.reason, o.suggested, score, o.suggest_done):
         return False
+    cur = conn.execute(
+        "UPDATE mails SET assign_status=?, assign_method=?, assign_reason=?, suggested_project=?, "
+        "suggestion_score=?, suggest_done=? WHERE id=? AND deleted = 0 AND assign_status IS ? "
+        "AND assign_method IS ? AND assign_reason IS ? AND project IS ? AND suggested_project IS ? "
+        f"AND suggest_done IS ? AND sha256 IS ? AND external_assignment IS ? AND {_DECISION_STATE} = ?",
+        (o.status, o.method, o.reason, o.suggested, score, o.suggest_done, m["id"], m["assign_status"],
+         m["assign_method"], m["assign_reason"], m["project"], m["suggested_project"], m["suggest_done"],
+         m["sha256"], m["external_assignment"], m["decision_state"]))
+    if cur.rowcount == 0:
+        return None
     if m["project"] != o.project:
         set_mail_project(conn, m["id"], o.project)
-    conn.execute("UPDATE mails SET assign_status=?, assign_method=?, assign_reason=?, suggested_project=?, "
-                 "suggestion_score=?, suggest_done=? WHERE id=?",
-                 (o.status, o.method, o.reason, o.suggested, score, o.suggest_done, m["id"]))
     return True
 
 
 def _plmail_outcome(ext: dict, known: dict[str, str]) -> Outcome:
-    """The assignment a human made in plMail."""
+    """The assignment a human made in plMail (its date as the local day, like everywhere else)."""
     who = ext.get("assignedBy") or "Mensch"
-    when = (ext.get("assignedAt") or "")[:10]
-    suffix = f" am {when[8:10]}.{when[5:7]}.{when[0:4]}" if len(when) == 10 else ""
+    when = de_date(ext.get("assignedAt") or None, default="")
+    suffix = f" am {when}" if when else ""
     if ext.get("status") == "none":
         return Outcome("plmail", "none", "plmail", f"In plMail von {who}{suffix} als ohne Projektbezug markiert.")
     number = known.get(str(ext.get("project") or "").lower())
@@ -674,22 +861,24 @@ def assign_mails(conn: sqlite3.Connection, pattern: str, *, min_share: float, mi
     rx = number_regex(pattern)
     known = known_projects(conn)
     stats = {"assigned": 0, "suggested": 0, "unassigned": 0, "decided": 0, "plmail": 0, PLMAIL_OPEN: 0,
-             "unchanged": 0}
+             "unchanged": 0, "skipped": 0}
     commits = _Commits(conn)
     ids = [r[0] for r in conn.execute(f"SELECT id FROM mails WHERE deleted = 0 AND ({where}) ORDER BY id")]
 
     def count(m: sqlite3.Row, o: Outcome) -> None:
-        if _apply(conn, m, o):
+        written = _apply(conn, m, o)
+        if written:
             stats[o.stat] += 1
             commits.wrote()
         else:
-            stats["unchanged"] += 1
+            # None: changed meanwhile (e.g. a human decided) – nothing written, the next run sees it
+            stats["unchanged" if written is False else "skipped"] += 1
             commits.tick()
 
     # phase 1: certain cases (cheap)
     pending: list[_Pending] = []
     for mail_id in ids:
-        m = conn.execute("SELECT * FROM mails WHERE id = ? AND deleted = 0", (mail_id,)).fetchone()
+        m = conn.execute(_MAIL_SQL, (mail_id,)).fetchone()
         if m is None:
             continue
         result = _certain(conn, m, rx, known, mode)
@@ -707,9 +896,11 @@ def assign_mails(conn: sqlite3.Connection, pattern: str, *, min_share: float, mi
         names = _names(conn)
         freq = TermFrequency(conn)
         for p in pending:
-            m = conn.execute("SELECT * FROM mails WHERE id = ? AND deleted = 0", (p.row["id"],)).fetchone()
-            if m is None or (m["assign_status"], m["assign_reason"]) != (p.row["assign_status"],
-                                                                        p.row["assign_reason"]):
+            m = p.row  # as read in phase 1: the result is only written if the mail is still like this
+            now = conn.execute(_MAIL_SQL, (m["id"],)).fetchone()
+            if now is None or (now["assign_status"], now["assign_reason"], now["decision_state"]) != \
+                    (m["assign_status"], m["assign_reason"], m["decision_state"]):
+                stats["skipped"] += 1
                 continue  # gone, or a human decided meanwhile (the next run sees the decision)
             commits.flush()  # nothing uncommitted while computing
             sug = suggest(conn, m, p.names, vector_key, min_share=min_share, min_lead=min_lead,
@@ -750,7 +941,24 @@ def _store_decision(conn: sqlite3.Connection, key: str, action: str, project: st
 
 def decide(conn: sqlite3.Connection, mail_id: int, action: str, project: str | None = None,
            user: str | None = None, mode: str = "auto") -> dict:
-    """Apply a human decision: confirm | assign | reject | none."""
+    """Apply a human decision: confirm | assign | reject | none.
+
+    Read and write happen in one write transaction (``BEGIN IMMEDIATE``): the decision applies to
+    the state the mail has at that moment, and an assignment run never writes over it (it checks
+    the mail's state before writing)."""
+    own = not conn.in_transaction
+    if own:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        return _decide(conn, mail_id, action, project, user, mode)
+    except BaseException:
+        if own:
+            conn.rollback()
+        raise
+
+
+def _decide(conn: sqlite3.Connection, mail_id: int, action: str, project: str | None, user: str | None,
+            mode: str) -> dict:
     m = conn.execute("SELECT * FROM mails WHERE id = ? AND deleted = 0", (mail_id,)).fetchone()
     if not m:
         raise LookupError("Mail nicht gefunden")
@@ -788,9 +996,13 @@ def decide(conn: sqlite3.Connection, mail_id: int, action: str, project: str | N
         stored = ("none", None)
     else:
         raise DecisionError(f"Unbekannte Aktion: {action}")
-    for key in (m["source_key"], _msgid_key(m["message_id"])):
-        if key:  # by Message-ID too: the decision survives a moved or renamed .eml file
-            _store_decision(conn, key, stored[0], stored[1], rejected, user)
+    _store_decision(conn, m["source_key"], stored[0], stored[1], rejected, user)
+    msgid = _msgid_key(m["message_id"])
+    if msgid:  # by Message-ID too: the mail may come back under another name (see _decision)
+        _store_decision(conn, msgid, stored[0], stored[1], rejected, user)
+        conn.execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                     (DECISION_MAIL_META + msgid, json.dumps({"sha256": m["sha256"], "subject": m["subject"],
+                                                              "date": m["date"]}, ensure_ascii=False)))
     conn.commit()
     row = conn.execute("SELECT id, project, assign_status, assign_reason FROM mails WHERE id = ?",
                        (mail_id,)).fetchone()

@@ -276,28 +276,46 @@ def test_server_side_limit_does_not_end_paging_early(env):
     assert stats["new"] == 7 and stats.get("recovered", 0) == 0 and _keys(s) == sorted(ids)
 
 
-def _make_retries_due(s, account: str) -> None:
+def _make_retries_due(s, account: str, prefix: str = "jmap_retry") -> None:
     with db.session(s.db_path) as conn:
-        key = f"jmap_retry:{account}"
+        key = f"{prefix}:{account}"
         items = json.loads(conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()[0])
         for item in items.values():
             item["next"] = "2000-01-01T00:00:00+00:00"
         conn.execute("UPDATE meta SET value = ? WHERE key = ?", (json.dumps(items), key))
 
 
+def _attachments(s, key):
+    conn = sqlite3.connect(s.db_path)
+    conn.row_factory = sqlite3.Row
+    return [dict(r) for r in conn.execute(
+        "SELECT d.id, d.filename, d.status, d.message, d.cache_path, d.size, (SELECT COUNT(*) FROM chunks c "
+        "WHERE c.doc_id = d.id) AS chunks FROM documents d JOIN mails m ON m.id = d.mail_id "
+        "WHERE m.source_key = ? ORDER BY d.id", (key,))]
+
+
 LONG_NAME = "Prüfbericht_" + "設計図面の確認" * 15 + ".txt"  # 121 characters, > 255 bytes
 
 
-def test_bad_mail_is_isolated_and_retried(env):
-    """BUG-3: an attachment with a file name longer than 255 bytes and a failing download neither
-    stop the run nor the other mails; the failed mail is retried later and then stored."""
+def test_bad_mail_is_isolated_and_retried(env, monkeypatch):
+    """BUG-3: an attachment with a file name longer than 255 bytes and a mail that cannot be stored
+    (cache not writable) neither stop the run nor the other mails; the failed mail is retried later."""
+    from projektakte.mails import store
+
     s, ai, fake = env
     good = fake.add("7", "BS-2024-0137 Rückfrage", "Bitte prüfen.", received="2025-03-01T08:00:00Z")
     long_name = fake.add("7", "Langer Name", "Anhang mit langem Namen.", received="2025-03-02T08:00:00Z",
                          attachments=[(LONG_NAME, "Rettungsweg im Prüfbericht".encode(), "text/plain")])
-    broken = fake.add("7", "Defekter Anhang", "Anhang kommt nicht.", received="2025-03-03T08:00:00Z",
+    broken = fake.add("7", "Defekter Cache", "Anhang lässt sich nicht ablegen.", received="2025-03-03T08:00:00Z",
                       attachments=[("Plan.txt", b"Plan Brandabschnitte", "text/plain")])
-    fake.failing_blobs[fake.blob_ids("7", broken)[0]] = 503
+    real = store.cache_attachment
+
+    def no_space(cache_dir, att):
+        if att.filename == "Plan.txt":
+            raise OSError(28, "No space left on device")
+        return real(cache_dir, att)
+
+    monkeypatch.setattr(store, "cache_attachment", no_space)
     stats = run_index(s, ai)  # the whole run goes through: embeddings and assignment, too
     acc = stats["plmail"]["accounts"]["7"]
     assert stats["plmail"]["error"] is None and acc["errors"] == 1 and acc["new"] == 2
@@ -312,32 +330,88 @@ def test_bad_mail_is_isolated_and_retried(env):
         == LONG_NAME  # the original name stays the download name
 
     # Email/changes reports nothing new – the failed mail is retried from the retry list once due
-    fake.failing_blobs.clear()
+    monkeypatch.setattr(store, "cache_attachment", real)
     _make_retries_due(s, "7")
     acc = run_index(s, ai)["plmail"]["accounts"]["7"]
     assert acc["new"] == 1 and acc["errors"] == 0
-    assert conn.execute("SELECT COUNT(*) FROM documents d JOIN mails m ON m.id = d.mail_id "
-                        "WHERE m.source_key = ?", (f"jmap:7:{broken}",)).fetchone()[0] == 1
+    assert [a["status"] for a in _attachments(s, f"jmap:7:{broken}")] == ["ok"]
     assert conn.execute("SELECT COUNT(*) FROM meta WHERE key = 'jmap_retry:7'").fetchone()[0] == 0
 
 
-def test_retry_waits_for_its_time(env):
+def test_attachment_plmail_does_not_deliver_does_not_hold_the_mail_back(env):
+    """A temporarily failing attachment download: the mail is stored at once (text, search,
+    assignment) and the attachment shows as "Anhang ausstehend"; it is loaded later from its own
+    retry list – same document id, the mail's sections and vectors stay."""
     s, ai, fake = env
-    broken = fake.add("7", "Defekter Anhang", "Anhang kommt nicht.",
-                      attachments=[("Plan.txt", b"Plan", "text/plain")])
-    fake.failing_blobs[fake.blob_ids("7", broken)[0]] = 500
-    assert _sync(s)["accounts"]["7"]["errors"] == 1
+    eid = fake.add("7", "BS-2024-0137 Plan Brandabschnitte", "Anbei der Plan.", received="2025-03-03T08:00:00Z",
+                   attachments=[("Plan.txt", b"Plan Brandabschnitte Rettungsweg", "text/plain")])
+    blob = fake.blob_ids("7", eid)[0]
+    fake.failing_blobs[blob] = 503
+    stats = run_index(s, ai)
+    acc = stats["plmail"]["accounts"]["7"]
+    assert (acc["new"], acc["errors"], acc["attachments_pending"]) == (1, 0, 1)
+    m = jmap_mails(s)[f"jmap:7:{eid}"]
+    assert (m["project"], m["assign_status"]) == ("BS-2024-0137", "assigned")  # assigned right away
+    [att] = _attachments(s, f"jmap:7:{eid}")
+    assert att["status"] == "pending" and att["chunks"] == 0 and att["cache_path"] == ""
+    assert att["message"].startswith("Anhang ausstehend") and "HTTP 503" in att["message"]
+    assert att["size"] == len(b"Plan Brandabschnitte Rettungsweg")
+    conn = sqlite3.connect(s.db_path)
+    body_chunks = conn.execute("SELECT id FROM chunks WHERE mail_id = ? AND doc_id IS NULL", (m["id"],)).fetchall()
+    # visible on the mail page and the document page, the file link answers 404 instead of failing
+    client = TestClient(create_app(s, background=False))
+    assert "Plan.txt" in client.get(f"/mails/{m['id']}").text
+    assert client.get(f"/dokumente/{att['id']}").status_code == 200
+    assert client.get(f"/dokumente/{att['id']}/datei").status_code == 404
+
     fake.downloads.clear()
-    stats = _sync(s)["accounts"]["7"]  # not due yet: no new download attempt
-    assert stats["errors"] == 0 and fake.downloads == []
+    assert run_index(s, ai)["plmail"]["accounts"]["7"]["attachments_pending"] == 1
+    assert fake.downloads == []  # not due yet: no new attempt
+
+    fake.failing_blobs.clear()
+    _make_retries_due(s, "7", "jmap_att_retry")
+    acc = run_index(s, ai)["plmail"]["accounts"]["7"]
+    assert (acc["changed"], acc["errors"], acc["attachments_pending"]) == (1, 0, 0)
+    [loaded] = _attachments(s, f"jmap:7:{eid}")
+    assert (loaded["id"], loaded["status"]) == (att["id"], "ok") and loaded["chunks"] >= 1
+    assert loaded["message"] is None and Path(loaded["cache_path"]).is_file()
+    assert conn.execute("SELECT id FROM chunks WHERE mail_id = ? AND doc_id IS NULL", (m["id"],)).fetchall() == \
+        body_chunks
+    assert jmap_mails(s)[f"jmap:7:{eid}"]["assign_status"] == "assigned"
+    assert conn.execute("SELECT COUNT(*) FROM meta WHERE key = 'jmap_att_retry:7'").fetchone()[0] == 0
+
+
+def test_attachment_is_given_up_after_its_attempts(env, monkeypatch):
+    """After ATTACHMENT_ATTEMPTS the attachment stays as a document with an error message (no
+    endless retries, nothing dropped silently)."""
+    from projektakte.mails import jmap_source
+
+    s, ai, fake = env
+    monkeypatch.setattr(jmap_source, "ATTACHMENT_ATTEMPTS", 2)
+    eid = fake.add("7", "Plan", "Anbei.", attachments=[("Plan.txt", b"Plan", "text/plain")])
+    fake.failing_blobs[fake.blob_ids("7", eid)[0]] = 500
+    _sync(s)
+    for _ in range(2):
+        _make_retries_due(s, "7", "jmap_att_retry")
+        stats = _sync(s)["accounts"]["7"]
+    assert stats["attachments_pending"] == 0 and stats["errors"] == 0
+    [att] = _attachments(s, f"jmap:7:{eid}")
+    assert att["status"] == "error" and "nach 2 Versuchen" in att["message"]
+    fake.downloads.clear()
+    _sync(s)
+    assert fake.downloads == []
 
 
 def test_missing_attachment_in_plmail_does_not_block_the_mail(env):
-    """404 = plMail no longer has the attachment: the mail is stored without it (not retried forever)."""
+    """404 = plMail no longer has the attachment: the mail is stored and the attachment is shown as
+    missing (not retried forever, not dropped silently)."""
     s, ai, fake = env
     eid = fake.add("7", "Anhang weg", "Text", attachments=[("Plan.txt", b"Plan", "text/plain")])
     fake.failing_blobs[fake.blob_ids("7", eid)[0]] = 404
-    assert _sync(s)["accounts"]["7"]["new"] == 1
+    stats = _sync(s)["accounts"]["7"]
+    assert (stats["new"], stats["attachments_pending"]) == (1, 0)
+    [att] = _attachments(s, f"jmap:7:{eid}")
+    assert att["status"] == "error" and "nicht mehr vorhanden (HTTP 404)" in att["message"]
 
 
 def test_no_write_lock_while_downloading(env, monkeypatch):
@@ -366,3 +440,32 @@ def test_no_write_lock_while_downloading(env, monkeypatch):
     monkeypatch.setattr(JMAPClient, "download", download_and_write)
     _sync(s)
     assert results == ["ok"] * 3
+
+
+def test_locked_database_is_waited_for_and_retry_lists_stay_consistent(env, monkeypatch):
+    """A write that finds the database locked is repeated (not counted as a failed mail), and the
+    retry list is written as it is after the successful attempt – not as the rolled-back one."""
+    from projektakte.mails import jmap_source, store
+
+    s, ai, fake = env
+    eid = fake.add("7", "Plan", "Anbei.", attachments=[("Plan.txt", b"Plan", "text/plain")])
+    real_cache = store.cache_attachment
+    monkeypatch.setattr(store, "cache_attachment", lambda *a: (_ for _ in ()).throw(OSError(28, "voll")))
+    assert _sync(s)["accounts"]["7"]["errors"] == 1
+    monkeypatch.setattr(store, "cache_attachment", real_cache)
+    _make_retries_due(s, "7")
+    monkeypatch.setattr(store.time, "sleep", lambda seconds: None)
+    real_done, calls = jmap_source._Retries.done, []
+
+    def done_then_locked(self, email_id):
+        real_done(self, email_id)  # removed in memory and (uncommitted) in the database …
+        if self.key == "jmap_retry:7" and not calls:
+            calls.append(1)
+            raise sqlite3.OperationalError("database is locked")  # … then the commit is refused
+
+    monkeypatch.setattr(jmap_source._Retries, "done", done_then_locked)
+    stats = _sync(s)["accounts"]["7"]
+    assert (stats["new"], stats["errors"], calls) == (1, 0, [1])
+    conn = sqlite3.connect(s.db_path)
+    assert conn.execute("SELECT COUNT(*) FROM meta WHERE key = 'jmap_retry:7'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM mails WHERE source_key = ?", (f"jmap:7:{eid}",)).fetchone()[0] == 1

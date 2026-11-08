@@ -322,3 +322,227 @@ def test_newsletter_header_is_remembered(maildb):
     (mail_dir / "n.eml").unlink()
     sync(conn, mail_dir, cache)
     assert set(bulk_markers(conn)) == {"eml:p.eml"}
+
+
+# --------------------------------------------------------------------------- round 2
+def test_links_in_mail_dir_bring_nothing_from_outside(maildb, tmp_path):
+    """Like SEC-02 for MAIL_DIR: a link to a file outside is skipped (also a broken one); a link to a
+    file inside MAIL_DIR is fine."""
+    conn, mail_dir, cache, _ = maildb
+    write_eml(mail_dir / "a.eml", "Echte Mail", "Text")
+    secret = write_eml(tmp_path / "outside" / "geheim.eml", "Gehaltsliste", "STRENG GEHEIM Zebrafink")
+    (mail_dir / "zz_link.eml").symlink_to(secret)
+    (mail_dir / "kaputt.eml").symlink_to(tmp_path / "gibt-es-nicht.eml")
+    (mail_dir / "archiv").mkdir()
+    (mail_dir / "archiv" / "kopie.eml").symlink_to(mail_dir / "a.eml")
+    stats = sync(conn, mail_dir, cache)
+    assert (stats["new"], stats["errors"]) == (2, 0)
+    assert sorted(r[0] for r in conn.execute("SELECT source_key FROM mails")) == ["eml:a.eml", "eml:archiv/kopie.eml"]
+    assert conn.execute("SELECT COUNT(*) FROM chunks WHERE text LIKE '%Zebrafink%'").fetchone()[0] == 0
+    # a mail that got in through such a link earlier (older version) leaves the index
+    rec = parse_eml(secret.read_bytes(), "eml:zz_link.eml")
+    store.write_mail(conn, store.prepare_mail(conn, rec, cache_dir=cache))
+    conn.commit()
+    assert sync(conn, mail_dir, cache)["removed"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM chunks WHERE text LIKE '%Zebrafink%'").fetchone()[0] == 0
+
+
+def test_file_swapped_for_a_link_is_not_read(maildb, tmp_path):
+    """Between the scan and the read a file is replaced by a link to outside: refused."""
+    conn, mail_dir, cache, _ = maildb
+    write_eml(mail_dir / "a.eml", "Echte Mail", "Text")
+    secret = write_eml(tmp_path / "outside" / "geheim.eml", "Gehaltsliste", "STRENG GEHEIM")
+    files, _ = eml_source._scan(mail_dir, mail_dir.resolve())
+    (mail_dir / "a.eml").unlink()
+    (mail_dir / "a.eml").symlink_to(secret)
+    with pytest.raises(PermissionError):
+        eml_source._read_inside(files[0][1], mail_dir.resolve())
+
+
+def test_newsletter_headers_of_older_imports_are_read_once(maildb):
+    """Mails imported before newsletter headers were kept get their marker from the file (headers
+    only, once per database); a mail waiting in the inbox is evaluated again."""
+    conn, mail_dir, cache, _ = maildb
+    write_eml(mail_dir / "n.eml", "Fachartikel", "Text", headers=[("List-Unsubscribe", "<mailto:x@y.example>")])
+    write_eml(mail_dir / "m.eml", "Normale Mail", "Text")
+    sync(conn, mail_dir, cache)
+    conn.execute("UPDATE mails SET assign_status = 'unassigned', suggest_done = 1")
+    conn.execute("DELETE FROM meta WHERE key LIKE 'mail\\_bulk%' ESCAPE '\\'")  # state of the older version
+    conn.commit()
+    assert sync(conn, mail_dir, cache)["unchanged"] == 2
+    assert bulk_markers(conn) == {"eml:n.eml": "List-Unsubscribe"}
+    assert dict(conn.execute("SELECT source_key, suggest_done FROM mails").fetchall()) == \
+        {"eml:n.eml": 0, "eml:m.eml": 1}
+    conn.execute("DELETE FROM meta WHERE key = 'mail_bulk:eml:n.eml'")
+    conn.commit()
+    sync(conn, mail_dir, cache)  # done once – not read again on every run
+    assert bulk_markers(conn) == {}
+
+
+def test_attachment_dates_of_older_imports_become_the_local_day(maildb):
+    """BUG-11 for existing databases: older versions dated attachments with the UTC day."""
+    conn, mail_dir, cache, _ = maildb
+    write_eml(mail_dir / "nacht.eml", "Nachtmail", "Text", date="Tue, 18 Jun 2024 00:30:00 +0200",
+              attachments=[("Notiz.txt", b"Rettungsweg")])
+    write_eml(mail_dir / "tag.eml", "Tagmail", "Text", date="Tue, 18 Jun 2024 10:30:00 +0200",
+              attachments=[("Bericht_2023-01-05.txt", b"Rettungsweg")])
+    sync(conn, mail_dir, cache)
+    conn.execute("UPDATE documents SET doc_date = '2024-06-17' WHERE filename = 'Notiz.txt'")  # old: UTC day
+    conn.execute("UPDATE documents SET doc_date = '2023-01-05' WHERE filename LIKE 'Bericht%'")
+    conn.execute("DELETE FROM meta WHERE key = 'mail_attachment_dates'")
+    conn.commit()
+    assert store.upgrade_attachment_dates(conn) == 1 and store.upgrade_attachment_dates(conn) == 0
+    assert dict(conn.execute("SELECT filename, doc_date FROM documents").fetchall()) == \
+        {"Notiz.txt": "2024-06-18", "Bericht_2023-01-05.txt": "2023-01-05"}
+
+
+def test_import_waits_for_the_lock_instead_of_failing(maildb):
+    """SQLITE_BUSY_SNAPSHOT: another connection commits between the import's first read and its
+    first write. With BEGIN IMMEDIATE the import holds the lock from the start – the other side
+    waits, the mail is stored (before: 'database is locked' at once, mail counted as error)."""
+    conn, mail_dir, cache, path = maildb
+    write_eml(mail_dir / "a.eml", "Mail a", "Text")
+    real = store._write_row
+    others = []
+
+    def write_from_elsewhere_first(*args, **kwargs):
+        other = sqlite3.connect(path, timeout=0)
+        try:
+            other.execute("INSERT INTO meta(key, value) VALUES('probe', 'x') ON CONFLICT(key) DO UPDATE "
+                          "SET value = excluded.value")
+            other.commit()
+            others.append("written")
+        except sqlite3.OperationalError as exc:
+            others.append(str(exc))
+        finally:
+            other.close()
+        return real(*args, **kwargs)
+
+    store._write_row = write_from_elsewhere_first
+    try:
+        stats = sync(conn, mail_dir, cache)
+    finally:
+        store._write_row = real
+    assert (stats["new"], stats["errors"]) == (1, 0)
+    assert others == ["database is locked"]  # the other connection had to wait (timeout 0 here)
+
+
+def test_import_survives_a_busy_inbox(maildb):
+    """Many short writes of another connection (clicks in the inbox) during a mail import: no mail
+    fails because of the lock."""
+    import threading
+    import time
+
+    conn, mail_dir, cache, path = maildb
+    for i in range(30):
+        write_eml(mail_dir / f"m{i:02d}.eml", f"Mail {i}", f"Text {i}")
+    stop = threading.Event()
+    failures = []
+
+    def inbox():
+        other = sqlite3.connect(path, timeout=5)
+        try:
+            while not stop.is_set():
+                try:
+                    other.execute("INSERT INTO meta(key, value) VALUES('probe', ?) ON CONFLICT(key) DO UPDATE "
+                                  "SET value = excluded.value", (str(time.time()),))
+                    other.commit()
+                except sqlite3.OperationalError as exc:
+                    failures.append(str(exc))
+                time.sleep(0.001)
+        finally:
+            other.close()
+
+    t = threading.Thread(target=inbox)
+    t.start()
+    try:
+        stats = sync(conn, mail_dir, cache)
+    finally:
+        stop.set()
+        t.join()
+    assert (stats["new"], stats["errors"]) == (30, 0) and failures == []
+
+
+def test_retry_locked_repeats_only_lock_errors(maildb, monkeypatch):
+    conn, *_ = maildb
+    monkeypatch.setattr(store.time, "sleep", lambda s: None)
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+    assert store.retry_locked(conn, flaky) == "ok" and len(calls) == 3
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        store.retry_locked(conn, lambda: conn.execute("SELECT * FROM fehlt"))
+    calls.clear()
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        store.retry_locked(conn, lambda: calls.append(1) or (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")))
+    assert len(calls) == store.LOCK_RETRIES
+
+
+def _decided(conn, mail_dir, cache, name, subject, body, msgid, *, date="Tue, 18 Jun 2024 10:30:00 +0200"):
+    write_eml(mail_dir / name, subject, body, msgid=msgid, date=date)
+    sync(conn, mail_dir, cache)
+    assign_mails(conn, PATTERN, min_share=0.5, min_lead=0.2, vector_key="k")
+    mail_id = conn.execute("SELECT id FROM mails WHERE source_key = ?", ("eml:" + name,)).fetchone()[0]
+    decide(conn, mail_id, "assign", "BS-2024-0001", user="anna")
+    return mail_id
+
+
+def _state(conn, name):
+    return tuple(conn.execute("SELECT project, assign_status, assign_reason FROM mails WHERE source_key = ?",
+                              ("eml:" + name,)).fetchone())
+
+
+def test_message_id_decision_is_not_given_to_another_mail(maildb):
+    """A device with a constant Message-ID: a decision for scan 1 is not transferred to scan 2 – not
+    while scan 1 is there, and not after it is gone either (different content, subject and date)."""
+    conn, mail_dir, cache, _ = maildb
+    _decided(conn, mail_dir, cache, "scan1.eml", "Scan", "Begehungsprotokoll Schule", "<0@scanner.local>")
+    write_eml(mail_dir / "scan2.eml", "Scan vom Gerät", "Rechnung Nr. 4711 der Druckerei", msgid="<0@scanner.local>",
+              date="Wed, 19 Jun 2024 09:00:00 +0200")
+    sync(conn, mail_dir, cache)
+    assign_mails(conn, PATTERN, min_share=0.5, min_lead=0.2, vector_key="k")
+    assert _state(conn, "scan2.eml")[:2] == (None, "unassigned")
+    (mail_dir / "scan1.eml").unlink()
+    write_eml(mail_dir / "scan3.eml", "Scan vom Gerät", "Lieferschein Papier", msgid="<0@scanner.local>",
+              date="Thu, 20 Jun 2024 09:00:00 +0200")
+    assert sync(conn, mail_dir, cache)["moved"] == 0  # same id, other subject and date: no move either
+    assign_mails(conn, PATTERN, min_share=0.5, min_lead=0.2, vector_key="k")
+    assert _state(conn, "scan3.eml")[:2] == (None, "unassigned")
+    assert "anna" not in (_state(conn, "scan2.eml")[2] + _state(conn, "scan3.eml")[2])
+
+
+def test_copy_of_a_decided_mail_does_not_inherit_the_decision(maildb):
+    conn, mail_dir, cache, _ = maildb
+    _decided(conn, mail_dir, cache, "a.eml", "Frage zur Halle", "Wie breit wird das Tor?", "<abc@x.example>")
+    (mail_dir / "kopie.eml").write_bytes((mail_dir / "a.eml").read_bytes())
+    sync(conn, mail_dir, cache)
+    assign_mails(conn, PATTERN, min_share=0.5, min_lead=0.2, vector_key="k")
+    assert _state(conn, "a.eml") == ("BS-2024-0001", "confirmed", "Von anna zugeordnet.")
+    assert _state(conn, "kopie.eml")[:2] == (None, "unassigned")
+
+
+def test_placeholder_message_ids_are_ignored(maildb):
+    conn, mail_dir, cache, _ = maildb
+    _decided(conn, mail_dir, cache, "a.eml", "Frage", "Text eins", "<>")
+    assert [r[0] for r in conn.execute("SELECT source_key FROM assign_decisions")] == ["eml:a.eml"]
+    (mail_dir / "a.eml").unlink()
+    write_eml(mail_dir / "b.eml", "Frage", "Text zwei", msgid="<>")
+    assert sync(conn, mail_dir, cache)["moved"] == 0
+
+
+def test_text_attachment_without_charset_keeps_umlauts():
+    """A text/plain attachment without charset parameter (base64 UTF-8) must not lose its umlauts."""
+    import base64
+    raw = ("From: a@x.example\nTo: b@x.example\nSubject: LV\nMIME-Version: 1.0\n"
+           "Content-Type: multipart/mixed; boundary=XX\n\n--XX\nContent-Type: text/plain\n\nHallo\n"
+           "--XX\nContent-Type: text/plain\nContent-Disposition: attachment; filename=LV.txt\n"
+           "Content-Transfer-Encoding: base64\n\n" + base64.b64encode("Stück 24, Leitungsbüro".encode()).decode()
+           + "\n--XX--\n").encode()
+    rec = parse_eml(raw, "eml:lv.eml")
+    from projektakte.extract import decode_text
+    assert decode_text(rec.attachments[0].data) == "Stück 24, Leitungsbüro"

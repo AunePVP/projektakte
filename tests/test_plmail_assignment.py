@@ -196,7 +196,7 @@ def test_integration_suggest(api):
         "from": "kortmann@sonnenhang-senioren.example", "attachments": []}).json()["suggestions"]
     assert by_number[0]["number"] == "BS-2023-0412" and by_number[0]["confidence"] == "sicher"
     by_content = client.post("/api/integration/suggest", headers=H, json={
-        "subject": "Löschwasserteich", "body": "Für unsere Logistikhalle am Nordring 88 ist der Bagger für den "
+        "subject": "Löschwasserteich", "body": "Für die Industriehalle am Nordring 88 ist der Bagger für den "
         "Löschwasserteich bestellt. Muss die Saugstelle vor der Abnahme fertig sein?",
         "from": "holt@nordring-logistik.example"}).json()["suggestions"]
     assert by_content[0]["number"] == "BS-2023-0777" and by_content[0]["confidence"] == "hoch"

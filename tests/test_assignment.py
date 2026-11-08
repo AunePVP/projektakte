@@ -222,13 +222,41 @@ def test_newsletters_and_advertising_get_no_suggestion(tmp_path, fake_ai):
             "für die Kindertagesstätte am Regenbogenweg fragt die Leitung, ob die funkvernetzten "
             "Rauchwarnmelder im Gruppenraum auch im Büro der Leitung Alarm geben.",
             sender=f"{kita['sender_name']} <{kita['sender']}>")
+    # advertising without header or mass-mail address: two weak signals
+    add_eml(s, "shop.eml", "Rauchwarnmelder für Kitas",
+            "Funkvernetzte Rauchwarnmelder nach DIN 14676 für Schlafräume und Gruppenräume in Kitas und "
+            "Kindertagesstätten – Lieferung in 3 Tagen, Staffelpreise ab 50 Stück.",
+            sender="Melder-Shop <vertrieb@melder-shop.example>")
+    add_eml(s, "redaktion.eml", "Fachartikel Tiefgaragen",
+            "Maschinelle Entrauchung von Tiefgaragen mit 12-fachem Luftwechsel, CO-Warnanlagen und Rampen.",
+            sender="Redaktion <redaktion@fach.example>")
+    # real project mail of new senders with everyday words that are no advertising
+    add_eml(s, "abmelden.eml", "Lindenhofweg 4 – Heißarbeiten an der Stahltreppe",
+            "Guten Tag, für die Schweißarbeiten an der Stahltreppe der Grundschule Am Lindenhof (Lindenhofweg 4) "
+            "müssen wir die Brandmeldeanlage im Treppenraum abschalten. Wer kann die BMA bei der Leitstelle "
+            "abmelden? Gitterroststufen werden vor Ort angepasst.", sender="Hinz <hinz@elektro-neu.example>")
+    add_eml(s, "angebot.eml", "Fluchtbalkon Hotel Seeblick Uferpromenade 15",
+            "Anbei unser Angebot zum Fluchtbalkon am Stichflur des Hotel Seeblick, Uferpromenade 15, "
+            "Bauabschnitte wie besprochen mit dem Hotelbetrieb. Das Angebot gilt bis Ende des Monats.",
+            sender="Stahlbau Neu <angebot@stahlbau-neu.example>")
+    # a project distribution list (List-Unsubscribe, Precedence: bulk) of a known correspondent
+    add_eml(s, "verteiler.eml", "Regenbogenweg 3 – Rauchwarnmelder im Gruppenraum",
+            "für die Kindertagesstätte am Regenbogenweg 3 fragt die Leitung, ob die Rauchwarnmelder im "
+            "Schlafraum und im Gruppenraum auch im Büro Alarm geben.",
+            sender=f"{kita['sender_name']} <{kita['sender']}>",
+            headers=[("List-Unsubscribe", "<mailto:liste@beispielstadt.example>"), ("Precedence", "bulk")])
     run_index(s, ai)
     for name, why in (("werbung.eml", "„Sonderpreis“"), ("liste.eml", "List-Unsubscribe"),
-                      ("news.eml", "newsletter@fachblatt.example")):
+                      ("news.eml", "newsletter@fachblatt.example"),
+                      ("shop.eml", "Absender vertrieb@melder-shop.example, Wort „Staffelpreis“"),
+                      ("redaktion.eml", "Absender redaktion@fach.example, Wort „Fachartikel“")):
         r = mail(s, name)
         assert (r["assign_status"], r["suggested_project"]) == ("unassigned", None), r["assign_reason"]
         assert "Newsletter oder Werbung" in r["assign_reason"] and why in r["assign_reason"]
-    assert mail(s, "kita.eml")["suggested_project"] == "BS-2025-0019"
+    for name, project in (("kita.eml", "BS-2025-0019"), ("abmelden.eml", "BS-2024-0137"),
+                          ("angebot.eml", "BS-2024-0233"), ("verteiler.eml", "BS-2025-0019")):
+        r = mail(s, name)
+        assert r["suggested_project"] == project and "Werbung" not in r["assign_reason"], r["assign_reason"]
     # the same for plMail's suggestion API (nothing indexed)
     conn = sqlite3.connect(s.db_path)
     conn.row_factory = sqlite3.Row
@@ -240,6 +268,11 @@ def test_newsletters_and_advertising_get_no_suggestion(tmp_path, fake_ai):
                             body="Maschinelle Entrauchung von Tiefgaragen mit 12-fachem Luftwechsel.",
                             sender="redaktion@fachblatt.example",
                             headers={"List-Unsubscribe": "<mailto:x@fachblatt.example>"}, **common) == []
+    # plMail's list names no project on one common word ("Besprechung", "Abnahme")
+    assert suggest_for_text(conn, ai, subject="Termin", body="Hallo, passt euch Dienstag 10 Uhr für die Besprechung?",
+                            sender=kita["sender"], **common) == []
+    assert suggest_for_text(conn, ai, subject="Abnahme BMA im Juni", body="Wann ist die Abnahme der BMA geplant?",
+                            sender="x@neu-firma.example", **common) == []
 
 
 def mail_by_subject(s, subject):
@@ -249,15 +282,35 @@ def mail_by_subject(s, subject):
 
 
 def test_promotion_rules():
-    assert promotion("x", "y", "a@b.example", bulk="List-Unsubscribe", sender_known=True) == \
+    """A8, precise both ways: one strong signal or two different weak ones – never for a sender who
+    wrote about a project before; everyday words of the trade are no signal at all."""
+    for address in ("newsletter@x.example", "no-reply@x.example", "noreply.de@x.example", "marketing@x.example"):
+        assert promotion("x", "y", address, bulk=None, sender_known=False), address
+    assert promotion("x", "y", "a@b.example", bulk="List-Unsubscribe", sender_known=False) == \
         "Kopfzeile „List-Unsubscribe“"
-    for address in ("newsletter@x.example", "no-reply@x.example", "noreply.de@x.example", "angebot@x.example"):
-        assert promotion("x", "y", address, bulk=None, sender_known=True), address
-    assert promotion("Angebot", "Jetzt 10 % Rabatt", "a@b.example", bulk=None, sender_known=False)
-    # one phrase from a known correspondent is fine, two are not
-    assert promotion("Termin", "Ich muss mich leider abmelden.", "a@b.example", bulk=None, sender_known=True) is None
-    assert promotion("Webinar", "Frühbucherrabatt", "a@b.example", bulk=None, sender_known=True)
-    assert promotion("Prüfbericht", "Anbei der Bericht.", "info@b.example", bulk=None, sender_known=False) is None
+    # project distribution lists set these headers too: no signal when colleagues wrote about projects
+    assert promotion("x", "y", "a@b.example", bulk="List-Unsubscribe", sender_known=True) is None
+    assert promotion("x", "y", "newsletter@b.example", bulk=None, sender_known=True)  # the company's newsletter
+    # a sender with project history is never advertising
+    assert promotion("Newsletter", "Sonderpreis, jetzt bestellen", "newsletter@b.example", bulk="Precedence: bulk",
+                     sender_known=True, address_known=True) is None
+    # weak signals: two different ones, from senders without any history
+    assert promotion("Angebot", "Jetzt 10 % Rabatt", "a@b.example", bulk=None, sender_known=False) is None
+    assert promotion("Sonderpreis", "jetzt bestellen", "a@b.example", bulk=None, sender_known=False) == \
+        "Wörter wie „Sonderpreis“, „jetzt bestellen“"
+    assert promotion("Rauchwarnmelder für Kitas", "Lieferung in 3 Tagen, Staffelpreise ab 50 Stück.",
+                     "vertrieb@melder-shop.example", bulk=None, sender_known=False) == \
+        "Absender vertrieb@melder-shop.example, Wort „Staffelpreis“"
+    assert promotion("Fachartikel Tiefgaragen", "Entrauchung", "redaktion@fach.example", bulk=None,
+                     sender_known=False)
+    assert promotion("Webinar", "Frühbucherrabatt", "a@b.example", bulk=None, sender_known=True) is None
+    for subject, body, sender in (
+            ("Heißarbeiten", "Wer kann die BMA bei der Leitstelle abmelden?", "hinz@elektro-neu.example"),
+            ("Angebot Fluchtbalkon", "Das Angebot gilt bis Ende des Monats.", "vertrieb@stahlbau-neu.example"),
+            ("Honorarangebot", "Anbei unser Honorarangebot für den Brandschutznachweis.", "angebot@ib.example"),
+            ("Wartung", "Für die Kita können wir einen Sonderpreis machen.", "k.otto@elektro-otto.example"),
+            ("Prüfbericht", "Anbei der Bericht.", "info@b.example")):
+        assert promotion(subject, body, sender, bulk=None, sender_known=False) is None, body
 
 
 def test_judge_needs_substantial_evidence():
@@ -388,3 +441,87 @@ def test_words_found_almost_everywhere_do_not_vote(tmp_path):
     assert common == {"brandschutz", "nachwei"}
     assert assign.without_terms("Brandschutz-Nachweis am Regenbogenweg", common) == "am Regenbogenweg"
     assert list(assign.specific_terms("Brandschutz am Regenbogenweg", common).values()) == ["Regenbogenweg"]
+
+
+# --------------------------------------------------------------------------- round 2
+def test_decision_during_a_run_is_never_overwritten(demo, monkeypatch):
+    """Lost update: a human decides in the inbox while the run computes this mail's suggestion (or
+    between reading and writing a certain case) – the run writes nothing over it."""
+    from projektakte import db
+
+    s, _, rows = demo
+    conn = sqlite3.connect(s.db_path)
+    conn.row_factory = sqlite3.Row
+    target = next(r for r in rows.values() if r["assign_status"] == "suggested")
+    waiting = "Keine Projektnummer in der Mail. Ein inhaltlicher Vorschlag folgt, sobald die Ähnlichkeitssuche bereit ist."
+    conn.execute("UPDATE mails SET assign_status='unassigned', suggested_project=NULL, suggest_done=0, "
+                 "assign_reason=? WHERE id=?", (waiting, target["id"]))
+    conn.commit()
+    real = assign.suggest
+
+    def decide_meanwhile(c, m, *args, **kwargs):
+        if m["id"] == target["id"]:
+            with db.session(s.db_path) as inbox:  # the web UI: its own connection
+                assign.decide(inbox, m["id"], "assign", "BS-2022-0901", user="anna")
+        return real(c, m, *args, **kwargs)
+
+    monkeypatch.setattr(assign, "suggest", decide_meanwhile)
+    stats = assign_mails(conn, s.project_number_pattern, min_share=0.5, min_lead=0.2, vector_key=str(s.db_path))
+    assert stats["skipped"] == 1 and stats["suggested"] == 0
+    r = conn.execute("SELECT project, assign_status, assign_reason FROM mails WHERE id = ?", (target["id"],)).fetchone()
+    assert tuple(r) == ("BS-2022-0901", "confirmed", "Von anna zugeordnet.")
+    assert {p for (p,) in conn.execute("SELECT project FROM chunks WHERE mail_id = ?", (target["id"],))} == \
+        {"BS-2022-0901"}
+    monkeypatch.setattr(assign, "suggest", real)
+    assign_mails(conn, s.project_number_pattern, min_share=0.5, min_lead=0.2, vector_key=str(s.db_path))
+    assert conn.execute("SELECT assign_status FROM mails WHERE id = ?", (target["id"],)).fetchone()[0] == "confirmed"
+
+    # compare-and-set itself: a row read before a decision is not written
+    other = next(r for r in rows.values() if r["assign_status"] == "suggested" and r["id"] != target["id"])
+    m = conn.execute(assign._MAIL_SQL, (other["id"],)).fetchone()
+    with db.session(s.db_path) as inbox:
+        assign.decide(inbox, other["id"], "none", user="ben")
+    outcome = assign.Outcome("suggested", "suggested", "similarity", "neu", suggested="BS-2024-0137", score=0.9)
+    assert assign._apply(conn, m, outcome) is None
+    conn.commit()
+    assert tuple(conn.execute("SELECT project, assign_status FROM mails WHERE id = ?", (other["id"],)).fetchone()) \
+        == (None, "none")
+
+
+def test_plmail_reason_uses_the_local_day():
+    ext = {"status": "assigned", "project": "BS-2024-0137", "assignedBy": "anna", "assignedAt": "2025-03-10T23:30:00Z"}
+    assert assign._plmail_outcome(ext, KNOWN).reason == "In plMail von anna am 11.03.2025 zugeordnet."
+    ext = {"status": "none", "assignedBy": "ben", "assignedAt": "kaputt"}
+    assert assign._plmail_outcome(ext, KNOWN).reason == "In plMail von ben als ohne Projektbezug markiert."
+
+
+def test_shared_words_are_clean(tmp_path):
+    """'Gemeinsame Begriffe': no fragments ("fachem"), no words found in half of all projects
+    ("Gebäude"), no words the files only write in lower case ("bestellt"), no word contained in
+    another one ("Mieter" next to "Mieterausbau"), base form from the files ("Hotelbetrieb")."""
+    from projektakte import db
+    from projektakte.documents import add_fts
+
+    path = tmp_path / "x.sqlite3"
+    db.init_db(path)
+    conn = db.connect(path)
+    texts = {
+        "P1": ["Hotel Seeblick an der Uferpromenade: Der Hotelbetrieb läuft weiter, der Umbau erfolgt im "
+               "Mieterausbau, Mieter bleiben. Das Gebäude erhält eine Entrauchung mit 12-fachem Luftwechsel. "
+               "Die Anlage ist bestellt."],
+        "P2": ["Gebäude der Schule, Treppenraum."], "P3": ["Gebäude der Kita, Schlafraum."],
+        "P4": ["Halle am Nordring, Gebäude mit Löschwasserteich."],
+    }
+    for number, chunks in texts.items():
+        conn.execute("INSERT INTO projects(number, name, path) VALUES(?, ?, ?)", (number, number, str(tmp_path)))
+        for i, text in enumerate(chunks):
+            cid = conn.execute("INSERT INTO chunks(doc_id, project, ord, text) VALUES(NULL, ?, ?, ?)",
+                               (number, i, text)).lastrowid
+            add_fts(conn, cid, number.lower(), text)
+    conn.commit()
+    mail = ("Uferpromenade 15: Während des Hotelbetriebs und des Umbaus bleibt das Gebäude offen; Mieter und "
+            "Mieterausbau wie besprochen. Entrauchung mit 12-fachem Luftwechsel ist bestellt.")
+    ev = assign.vote_projects(conn, mail, None, set(), "k")
+    assert ev.ranked[0][0] == "P1"
+    assert ev.shared["P1"] == ["Uferpromenade", "Hotelbetrieb", "Umbau", "Mieterausbau", "Entrauchung", "Luftwechsel"]
+    assert list(assign.specific_terms("Lüftung mit 12-fachem Luftwechsel, 4fach").values()) == ["Lüftung", "Luftwechsel"]

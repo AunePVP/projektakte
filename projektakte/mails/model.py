@@ -23,6 +23,13 @@ class Attachment:
     filename: str
     data: bytes
     mime: str = "application/octet-stream"
+    # not loaded (plMail did not deliver it): German reason shown as the document's message. The
+    # mail is stored anyway; ``data`` is empty then.
+    unavailable: str | None = None
+    # "pending" – loaded again later (temporary error) | "gone" – no further attempt
+    state: str = ""
+    ref: str = ""  # where it comes from (plMail blob id): part of the content hash while unavailable
+    size: int | None = None  # announced size when ``data`` is missing
 
 
 @dataclass
@@ -49,7 +56,10 @@ class MailRecord:
         for part in (self.subject, self.sender, self.recipients, self.date or "", self.body):
             h.update(part.encode("utf-8", "replace") + b"\0")
         for a in self.attachments:
-            h.update(a.filename.encode("utf-8", "replace") + b"\0" + hashlib.sha256(a.data).digest())
+            if a.unavailable:  # arrives later: the hash changes then and the mail is stored again
+                h.update(a.filename.encode("utf-8", "replace") + f"\0{a.state or 'pending'}:{a.ref}".encode())
+            else:
+                h.update(a.filename.encode("utf-8", "replace") + b"\0" + hashlib.sha256(a.data).digest())
         self.content_hash = h.hexdigest()
         return self.content_hash
 
@@ -102,6 +112,14 @@ def bulk_marker(msg) -> str | None:
     return None
 
 
+def valid_message_id(value: str | None) -> bool:
+    """Does this look like a real Message-ID ("<local@domain>")? Devices and programs sometimes send
+    empty ("<>") or constant placeholder ids – those identify nothing."""
+    v = (value or "").strip().strip("<>").strip()
+    local, at, domain = v.rpartition("@")
+    return bool(at and local and domain) and len(v) <= 998 and not any(c.isspace() for c in v)
+
+
 def _addresses(value) -> list[tuple[str, str]]:
     return [(n, a) for n, a in getaddresses([str(value)]) if a] if value else []
 
@@ -133,14 +151,14 @@ def parse_eml(data: bytes, source_key: str, fallback_date: datetime | None = Non
         name = part.get_filename()
         if not name:
             continue
-        try:
-            payload = part.get_content()
-        except (LookupError, UnicodeDecodeError):
+        if part.get_content_maintype() == "message":
+            inner = part.get_payload()
+            inner = inner[0] if isinstance(inner, list) and inner else inner
+            payload = inner.as_bytes() if isinstance(inner, email.message.Message) else b""
+        else:
+            # raw transfer-decoded bytes: get_content() would decode text parts without a charset as
+            # ASCII and destroy umlauts; extract.decode_text() tries UTF-8 first, then cp1252
             payload = part.get_payload(decode=True) or b""
-        if isinstance(payload, str):
-            payload = payload.encode("utf-8")
-        elif isinstance(payload, email.message.Message):
-            payload = payload.as_bytes()
         attachments.append(Attachment(name, payload, part.get_content_type()))
     rec = MailRecord(
         source="eml", source_key=source_key, subject=str(msg.get("Subject", "") or "").strip(),
