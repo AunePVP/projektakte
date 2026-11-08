@@ -94,7 +94,8 @@ def indexed(tmp_path):
 
 def test_demo_documents_indexed_with_fts(indexed):
     conn = sqlite3.connect(indexed.db_path)
-    statuses = dict(conn.execute("SELECT status, COUNT(*) FROM documents GROUP BY status").fetchall())
+    statuses = dict(conn.execute(
+        "SELECT status, COUNT(*) FROM documents WHERE mail_id IS NULL GROUP BY status").fetchall())
     assert statuses["ok"] == 32 and statuses["skipped"] == 1  # the PNG plan without vision
     hits = conn.execute(
         "SELECT d.filename, c.page FROM chunks_fts f JOIN chunks c ON c.id = f.rowid "

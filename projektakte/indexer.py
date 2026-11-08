@@ -12,6 +12,7 @@ from . import db
 from .ai.services import AIServices
 from .config import Settings
 from .documents import index_all_documents
+from .mails.eml_source import sync_eml_folder
 from .registry import scan_projects, sync_projects
 from .vectors import embed_pending
 
@@ -26,7 +27,9 @@ def run_index(settings: Settings, ai: AIServices | None = None) -> dict:
         folders = scan_projects(settings.projects_dir, settings.project_number_pattern)
         stats["projects"] = sync_projects(conn, folders)
         conn.commit()
-        stats["documents"] = index_all_documents(conn, llm=ai.llm if ai else None)
+        llm = ai.llm if ai else None
+        stats["documents"] = index_all_documents(conn, llm=llm)
+        stats["mails"] = sync_eml_folder(conn, settings.mail_dir, cache_dir=settings.cache_dir, llm=llm)
         if ai is not None:
             stats["embeddings"] = embed_pending(conn, ai.embed)
     stats["seconds"] = round(time.time() - started, 2)

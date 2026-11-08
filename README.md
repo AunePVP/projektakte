@@ -74,7 +74,9 @@ python -m projektakte.index      # ein Durchlauf im Vordergrund (Projekte, spät
 
 Unterstützte Formate: TXT, Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften
 und Tabellen), EML. Bilder (PNG/JPG/TIFF) und PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1`
-über das multimodale Modell gelesen, sonst als „übersprungen“ vermerkt. Unveränderte Dateien
+über das multimodale Modell gelesen, sonst als „übersprungen“ vermerkt. Mails werden aus `MAIL_DIR`
+(alle `*.eml`, auch in Unterordnern) gelesen; Anhänge landen als Kopie in `$DATA_DIR/cache` und
+werden wie Dokumente indexiert. Quellordner werden nie verändert. Unveränderte Dateien
 (Größe/Änderungszeit, dann SHA-256) werden nicht erneut gelesen.
 
 ## API (Auszug)
@@ -87,6 +89,8 @@ und Tabellen), EML. Bilder (PNG/JPG/TIFF) und PDF-Seiten ohne Textebene werden n
 | `GET /api/projects/{nummer}` | ein Projekt |
 | `GET /api/projects/{nummer}/documents` | Dokumente eines Projekts mit Status (ok/übersprungen/Fehler) |
 | `GET /api/documents/{id}` | ein Dokument mit seinen Abschnitten (Seite, Überschrift, Text) |
+| `GET /api/mails?project=&status=&q=` | Mails (neueste zuerst), filterbar |
+| `GET /api/mails/{id}` | eine Mail mit Text und Anhängen |
 
 ## Demo-Datensatz
 

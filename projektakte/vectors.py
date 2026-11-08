@@ -77,7 +77,8 @@ def embed_pending(conn: sqlite3.Connection, client: EmbeddingClient, limit: int 
     batch = max(1, client.batch_size)
     for i in range(0, len(rows), batch):
         part = rows[i : i + batch]
-        texts = [embedding_text(r["filename"], r["project_name"], r["heading"], r["text"]) for r in part]
+        texts = [embedding_text(r["filename"] or ("Mail" if r["heading"] else None), r["project_name"],
+                                r["heading"], r["text"]) for r in part]
         try:
             vecs = client.embed(texts)
         except AIServiceError as exc:

@@ -66,6 +66,37 @@ MIGRATIONS: list[str] = [
         DELETE FROM chunks_fts WHERE rowid = old.id;
     END;
     """,
+    # 3 – mails (assignment columns are filled from step 8 on)
+    """
+    CREATE TABLE mails (
+        id                INTEGER PRIMARY KEY,
+        source            TEXT NOT NULL,
+        source_key        TEXT NOT NULL UNIQUE,
+        message_id        TEXT,
+        in_reply_to       TEXT,
+        subject           TEXT NOT NULL DEFAULT '',
+        sender            TEXT NOT NULL DEFAULT '',
+        sender_name       TEXT NOT NULL DEFAULT '',
+        recipients        TEXT NOT NULL DEFAULT '',
+        date              TEXT,
+        body              TEXT NOT NULL DEFAULT '',
+        preview           TEXT NOT NULL DEFAULT '',
+        sha256            TEXT,
+        has_attachments   INTEGER NOT NULL DEFAULT 0,
+        project           TEXT,
+        assign_status     TEXT NOT NULL DEFAULT 'pending',
+        assign_method     TEXT,
+        assign_reason     TEXT,
+        suggested_project TEXT,
+        suggestion_score  REAL,
+        deleted           INTEGER NOT NULL DEFAULT 0,
+        indexed_at        TEXT
+    );
+    CREATE INDEX mails_project ON mails(project);
+    CREATE INDEX mails_status ON mails(assign_status);
+    CREATE INDEX mails_date ON mails(date);
+    ALTER TABLE documents ADD COLUMN cache_path TEXT;
+    """,
 ]
 
 

@@ -24,7 +24,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
   Datei-Hash.
 - [x] **6. Embeddings** – Client für den Embedding-Dienst (Format siehe docs/ki-dienste.md), Vektoren
   je Abschnitt speichern; Stapelverarbeitung; Fake-Dienst für Tests.
-- [ ] **7. Mails einlesen** – Mailquelle „Ordner mit .eml“ (`MAIL_DIR`): Kopf, Text, Anhänge;
+- [x] **7. Mails einlesen** – Mailquelle „Ordner mit .eml“ (`MAIL_DIR`): Kopf, Text, Anhänge;
   Anhänge wie Dokumente verarbeiten; `GET /api/mails`.
 - [ ] **8. Mails zuordnen** – sichere Zuordnung über Projektnummer; sonst Vorschlag über
   Embedding-Ähnlichkeit mit Schwellwert; Zuordnungs-Eingang `GET /api/inbox`,

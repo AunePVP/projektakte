@@ -5,6 +5,16 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 7 – Mails einlesen
+- Mailquelle „Ordner mit .eml“ (`MAIL_DIR`, rekursiv, nur lesend, inkrementell über Größe/Änderungszeit
+  und Inhalts-Hash; verschwundene Dateien werden aus dem Index entfernt).
+- Kopf (Absender, Empfänger, Datum in UTC, Message-ID), Text (HTML wird in Text umgewandelt,
+  Zeichensätze wie ISO-8859-1) und Anhänge.
+- Mailtext und Anhänge werden in Abschnitte zerlegt, volltext- und vektorindexiert; Anhänge als
+  Dokumente mit Kopie im eigenen Cache (`$DATA_DIR/cache/attachments`).
+- `GET /api/mails` (Filter `project`, `status`, `q`, Blättern) und `GET /api/mails/{id}`.
+- Gemeinsames Mail-Modell (`MailRecord`) für alle Quellen (Vorbereitung für plMail/JMAP).
+
 ### Schritt 6 – Embeddings
 - Vektoren je Abschnitt als float32-BLOB in SQLite, berechnet in Stapeln (`EMBED_BATCH`), Commit je Stapel.
 - Abschnitte werden mit Kontext (Datei, Projekt, Überschrift) eingebettet, Suchanfragen mit der

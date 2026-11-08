@@ -99,3 +99,15 @@ Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
   Instruktion für Dokumente; Suchanfragen bekommen die in docs/ki-dienste.md empfohlene Instruktion.
 - Ausfall des Dienstes ist kein Fehler des Laufs: Volltextsuche funktioniert weiter, die Lücke wird
   beim nächsten Lauf geschlossen.
+
+## Schritt 7 – Mails einlesen
+
+- **Ein Mail-Modell für alle Quellen** (`mails/model.py`): Die eml-Quelle und später JMAP liefern
+  `MailRecord`s, gespeichert wird zentral in `mails/store.py`. Schlüssel ist `source_key`
+  (`eml:<relativer Pfad>` bzw. `jmap:<Account>:<Email-Id>`).
+- **Mailtext wird wie ein Dokument behandelt**: Betreff, Absender und Datum stehen im ersten
+  Abschnitt, damit Fragen wie „Was hat die Feuerwehr geschrieben?“ den Absender finden.
+- **Anhänge als Kopie im eigenen Cache** (nach SHA-256 abgelegt), weil die eml-Datei bzw. das
+  Postfach nicht verändert werden darf und die Oberfläche Anhänge zum Öffnen anbieten soll.
+- **Verschwundene eml-Dateien** werden aus dem Index entfernt (die Quelle ist maßgeblich);
+  menschliche Zuordnungsentscheidungen werden ab Schritt 8 getrennt gespeichert und bleiben.
