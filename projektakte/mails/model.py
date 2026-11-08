@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from email import policy
 from email.utils import getaddresses, parsedate_to_datetime
 
-from ..extract import decode_text, html_to_text
+from ..extract import html_to_text, mime_text
 
 try:
     from zoneinfo import ZoneInfo
@@ -140,10 +140,9 @@ def parse_eml(data: bytes, source_key: str, fallback_date: datetime | None = Non
     body_part = msg.get_body(("plain", "html"))
     body = ""
     if body_part is not None:
-        try:
-            body = body_part.get_content()
-        except (LookupError, UnicodeDecodeError):
-            body = decode_text(body_part.get_payload(decode=True) or b"")
+        # without a charset the email package decodes as ASCII and replaces every umlaut; mime_text()
+        # decodes such bytes like the attachments: UTF-8 first, then Windows-1252
+        body = mime_text(body_part)
         if body_part.get_content_type() == "text/html":
             body = html_to_text(body)
     attachments = []

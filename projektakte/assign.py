@@ -13,9 +13,14 @@
    shown cleanly: no fragments ("fachem" of "12-fachem"), no words found in the files of half of all
    projects ("Gebäude"), only words the files write as a noun or name, no word contained in another
    shared one, in their base form.
-   Newsletters and advertising get no content suggestion (see :func:`promotion`): one strong signal
-   (mass-mail address such as newsletter@/noreply@, List-Unsubscribe/Precedence header) or two
-   different weak ones (advertising wording, sales/editorial address, shop domain) – never for a
+   Newsletters and advertising get no content suggestion (see :func:`promotion`). Strong signals –
+   a mass-mail header (List-Unsubscribe, Precedence) or a marketing address (newsletter@,
+   marketing@ …) – decide on their own. Weak signals – advertising wording, a sales, editorial or
+   automatic address (vertrieb@, redaktion@, noreply@ …), a shop domain – count only for a sender
+   without any project history and only when the mail names no project specifically (its name,
+   street address or a contact person found only in its files, see :class:`ProjectReferences`):
+   two different ones make it advertising; with a single one the mail gets no content suggestion
+   either, because generic trade vocabulary is then all that connects it to a project. Never for a
    sender who wrote about a project before. A sender who so far only wrote about one project adds
    two votes. A human confirms or rejects suggestions in the inbox.
 3. Human decisions are stored in ``assign_decisions`` per mail source key; they always win. They are
@@ -59,7 +64,7 @@ PLMAIL_OPEN = "plmail_open"
 SENDER_BONUS_VOTES = 2.0 / 61  # worth two top-ranked hits
 # Version of the rules below. When it changes, every mail is evaluated once more (new reasons,
 # stricter suggestions); human decisions win as always, unchanged results are not written.
-ASSIGN_RULES = "3"
+ASSIGN_RULES = "4"
 COMMIT_EVERY = 50  # mails per write transaction at most …
 COMMIT_SECONDS = 0.5  # … and never longer than this
 VOTE_HITS = 15
@@ -89,10 +94,14 @@ GENERIC_WORDS = frozenset(stem(fold(w)) for w in """
     besprechung besprechungen treffen telefonat abstimmung ruckmeldung ruckfrage unterlage unterlagen
     dokument dokumente entwurf plan plane planung projekt projekte vorhaben sicht hinblick gebaude betrieb
 """.split())
-# Sender addresses of mass mailings (local part) – a strong signal on its own.
+# Marketing addresses (local part) – a strong signal on its own: they exist to send mass mailings.
 BULK_LOCAL_PARTS = frozenset("""
-    newsletter news noreply no-reply no_reply donotreply do-not-reply marketing mailing mailings werbung
-    promo promotion promotions mailer-daemon bounce bounces
+    newsletter newsletters news marketing mailing mailings werbung promo promotion promotions
+""".split())
+# Automatic senders – a weak signal only: building authority portals, tendering platforms and plan
+# servers send project mail from noreply@ too.
+AUTOMATED_LOCAL_PARTS = frozenset("""
+    noreply no-reply no_reply donotreply do-not-reply mailer-daemon bounce bounces
 """.split())
 # Sales and editorial addresses – a weak signal only: offers of contractors about a project come
 # from such addresses too ("angebot@", "angebote@" are not even that).
@@ -100,10 +109,10 @@ SALES_LOCAL_PARTS = frozenset("""
     vertrieb verkauf sales shop onlineshop redaktion presse press event events seminar seminare akademie
     kampagne campaign aktion aktionen
 """.split())
-# Wording of newsletters and advertising (matched case- and accent-insensitively) – weak signals: a
-# single one also occurs in project mail ("Sonderpreis für die Kita", "der Newsletter des Verbands"),
-# so two different ones are needed. Everyday words of the trade are deliberately missing: a BMA is
-# "abgemeldet" at the control centre, offers say "Angebot gilt bis …".
+# Wording of newsletters and advertising (matched case- and accent-insensitively) – weak signals: they
+# occur in project mail too ("Sonderpreis für die Kita", "die Einweisung ist kostenlos", "Stückpreis
+# 89 EUR"), so they never count for a mail that names a project. Everyday words of the trade are
+# deliberately missing: a BMA is "abgemeldet" at the control centre, offers say "Angebot gilt bis …".
 ADVERTISING = ("Rabatt", "Sonderpreis", "Sonderangebot", "Sonderaktion", "Gutschein", "Frühbucher",
                "jetzt bestellen", "jetzt anmelden", "jetzt sichern", "jetzt kaufen", "jetzt entdecken",
                "melden Sie sich jetzt", "nur diesen Monat", "nur für kurze Zeit", "solange der Vorrat reicht",
@@ -118,6 +127,32 @@ FREEMAIL = frozenset("""
     posteo.de mailbox.org arcor.de online.de protonmail.com proton.me
 """.split())
 _TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+# What a project *is* rather than which one ("Kita Regenbogen": "Regenbogen" names it, "Kita" does
+# not): such words of a project name – also as the end of a compound ("Industriehalle") – are no
+# reference to that project.
+BUILDING_TYPES = frozenset(stem(fold(w)) for w in """
+    schule grundschule hauptschule realschule mittelschule gymnasium gesamtschule berufsschule förderschule
+    kita kindergarten kindertagesstätte krippe hort hotel pension gasthof gasthaus hostel pflegeheim altenheim
+    seniorenheim seniorenresidenz seniorenzentrum heim wohnheim krankenhaus klinik klinikum praxis ärztehaus büro
+    bürogebäude verwaltung verwaltungsgebäude rathaus tiefgarage garage parkhaus halle industriehalle lagerhalle
+    logistikhalle produktionshalle sporthalle turnhalle mehrzweckhalle stadthalle werkstatt haus wohnhaus
+    wohnhochhaus hochhaus wohnanlage mehrfamilienhaus wohngebäude reihenhaus kirche gemeindehaus museum theater
+    kino versammlungsstätte einkaufszentrum markt supermarkt verkaufsstätte feuerwache feuerwehrhaus gerätehaus
+    bahnhof neubau umbau anbau erweiterung sanierung nutzungsänderung aufstockung gebäude zentrum center campus
+    quartier objekt bauvorhaben bauabschnitt
+""".split())
+# A street address: "Regenbogenweg 3", "Am Sonnenhang 21", "Berliner Straße 5", "Hafenkante 7".
+_STREET_SUFFIX = ("straße|strasse|str\\.|weg|platz|allee|ring|gasse|ufer|promenade|damm|chaussee|kai|kamp|kante|"
+                  "markt|steig|stieg|pfad|graben|wall|hof|berg|feld|garten|park|anger|hang|höhe|hoehe|aue|brücke|"
+                  "tor|winkel|zeile|bogen|grund|wiese|weide|blick|siedlung|heide")
+_STREET = re.compile(
+    rf"(?<![\w-])(?P<street>[A-ZÄÖÜ][\wäöüß-]*?(?:{_STREET_SUFFIX})"
+    r"|(?:Am|An der|An den|Auf der|Auf dem|Im|In der|Zum|Zur|Unter den)\s+[A-ZÄÖÜ][\wäöüß-]+"
+    r"|[A-ZÄÖÜ][\wäöüß-]+\s+(?:Straße|Strasse|Str\.|Weg|Platz|Allee|Ring|Gasse|Ufer|Damm|Chaussee|Markt))"
+    r"\s+(?P<number>\d{1,4})(?![\d,.:]\d)")
+# A contact person: "Frau Lindqvist", "Herrn Dr. Lanz".
+_PERSON = re.compile(r"(?<![\w-])(?:Frau|Herrn?|Fr\.|Hr\.)\s+(?:(?:Dr|Prof|Dipl\.-Ing|Ing)\.?\s+)*"
+                     r"(?P<name>[A-ZÄÖÜ][a-zäöüß]{2,}(?:-[A-ZÄÖÜ][a-zäöüß]{2,})?)")
 
 
 # ------------------------------------------------------------------------------------------------
@@ -229,50 +264,167 @@ def _local_part(address: str) -> str:
     return (address or "").lower().partition("@")[0]
 
 
-def _bulk_address(address: str) -> bool:
-    """newsletter@, noreply@, marketing@ … – addresses of mass mailings (strong signal)."""
+def _local_in(address: str, parts: frozenset[str], prefixes: tuple[str, ...] = ()) -> bool:
     local = _local_part(address)
-    return local in BULK_LOCAL_PARTS or re.split(r"[.+_-]", local)[0] in BULK_LOCAL_PARTS or \
-        local.startswith(("newsletter", "noreply", "no-reply", "donotreply", "do-not-reply"))
+    return local in parts or re.split(r"[.+_-]", local)[0] in parts or (bool(prefixes) and local.startswith(prefixes))
+
+
+def _bulk_address(address: str) -> bool:
+    """newsletter@, marketing@, werbung@ … – addresses of mass mailings (strong signal)."""
+    return _local_in(address, BULK_LOCAL_PARTS, ("newsletter", "marketing"))
+
+
+def _automated_address(address: str) -> bool:
+    """noreply@, donotreply@, mailer-daemon@ … – automatic senders (weak signal)."""
+    return _local_in(address, AUTOMATED_LOCAL_PARTS, ("noreply", "no-reply", "donotreply", "do-not-reply"))
 
 
 def _sales_address(address: str) -> bool:
     """vertrieb@, redaktion@, a shop domain … (weak signal)."""
-    local = _local_part(address)
-    return local in SALES_LOCAL_PARTS or re.split(r"[.+_-]", local)[0] in SALES_LOCAL_PARTS or \
-        "shop" in _domain(address)
+    return _local_in(address, SALES_LOCAL_PARTS) or "shop" in _domain(address)
 
 
-def promotion(subject: str, body: str, sender: str, *, bulk: str | None, sender_known: bool,
-              address_known: bool = False) -> str | None:
-    """Why a mail looks like a newsletter or advertising (German, for the reason), or None.
-
-    * Never for a sender who wrote about a project before (``address_known``).
-    * Strong signals, one is enough: a mass-mail sender address (newsletter@, noreply@, marketing@ …)
-      or a newsletter header (List-Unsubscribe, Precedence: bulk/junk) – the header not when
-      colleagues from the same company wrote about projects (``sender_known``: project distribution
-      lists set these headers too).
-    * Weak signals, at least two different ones and only from senders without any project history:
-      advertising wording ("Sonderpreis", "jetzt bestellen", "Staffelpreis", "Fachartikel" …), a
-      sales or editorial address (vertrieb@, redaktion@ …) or a shop domain. Words like "abmelden",
-      "Angebot" or an address angebot@ are no signal at all."""
-    if address_known:
-        return None
-    if _bulk_address(sender):
-        return f"Absender {sender}"
-    if bulk and not sender_known:
-        return f"Kopfzeile „{bulk}“"
-    if sender_known:
-        return None
+def weak_signals(subject: str, body: str, sender: str) -> tuple[bool, list[str]]:
+    """Weak signals of advertising: (sales, editorial, automatic address or shop domain – at most one
+    signal however many apply; advertising words as written in ADVERTISING, each a signal)."""
     text = fold(f"{subject}\n{body}")
     words = [shown for folded, shown in _ADVERTISING_FOLDED if folded in text]
-    sales = _sales_address(sender)
-    if len(words) + sales < 2:
-        return None
-    parts = [f"Absender {sender}"] if sales else []
+    return _sales_address(sender) or _automated_address(sender), words
+
+
+def _describe(sender: str, address: bool, words: list[str]) -> str:
+    parts = [f"Absender {sender}"] if address else []
     if words:
         parts.append(("Wort " if len(words) == 1 else "Wörter wie ") + ", ".join(f"„{w}“" for w in words[:2]))
     return ", ".join(parts)
+
+
+@dataclass
+class PromoVerdict:
+    """What the advertising rules say about a mail."""
+    promotion: str | None = None  # newsletter/advertising (German description of the signals)
+    hint: str | None = None  # a single weak signal of a mail that connects to no project: no suggestion
+
+
+def promo_verdict(subject: str, body: str, sender: str, *, bulk: str | None, sender_known: bool,
+                  address_known: bool = False, references: dict | None = None) -> PromoVerdict:
+    """Newsletter/advertising rules, see :func:`promotion`; additionally ``hint`` for a mail of a
+    sender without any project history that names no project and shows one weak signal."""
+    if address_known:
+        return PromoVerdict()
+    if _bulk_address(sender):
+        return PromoVerdict(f"Absender {sender}")
+    if bulk and not sender_known:
+        return PromoVerdict(f"Kopfzeile „{bulk}“")
+    if sender_known or references:
+        return PromoVerdict()
+    address, words = weak_signals(subject, body, sender)
+    count = len(words) + address
+    if count >= 2:
+        return PromoVerdict(_describe(sender, address, words))
+    if count == 1:
+        return PromoVerdict(hint=_describe(sender, address, words))
+    return PromoVerdict()
+
+
+def promotion(subject: str, body: str, sender: str, *, bulk: str | None, sender_known: bool,
+              address_known: bool = False, references: dict | None = None) -> str | None:
+    """Why a mail looks like a newsletter or advertising (German, for the reason), or None.
+
+    * Never for a sender who wrote about a project before (``address_known``).
+    * Strong signals, one is enough: a marketing sender address (newsletter@, marketing@ …) or a
+      newsletter header (List-Unsubscribe, Precedence: bulk/junk) – the header not when colleagues
+      from the same company wrote about projects (``sender_known``: project distribution lists set
+      these headers too).
+    * Weak signals, at least two different ones, only from senders without any project history and
+      only when the mail names no project specifically (``references``, see
+      :class:`ProjectReferences`): advertising wording ("Sonderpreis", "jetzt bestellen",
+      "Staffelpreis", "Fachartikel" …) and a sales, editorial or automatic address (vertrieb@,
+      redaktion@, noreply@ …) or a shop domain. Words like "abmelden", "Angebot" or an address
+      angebot@ are no signal at all."""
+    return promo_verdict(subject, body, sender, bulk=bulk, sender_known=sender_known, address_known=address_known,
+                         references=references).promotion
+
+
+def hint_reason(hint: str) -> str:
+    return ("Kein Vorschlag: Der Absender schrieb bisher zu keinem Projekt, die Mail nennt kein Projekt konkret "
+            f"(Name, Anschrift oder Ansprechpartner) und hat ein Merkmal von Werbung ({hint}).")
+
+
+def _type_word(word: str) -> bool:
+    """Is this (folded) word of a project name a building type or a compound ending in one?"""
+    t = stem(word)
+    return t in BUILDING_TYPES or any(len(b) >= 4 and t.endswith(b) for b in BUILDING_TYPES)
+
+
+class ProjectReferences:
+    """Where a mail names a project specifically – more than shared trade vocabulary:
+
+    * a distinctive word of the project's name ("Regenbogen" of "Kita Regenbogen", "Seeblick"),
+      written as in the name (also with genitive -s; "Marktplätzen" is not "Marktplatz");
+    * a street address ("Regenbogenweg 3", "Am Sonnenhang 21") found in the project's files;
+    * a contact person ("Frau Lindqvist") found in the project's files.
+
+    Only what occurs in the files of at most :attr:`MAX_PROJECTS` active projects counts: a town,
+    the office's own address or a colleague found everywhere names no project. Lookups are cached,
+    one instance serves a whole assignment run."""
+
+    MAX_PROJECTS = 2
+
+    def __init__(self, conn: sqlite3.Connection, names: dict[str, str] | None = None):
+        self.conn = conn
+        names = names if names is not None else _names(conn)
+        self.words: dict[str, set[str]] = {}  # folded name word → projects with it in their name
+        for number, name in names.items():
+            for tok in _TOKEN.findall(name or ""):
+                w = fold(tok)
+                if len(w) < 4 or w.isdigit() or w in STOPWORDS or _type_word(w):
+                    continue
+                self.words.setdefault(w, set()).add(number)
+        self._found: dict[str, frozenset[str]] = {}
+
+    def _projects(self, tokens: list[str], column: str | None = None) -> frozenset[str]:
+        """Active projects whose sections contain these words as a phrase (up to MAX_PROJECTS + 1)."""
+        expr = '"' + " ".join(tokens) + '"'
+        if column:
+            expr = f"{column} : {expr}"
+        if expr not in self._found:
+            try:
+                rows = self.conn.execute(
+                    "SELECT DISTINCT c.project FROM chunks_fts f JOIN chunks c ON c.id = f.rowid WHERE chunks_fts "
+                    "MATCH ? AND c.project IN (SELECT number FROM projects WHERE active = 1) LIMIT ?",
+                    (expr, self.MAX_PROJECTS + 1)).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+            self._found[expr] = frozenset(r[0] for r in rows)
+        return self._found[expr]
+
+    def find(self, text: str) -> dict[str, list[str]]:
+        """project → what the text names of it (as written)."""
+        refs: dict[str, list[str]] = {}
+
+        def add(projects, shown: str) -> None:
+            for p in sorted(projects):
+                if shown not in refs.setdefault(p, []):
+                    refs[p].append(shown)
+
+        written = {}
+        for tok in _TOKEN.findall(text or ""):
+            written.setdefault(fold(tok), tok)
+        for w, owners in self.words.items():
+            shown = written.get(w) or written.get(w + "s")
+            if shown and len(self._projects([w]) | owners) <= self.MAX_PROJECTS:
+                add(owners, shown)
+        for m in _STREET.finditer(text or ""):
+            tokens = _TOKEN.findall(fold(m.group("street"))) + [m.group("number")]
+            found = self._projects(tokens, "body")
+            if 0 < len(found) <= self.MAX_PROJECTS:
+                add(found, f"{m.group('street')} {m.group('number')}")
+        for m in _PERSON.finditer(text or ""):
+            found = self._projects([fold(m.group("name"))], "body")
+            if 0 < len(found) <= self.MAX_PROJECTS:
+                add(found, m.group(0))
+        return refs
 
 
 # ------------------------------------------------------------------------------------------------
@@ -559,21 +711,27 @@ def suggest(conn: sqlite3.Connection, mail: sqlite3.Row, attachment_names: list[
             *, min_share: float, min_lead: float, exclude: set[str], min_similarity: float = 0.0,
             history: SenderHistory | None = None, bulk: str | None = None,
             evidence: frozenset[int] | None = None, names: dict[str, str] | None = None,
-            freq: TermFrequency | None = None) -> Suggestion | None:
+            freq: TermFrequency | None = None, references: ProjectReferences | None = None) -> Suggestion | None:
     """Suggestion for an indexed mail (uses the mail's own vectors). None = no vectors yet."""
     history = history or SenderHistory(conn, only=mail["sender"])
     known = history.known(mail["sender"])
-    promo = promotion(mail["subject"], mail["body"], mail["sender"], bulk=bulk, sender_known=known,
-                      address_known=history.address_known(mail["sender"]))
-    if promo:
-        return judge(Evidence(), min_share=min_share, min_lead=min_lead, promo=promo)
+    if names is None:
+        names = _names(conn)
+    references = references or ProjectReferences(conn, names)
+    verdict = promo_verdict(mail["subject"], mail["body"], mail["sender"], bulk=bulk, sender_known=known,
+                            address_known=history.address_known(mail["sender"]),
+                            references=references.find(assignment_text(mail, attachment_names)))
+    if verdict.promotion:
+        return judge(Evidence(), min_share=min_share, min_lead=min_lead, promo=verdict.promotion)
+    if verdict.hint:
+        return Suggestion(None, 0.0, None, 0.0, hint_reason(verdict.hint))
     q = _mail_vector(conn, mail["id"])
     if q is None:
         return None  # no vectors yet (embedding service down) – try again later
     ev = vote_projects(conn, assignment_text(mail, attachment_names), q, history.projects(mail["sender"]),
                        vector_key, exclude_mail_id=mail["id"], exclude=exclude, evidence=evidence, freq=freq)
     return judge(ev, min_share=min_share, min_lead=min_lead, min_similarity=min_similarity,
-                 new_sender=not known, names=names if names is not None else _names(conn))
+                 new_sender=not known, names=names)
 
 
 def _names(conn: sqlite3.Connection) -> dict[str, str]:
@@ -612,10 +770,14 @@ def suggest_for_text(conn: sqlite3.Connection, ai, vector_key: str, pattern: str
                             "reason": f"Projektnummer {n} im {label}."})
     sender = (sender or "").strip().lower()
     history = SenderHistory(conn, only=sender)
-    if promotion(subject, body, sender, bulk=_bulk_from_headers(headers), sender_known=history.known(sender),
-                 address_known=history.address_known(sender)):
-        return out[:limit]
     text = "\n".join([subject, body[:4000], " ".join(attachments)])
+    refs = ProjectReferences(conn, names).find(text)
+    verdict = promo_verdict(subject, body, sender, bulk=_bulk_from_headers(headers), sender_known=history.known(sender),
+                            address_known=history.address_known(sender), references=refs)
+    if verdict.promotion or verdict.hint:  # advertising, or nothing but trade vocabulary connects it
+        return out[:limit]
+    # a stranger's mail that names no project: only a clear suggestion, no list of vague ones
+    vague_ok = history.known(sender) or bool(refs)
     qvec = None
     if ai is not None:
         try:
@@ -631,7 +793,7 @@ def suggest_for_text(conn: sqlite3.Connection, ai, vector_key: str, pattern: str
         shared = ev.shared.get(p, [])
         if p in {o["number"] for o in out}:
             continue
-        if p != verdict.project and len(shared) < MIN_SHARED_TERMS_LISTED:
+        if p != verdict.project and (len(shared) < MIN_SHARED_TERMS_LISTED or not vague_ok):
             continue  # one common word ("Besprechung", "Abnahme") is no reason to name a project
         if p == verdict.project:
             confidence, reason = "hoch", "Inhaltlich am ähnlichsten"
@@ -895,6 +1057,7 @@ def assign_mails(conn: sqlite3.Connection, pattern: str, *, min_share: float, mi
         bulk = bulk_markers(conn)
         names = _names(conn)
         freq = TermFrequency(conn)
+        references = ProjectReferences(conn, names)
         for p in pending:
             m = p.row  # as read in phase 1: the result is only written if the mail is still like this
             now = conn.execute(_MAIL_SQL, (m["id"],)).fetchone()
@@ -905,7 +1068,8 @@ def assign_mails(conn: sqlite3.Connection, pattern: str, *, min_share: float, mi
             commits.flush()  # nothing uncommitted while computing
             sug = suggest(conn, m, p.names, vector_key, min_share=min_share, min_lead=min_lead,
                           exclude=p.rejected, min_similarity=min_similarity, history=history,
-                          bulk=bulk.get(m["source_key"]), evidence=evidence, names=names, freq=freq)
+                          bulk=bulk.get(m["source_key"]), evidence=evidence, names=names, freq=freq,
+                          references=references)
             if sug is None:
                 o = Outcome("unassigned", "unassigned", p.method,
                             f"{p.reason} Ein inhaltlicher Vorschlag folgt, sobald die Ähnlichkeitssuche für "

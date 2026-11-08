@@ -26,7 +26,7 @@ from pathlib import Path
 
 from . import db
 from .documents import remove_project_documents
-from .mails.store import delete_mail
+from .mails.store import delete_mail, prune_cache_files, sweep_cache
 
 log = logging.getLogger("projektakte.demo_cleanup")
 
@@ -97,19 +97,20 @@ def _demo_mails(mail_root: Path) -> dict[str, str | None]:
     return out
 
 
-def _purge_mails(conn: sqlite3.Connection, mail_root: Path) -> int:
+def _purge_mails(conn: sqlite3.Connection, mail_root: Path) -> tuple[int, list[str]]:
     """Remove .eml mails imported from a demo mail file: same path below the mail folder and same
-    Message-ID (a real mail that merely has the same file name stays)."""
+    Message-ID (a real mail that merely has the same file name stays). Returns the number of mails
+    and the cache files of their attachments (deleted after the commit)."""
     demo = _demo_mails(mail_root)
-    removed = 0
+    removed, files = 0, []
     for row in conn.execute("SELECT id, source_key, message_id FROM mails WHERE source = 'eml'").fetchall():
         rel = Path(row["source_key"].removeprefix("eml:")).as_posix()
         if rel not in demo or demo[rel] != (row["message_id"] or None):
             continue
-        delete_mail(conn, row["id"])  # sections, attachments, newsletter marker – decisions stay
+        files += delete_mail(conn, row["id"])  # sections, attachments, newsletter marker – decisions stay
         conn.execute("DELETE FROM meta WHERE key = ?", ("eml_stamp:" + row["source_key"],))  # eml_source stamp
         removed += 1
-    return removed
+    return removed, files
 
 
 def _purge_projects(conn: sqlite3.Connection, demo_dir: Path) -> tuple[int, int]:
@@ -139,9 +140,10 @@ def purge_demo_data(conn: sqlite3.Connection, settings) -> dict:
     roots = _roots(demo_dir)
     keep_projects = _below(settings.projects_dir, roots)
     keep_mails = _below(settings.mail_dir, roots)
-    stats: dict = {"projects": 0, "documents": 0, "mails": 0}
+    stats: dict = {"projects": 0, "documents": 0, "mails": 0, "cache_files": 0}
+    files: list[str] = []
     if not keep_mails:
-        stats["mails"] = _purge_mails(conn, demo_dir / "mails")
+        stats["mails"], files = _purge_mails(conn, demo_dir / "mails")
     if not keep_projects:
         stats["projects"], stats["documents"] = _purge_projects(conn, demo_dir)
     if keep_projects or keep_mails:  # the marker stays: switching to real folders later cleans up
@@ -151,7 +153,24 @@ def purge_demo_data(conn: sqlite3.Connection, settings) -> dict:
     else:
         conn.execute("DELETE FROM meta WHERE key = ?", (DEMO_META,))
     conn.commit()
-    if stats["projects"] or stats["mails"]:
-        log.warning("Demo-Daten aus dem Index entfernt (DEMO_MODE aus): %d Projekt(e) mit %d Dokument(en), "
-                    "%d Mail(s)", stats["projects"], stats["documents"], stats["mails"])
+    cache_dir = getattr(settings, "cache_dir", None)
+    if cache_dir is not None and not keep_mails:
+        # the attachment files of the removed mails, and files left behind by older versions
+        stats["cache_files"] = (prune_cache_files(conn, cache_dir, files)
+                                + (sweep_cache(conn, cache_dir, every=None) or 0))
+    note = demo_purge_note(stats)
+    if note:
+        log.warning(note)
     return stats
+
+
+def demo_purge_note(stats: dict | None) -> str | None:
+    """German note on a demo purge for log and status page (``last_warnings``), None if nothing was
+    removed."""
+    if not isinstance(stats, dict) or not (stats.get("projects") or stats.get("mails")):
+        return None
+    note = (f"Demo-Daten aus dem Index entfernt (DEMO_MODE=0): {stats.get('projects', 0)} Projekt(e) mit "
+            f"{stats.get('documents', 0)} Dokument(en), {stats.get('mails', 0)} Mail(s)")
+    if stats.get("cache_files"):
+        note += f", {stats['cache_files']} Anhang-Datei(en) im Cache"
+    return note

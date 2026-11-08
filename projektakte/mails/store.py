@@ -79,6 +79,10 @@ def cache_attachment(cache_dir: Path, att: Attachment) -> Path:
     target = Path(cache_dir) / "attachments" / digest[:2] / digest / safe_filename(att.filename)
     try:
         if target.stat().st_size == len(att.data):
+            try:  # in use again: a cache sweep running meanwhile must not take it for an old orphan
+                os.utime(target)
+            except OSError:
+                pass
             return target
     except OSError:
         pass  # not cached yet (or unreadable) – write it
@@ -92,6 +96,93 @@ def cache_attachment(cache_dir: Path, att: Attachment) -> Path:
         Path(tmp).unlink(missing_ok=True)
         raise
     return target
+
+
+CACHE_SWEEP_META = "cache_sweep"  # meta: when unreferenced attachment files were last removed
+CACHE_SWEEP_EVERY = 24 * 3600  # seconds between two sweeps
+CACHE_MIN_AGE = 3600  # an unreferenced file younger than this may belong to an import in progress
+
+
+def _attachments_root(cache_dir: Path) -> Path:
+    return Path(cache_dir) / "attachments"
+
+
+def _remove_file(path: Path, root: Path) -> bool:
+    """Delete a cache file and the folders above it that became empty (up to ``root``)."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        log.warning("Cache-Datei nicht löschbar: %s (%s)", path, exc)
+        return False
+    parent = path.parent
+    while parent != root and parent.is_relative_to(root):
+        try:
+            parent.rmdir()  # only if empty
+        except OSError:
+            break
+        parent = parent.parent
+    return True
+
+
+def prune_cache_files(conn: sqlite3.Connection, cache_dir: Path, paths) -> int:
+    """Delete these attachment cache files unless a document still refers to them (the same
+    attachment may belong to several mails). Call after the commit that deleted the documents.
+    Only files inside CACHE_DIR/attachments are touched. Returns how many were deleted."""
+    root = _attachments_root(cache_dir).resolve()
+    removed = 0
+    for value in dict.fromkeys(p for p in paths if p):
+        path = Path(value)
+        try:
+            if not path.resolve().is_relative_to(root):
+                continue
+        except (OSError, RuntimeError):
+            continue
+        if conn.execute("SELECT 1 FROM documents WHERE cache_path = ? LIMIT 1", (str(value),)).fetchone():
+            continue
+        removed += _remove_file(path, root)
+    return removed
+
+
+def sweep_cache(conn: sqlite3.Connection, cache_dir: Path, *, min_age: float = CACHE_MIN_AGE,
+                every: float | None = CACHE_SWEEP_EVERY, now: float | None = None) -> int | None:
+    """Delete attachment cache files no document refers to any more (mails removed by older
+    versions, attachments replaced in plMail …) – files younger than ``min_age`` are left alone,
+    they may belong to an import in progress. Runs at most every ``every`` seconds (None: now);
+    returns how many files were deleted, or None when it was not due."""
+    now = time.time() if now is None else now
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (CACHE_SWEEP_META,)).fetchone()
+    try:
+        last = float(row[0]) if row else 0.0
+    except (TypeError, ValueError):
+        last = 0.0
+    if every is not None and now - last < every:
+        return None
+    root = _attachments_root(cache_dir)
+    removed = 0
+    if root.is_dir():
+        root = root.resolve()
+        used = {str(Path(r[0]).resolve()) for r in conn.execute(
+            "SELECT DISTINCT cache_path FROM documents WHERE cache_path IS NOT NULL AND cache_path != ''")}
+        for dirpath, _dirs, files in os.walk(root, topdown=False):
+            for name in files:
+                path = Path(dirpath) / name
+                try:
+                    if now - path.lstat().st_mtime < min_age or str(path) in used:
+                        continue
+                except OSError:
+                    continue
+                removed += _remove_file(path, root)
+
+    def remember() -> None:
+        conn.execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET "
+                     "value = excluded.value", (CACHE_SWEEP_META, repr(now)))
+        conn.commit()
+    retry_locked(conn, remember)
+    if removed:
+        log.info("%d nicht mehr verwendete Anhang-Datei(en) aus dem Cache gelöscht", removed)
+    return removed
 
 
 # -- section text ------------------------------------------------------------------------------------
@@ -372,11 +463,17 @@ def rename_mail(conn: sqlite3.Connection, mail_id: int, old_key: str, new_key: s
                  (BULK_META + new_key, BULK_META + old_key, BULK_META + new_key))
 
 
-def delete_mail(conn: sqlite3.Connection, mail_id: int) -> None:
-    """Remove a mail from the index (its source disappeared). Human decisions are kept separately."""
+def delete_mail(conn: sqlite3.Connection, mail_id: int) -> list[str]:
+    """Remove a mail from the index (its source disappeared). Human decisions are kept separately.
+
+    Returns the cache files of its attachments: pass them to :func:`prune_cache_files` after the
+    commit (another mail may still use the same file)."""
     row = conn.execute("SELECT source_key FROM mails WHERE id = ?", (mail_id,)).fetchone()
+    files = [r[0] for r in conn.execute("SELECT cache_path FROM documents WHERE mail_id = ? AND cache_path IS NOT NULL "
+                                        "AND cache_path != ''", (mail_id,))]
     conn.execute("DELETE FROM chunks WHERE mail_id = ?", (mail_id,))
     conn.execute("DELETE FROM documents WHERE mail_id = ?", (mail_id,))
     conn.execute("DELETE FROM mails WHERE id = ?", (mail_id,))
     if row:
         conn.execute("DELETE FROM meta WHERE key = ?", (BULK_META + row[0],))
+    return files

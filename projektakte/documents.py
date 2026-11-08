@@ -405,11 +405,34 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
     return stats
 
 
+EML_TEXT_META = "eml_text_charset"  # meta: .eml documents with replacement characters were marked once
+
+
+def mark_garbled_eml_documents(conn: sqlite3.Connection) -> int:
+    """Once per database: .eml documents (project files and mail attachments) whose text contains
+    replacement characters were extracted by a version that decoded a mail body without charset as
+    ASCII. They are marked incomplete with an unknown profile, so they are extracted again – the
+    file itself is unchanged and would otherwise be skipped. Returns the number of documents."""
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (EML_TEXT_META,)).fetchone()
+    if row and row[0] == "1":
+        return 0
+    n = conn.execute(
+        "UPDATE documents SET incomplete = 1, extract_profile = '' WHERE ext = '.eml' AND id IN "
+        "(SELECT doc_id FROM chunks WHERE doc_id IS NOT NULL AND instr(text, char(65533)) > 0)").rowcount
+    conn.execute("INSERT INTO meta(key, value) VALUES(?, '1') ON CONFLICT(key) DO UPDATE SET value = '1'",
+                 (EML_TEXT_META,))
+    conn.commit()
+    if n:
+        log.info("%d .eml-Dokument(e) mit Ersatzzeichen werden neu gelesen (Mailtext ohne Zeichensatz)", n)
+    return n
+
+
 def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Path | str | None = None) -> dict:
     """Index the files of all active projects (files of unknown projects leave the index first).
     ``projects_dir`` is the boundary for links (default: each project folder itself)."""
     total: dict = {"removed": purge_inactive_documents(conn)}
     conn.commit()
+    mark_garbled_eml_documents(conn)
     projects = [dict(r) for r in conn.execute("SELECT number, name, path FROM projects WHERE active = 1")]
     for p in projects:
         for k, v in index_project_documents(conn, p, llm=llm, projects_dir=projects_dir).items():

@@ -5,8 +5,11 @@
   cannot be read is logged, counted and tried again on the next run – the import goes on. A write
   that finds the database locked is repeated with a back-off (store.retry_locked).
 * A file moved or renamed inside MAIL_DIR keeps its mail (id, sections, vectors, human decision):
-  it is recognised by its content hash, or else by its Message-ID – only a real one, and only when
-  subject or date match as well (some devices send the same id with every mail).
+  all new files are first matched by content hash; only what is left is matched by Message-ID –
+  a real one, together with the same date *and* the same file size, and only when exactly one file
+  and one vanished mail fit each other. Scanners and multifunction devices send the same id and
+  subject ("Gescanntes Dokument") with every mail: a new scan never takes over the place – and the
+  decision – of a deleted or moved one.
 * Links are followed only to files inside MAIL_DIR, and the file itself is opened without following
   links: nothing from outside MAIL_DIR gets into the index.
 * A missing or suddenly empty MAIL_DIR (network drive not mounted yet) and unreadable sub-folders
@@ -19,19 +22,21 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesHeaderParser
 from pathlib import Path
 
-from .model import MailRecord, bulk_marker, parse_eml, valid_message_id
-from .store import (delete_mail, prepare_mail, rename_mail, retry_locked, set_bulk_marker, upgrade_attachment_dates,
-                    upgrade_mail_texts, write_mail)
+from .model import bulk_marker, parse_eml, valid_message_id
+from .store import (delete_mail, prepare_mail, prune_cache_files, rename_mail, retry_locked, set_bulk_marker,
+                    upgrade_attachment_dates, upgrade_mail_texts, write_mail)
 
 log = logging.getLogger("projektakte.mails.eml")
 
 BULK_SCAN_META = "mail_bulk_scan"  # meta: newsletter headers of older imports have been read
 BULK_SCAN = "1"
+CHARSET_META = "mail_body_charset"  # meta: mails whose body lost its umlauts were read again
 HEADER_BYTES = 256 * 1024  # enough for the header of any mail
 _warned: set[tuple[str, str]] = set()
 
@@ -92,31 +97,74 @@ def _scan(mail_dir: Path, boundary: Path | None = None) -> tuple[list[tuple[str,
     return files, errors
 
 
-class _Vanished:
-    """Known mails whose file is gone – candidates for a move/rename within MAIL_DIR."""
+@dataclass
+class _NewFile:
+    """What identifies a new file when it is compared with vanished mails."""
+    key: str
+    content_hash: str
+    message_id: str | None
+    date: str | None
+    size: int
 
-    def __init__(self, rows: dict[str, sqlite3.Row]):
-        self.rows = dict(rows)
-        self._by: dict[tuple[str, str], list[str]] = {}
-        for key, r in self.rows.items():
-            for field in ("sha256", "message_id"):
-                if r[field]:
-                    self._by.setdefault((field, r[field]), []).append(key)
 
-    def _only(self, field: str, value: str | None) -> list[str]:
-        return [k for k in self._by.get((field, value or ""), []) if k in self.rows]
+def _stamp_size(stamp: str | None) -> int | None:
+    """File size from a stored stamp ("size:mtime"), None if unknown."""
+    try:
+        return int(str(stamp).split(":", 1)[0])
+    except (TypeError, ValueError):
+        return None
 
-    def match(self, rec: MailRecord) -> sqlite3.Row | None:
-        """The one vanished mail with the same content, else the one with the same (real) Message-ID
-        and the same subject or date – a constant id of a scanner says nothing on its own."""
-        same = self._only("sha256", rec.content_hash)
-        if not same and valid_message_id(rec.message_id):
-            same = [k for k in self._only("message_id", rec.message_id)
-                    if self.rows[k]["subject"] == rec.subject or (rec.date and self.rows[k]["date"] == rec.date)]
-        return self.rows[same[0]] if len(same) == 1 else None
 
-    def take(self, key: str) -> None:
-        self.rows.pop(key, None)
+def _plan_moves(new_files: list[tuple[str, Path]], vanished: dict[str, sqlite3.Row],
+                boundary: Path) -> dict[str, sqlite3.Row]:
+    """Which new files are known mails that were moved or renamed: new source key → vanished row.
+
+    1. Same content (hash) – checked for all new files first, so a moved mail is never taken by a
+       new mail that happens to be processed before it.
+    2. For what is left: the same real Message-ID, the same date and the same file size (the content
+       hash of an unchanged file can differ when an older version stored it) – and only when exactly
+       one new file and one vanished mail fit each other. Subject or Message-ID alone never decide:
+       devices send constant ones."""
+    if not new_files or not vanished:
+        return {}
+    files: list[_NewFile] = []
+    for key, path in new_files:
+        try:
+            st = path.stat()
+            rec = parse_eml(_read_inside(path, boundary), key,
+                            fallback_date=datetime.fromtimestamp(st.st_mtime, timezone.utc))
+        except Exception as exc:  # noqa: BLE001 – reported by the import itself
+            log.debug("Mail für die Verschiebe-Erkennung nicht lesbar: %s (%s)", path, exc)
+            continue
+        files.append(_NewFile(key, rec.content_hash, rec.message_id, rec.date, st.st_size))
+    left = dict(vanished)
+    moves: dict[str, sqlite3.Row] = {}
+    by_hash: dict[str, list[str]] = {}
+    for key, row in left.items():
+        if row["sha256"]:
+            by_hash.setdefault(row["sha256"], []).append(key)
+    for f in files:
+        keys = by_hash.get(f.content_hash)
+        if keys:  # identical content: any pairing of copies is the same mail
+            moves[f.key] = left.pop(keys.pop(0))
+
+    def fits(f: _NewFile, row: sqlite3.Row) -> bool:
+        return (row["message_id"] == f.message_id and bool(f.date) and row["date"] == f.date
+                and _stamp_size(row["stamp"]) == f.size)
+
+    rest = [f for f in files if f.key not in moves and valid_message_id(f.message_id)]
+    by_id: dict[str, list[str]] = {}
+    for key, row in left.items():
+        if valid_message_id(row["message_id"]):
+            by_id.setdefault(row["message_id"], []).append(key)
+    for f in rest:
+        rows = [k for k in by_id.get(f.message_id or "", []) if k in left and fits(f, left[k])]
+        if len(rows) != 1:
+            continue
+        rivals = [o for o in rest if o.key not in moves and fits(o, left[rows[0]])]
+        if len(rivals) == 1:
+            moves[f.key] = left.pop(rows[0])
+    return moves
 
 
 def _set_stamp(conn: sqlite3.Connection, key: str, stamp: str) -> None:
@@ -156,6 +204,23 @@ def _backfill_bulk_markers(conn: sqlite3.Connection, files: list[tuple[str, Path
     return len(found)
 
 
+def _reread_garbled_bodies(conn: sqlite3.Connection) -> int:
+    """Once per database: mails whose body contains replacement characters were imported by a
+    version that decoded a body without charset as ASCII. Their stamp is dropped, so the unchanged
+    file is read again (decisions stay, they are stored separately)."""
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (CHARSET_META,)).fetchone()
+    if row and row[0] == "1":
+        return 0
+    n = conn.execute("DELETE FROM meta WHERE key IN (SELECT 'eml_stamp:' || source_key FROM mails WHERE source = "
+                     "'eml' AND instr(body, char(65533)) > 0)").rowcount
+    conn.execute("INSERT INTO meta(key, value) VALUES(?, '1') ON CONFLICT(key) DO UPDATE SET value = '1'",
+                 (CHARSET_META,))
+    conn.commit()
+    if n:
+        log.info("%d Mail(s) mit Ersatzzeichen im Text werden neu gelesen (Mailtext ohne Zeichensatz)", n)
+    return n
+
+
 def sync_eml_folder(conn: sqlite3.Connection, mail_dir: Path, *, cache_dir: Path, llm=None,
                     allow_empty: bool = False) -> dict:
     """Import new/changed .eml files, follow moved files, remove mails whose file is gone.
@@ -165,6 +230,7 @@ def sync_eml_folder(conn: sqlite3.Connection, mail_dir: Path, *, cache_dir: Path
     stats = {"new": 0, "changed": 0, "unchanged": 0, "moved": 0, "removed": 0, "errors": 0}
     retry_locked(conn, lambda: upgrade_mail_texts(conn))
     retry_locked(conn, lambda: upgrade_attachment_dates(conn))
+    retry_locked(conn, lambda: _reread_garbled_bodies(conn))
     mail_dir = Path(mail_dir)
     known = {r["source_key"]: r for r in conn.execute(
         "SELECT m.id, m.source_key, m.sha256, m.message_id, m.subject, m.date, s.value AS stamp FROM mails m "
@@ -184,7 +250,10 @@ def sync_eml_folder(conn: sqlite3.Connection, mail_dir: Path, *, cache_dir: Path
         log.warning(msg)
         return {**stats, "warning": msg}
     seen = {key for key, _ in files}
-    vanished = _Vanished({k: r for k, r in known.items() if k not in seen})
+    vanished = {k: r for k, r in known.items() if k not in seen}
+    moves = _plan_moves([(k, p) for k, p in files if k not in known], vanished, boundary)
+    for row in moves.values():
+        vanished.pop(row["source_key"], None)
     untouched: list[tuple[str, Path]] = []  # known and unchanged: candidates for the header backfill
     for key, path in files:
         try:
@@ -204,14 +273,13 @@ def sync_eml_folder(conn: sqlite3.Connection, mail_dir: Path, *, cache_dir: Path
             rec = parse_eml(_read_inside(path, boundary), key,
                             fallback_date=datetime.fromtimestamp(st.st_mtime, timezone.utc))
             if row is None:
-                moved = vanished.match(rec)
+                moved = moves.get(key)
                 if moved is not None:  # same mail, new place: keep it (short transaction of its own)
                     def move(old=moved) -> None:
                         rename_mail(conn, old["id"], old["source_key"], key)
                         conn.execute("DELETE FROM meta WHERE key = ?", (f"eml_stamp:{old['source_key']}",))
                         conn.commit()
                     retry_locked(conn, move)
-                    vanished.take(moved["source_key"])
             prepared = prepare_mail(conn, rec, cache_dir=cache_dir, llm=llm)  # slow part, no write lock
 
             def write() -> str:
@@ -236,14 +304,18 @@ def sync_eml_folder(conn: sqlite3.Connection, mail_dir: Path, *, cache_dir: Path
                "gelöscht.")
         log.warning(msg)
         stats["warning"] = msg
-    elif vanished.rows:
+    elif vanished:
+        files: list[str] = []
+
         def remove() -> int:
-            for key, row in vanished.rows.items():
-                delete_mail(conn, row["id"])
+            files.clear()
+            for key, row in vanished.items():
+                files.extend(delete_mail(conn, row["id"]))
                 conn.execute("DELETE FROM meta WHERE key = ?", (f"eml_stamp:{key}",))
             conn.commit()
-            return len(vanished.rows)
+            return len(vanished)
         stats["removed"] = retry_locked(conn, remove)
+        prune_cache_files(conn, cache_dir, files)  # attachment files no other mail uses
     conn.commit()
     _backfill_bulk_markers(conn, untouched, boundary)
     return stats

@@ -56,8 +56,11 @@ def counts(s):
 
 def test_switch_to_real_data_with_missing_mail_dir_removes_demo_content(demo_index, tmp_path):
     s = real_settings(tmp_path)  # MAIL_DIR does not exist (yet)
+    cached = [f for f in (s.cache_dir / "attachments").rglob("*") if f.is_file()]
+    assert cached  # the demo mails' attachments
     stats = run_index(s)
-    assert stats["demo_purge"] == {"projects": 8, "documents": 33, "mails": 76}
+    assert stats["demo_purge"] == {"projects": 8, "documents": 33, "mails": 76, "cache_files": len(cached)}
+    assert not [f for f in (s.cache_dir / "attachments").rglob("*") if f.is_file()]  # no orphaned files
     c = counts(s)
     assert c == {"projects": 1, "mails": 0, "demo_documents": 0, "decisions": 1, "marker": False}
     with db.session(s.db_path) as conn:

@@ -6,6 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
     PORT=8000 DATA_DIR=/data APP_ENV=production
 
 WORKDIR /app
+# jbig2dec: pypdf needs it to decode JBIG2 scans ("kompaktes PDF" of office copiers, optimised scans);
+# without it such pages stay unread and are retried endlessly
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends jbig2dec \
+ && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt constraints.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
 

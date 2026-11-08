@@ -283,9 +283,13 @@ def mail_by_subject(s, subject):
 
 def test_promotion_rules():
     """A8, precise both ways: one strong signal or two different weak ones – never for a sender who
-    wrote about a project before; everyday words of the trade are no signal at all."""
-    for address in ("newsletter@x.example", "no-reply@x.example", "noreply.de@x.example", "marketing@x.example"):
+    wrote about a project before; everyday words of the trade are no signal at all. noreply@ is an
+    automatic sender (building authority portals): only a weak signal (round 3)."""
+    for address in ("newsletter@x.example", "newsletter.de@x.example", "marketing@x.example", "news@x.example"):
         assert promotion("x", "y", address, bulk=None, sender_known=False), address
+    for address in ("no-reply@x.example", "noreply.de@x.example", "donotreply@x.example"):
+        assert promotion("x", "y", address, bulk=None, sender_known=False) is None, address
+        assert promotion("x", "Jetzt 10 % Rabatt", address, bulk=None, sender_known=False), address
     assert promotion("x", "y", "a@b.example", bulk="List-Unsubscribe", sender_known=False) == \
         "Kopfzeile „List-Unsubscribe“"
     # project distribution lists set these headers too: no signal when colleagues wrote about projects

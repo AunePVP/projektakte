@@ -17,6 +17,7 @@ from .demo_cleanup import demo_left_over, purge_demo_data, remember_demo
 from .documents import index_all_documents, reprocess_attachments
 from .mails.eml_source import sync_eml_folder
 from .mails.jmap_source import JMAPClient, sync_plmail
+from .mails.store import sweep_cache
 from .registry import sync_from_folder
 from .vectors import embed_pending
 
@@ -82,6 +83,9 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
             stats["plmail"] = sync_plmail(conn, plmail_client(settings), cache_dir=settings.cache_dir, llm=llm)
         # incomplete attachments (scan without vision, model down) of unchanged mails
         stats["attachments"] = reprocess_attachments(conn, llm=llm)
+        # attachment files no document uses any more (once a day; no import runs meanwhile)
+        if (swept := sweep_cache(conn, settings.cache_dir)) is not None:
+            stats["cache_sweep"] = {"removed": swept}
         if ai is not None:
             phase("Embeddings")
             stats["embeddings"] = embed_pending(conn, ai.embed)

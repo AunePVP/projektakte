@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from . import demo
 from .ai.services import AIServices
 from .config import Settings
+from .demo_cleanup import demo_purge_note
 from .indexer import run_index
 
 log = logging.getLogger("projektakte.background")
@@ -20,8 +21,12 @@ def _now() -> str:
 
 
 def run_warnings(stats: dict | None) -> list[str]:
-    """Warnings of an indexing pass (German, e.g. PROJECTS_DIR not mounted) for the status page."""
-    return [str(v["warning"]) for v in (stats or {}).values() if isinstance(v, dict) and v.get("warning")]
+    """Warnings and notes of an indexing pass (German, e.g. PROJECTS_DIR not mounted, demo data
+    removed) for the status page."""
+    stats = stats or {}
+    out = [str(v["warning"]) for v in stats.values() if isinstance(v, dict) and v.get("warning")]
+    note = demo_purge_note(stats.get("demo_purge"))
+    return [note, *out] if note else out
 
 
 class BackgroundIndexer:
@@ -72,8 +77,10 @@ class BackgroundIndexer:
         try:
             stats = run_index(self.settings, self.ai, progress=lambda phase: self._set(phase=phase))
             warnings = run_warnings(stats)
+            purged = demo_purge_note(stats.get("demo_purge"))
             for w in warnings:
-                log.warning("Indexierung: %s", w)
+                if w != purged:  # the demo purge logged its note already
+                    log.warning("Indexierung: %s", w)
             self._set(last_stats=stats, last_error=None, last_warnings=warnings, last_success=_now())
             return stats
         except Exception as exc:  # noqa: BLE001 – the worker must survive any single failure

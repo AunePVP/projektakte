@@ -26,9 +26,12 @@ VISION_PROMPT = (
 # Bump when the extraction itself changes in a way that could read more of incomplete documents.
 # 2: images inside PDFs are decoded robustly (Pillow); pages whose images could not be decoded are
 #    retried instead of being recorded as "no text" – documents stored by version 1 are read again.
-EXTRACT_VERSION = 2
-# Images of one PDF page that are sent to the model (scanners write one image per page; more are
-# usually logos or decoration).
+# 3: pages with more images than MAX_IMAGES_PER_PAGE (strip scans) are put together into one page
+#    image; pages read only partly are marked incomplete – documents of version 2 are read again.
+EXTRACT_VERSION = 3
+# Images of one PDF page that are sent to the model one by one (scanners write one image per page).
+# A page with more images – scanners and PDF tools that cut a page into strips or tiles – is put
+# together into one image at the images' positions on the page and sent as that.
 MAX_IMAGES_PER_PAGE = 3
 # Larger page images are scaled down before they are sent (an A0 plan scanned at 300 dpi has about
 # 140 megapixels; multimodal models work with far fewer and requests must stay reasonably small).
@@ -107,6 +110,27 @@ def decode_text(data: bytes) -> str:
     return data.decode("utf-8", "replace")
 
 
+# Declared charsets that say nothing: many mail programs write "us-ascii" for 8-bit text.
+_NO_CHARSET = {None, "", "us-ascii", "ascii", "ansi_x3.4-1968", "unknown-8bit", "x-unknown"}
+
+
+def mime_text(part) -> str:
+    """Text of a MIME text part (mail body). Without a charset parameter – or with one that cannot
+    be right ("us-ascii" for 8-bit text) – the transfer-decoded bytes are decoded like a text file
+    (UTF-8 first, then Windows-1252): the email package would decode them as ASCII and replace every
+    umlaut. A declared charset is used as it is; an unknown or wrong one falls back the same way."""
+    charset = (part.get_content_charset() or "").strip().lower() or None
+    raw = part.get_payload(decode=True) or b""
+    if isinstance(raw, str):  # defensive: some broken parts hand out str
+        raw = raw.encode("utf-8", "surrogateescape")
+    if charset in _NO_CHARSET and (charset is None or any(b > 0x7F for b in raw)):
+        return decode_text(raw)
+    try:
+        return part.get_content()
+    except (LookupError, UnicodeDecodeError):
+        return decode_text(raw)
+
+
 class _HTMLText(HTMLParser):
     BLOCK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "table", "section"}
 
@@ -170,8 +194,11 @@ def _pdf(data: bytes, llm, name: str) -> Extracted:
     method = "vision" if scan.pages else "text"
     unread = scan.unread
     if pages:
-        message = f"{unread} Seite(n) ohne Textebene nicht gelesen ({scan.reason()})" if unread else None
-        return Extracted(pages, method=method, message=message, incomplete=unread > 0, retry=scan.retry)
+        notes = [f"{unread} Seite(n) ohne Textebene nicht gelesen ({scan.reason()})"] if unread else []
+        if scan.partial:
+            notes.append(scan.partial_note())
+        return Extracted(pages, method=method, message="; ".join(notes) or None,
+                         incomplete=bool(unread or scan.partial), retry=scan.retry)
     if not unread:  # only blank pages – nothing a model could read
         return Extracted([], status="empty", message="kein Text gefunden")
     return Extracted([], status="error" if scan.retry else "skipped",
@@ -186,6 +213,12 @@ class _ScanResult:
     undecodable: int = 0  # page images could not be decoded (Pillow/jbig2dec missing, broken image)
     model_failed: int = 0  # the model call failed (timeout, server down)
     decode_error: str = ""  # first decoding problem, for the message
+    # pages read only partly: some of their images could not be decoded, their model call failed, or
+    # they could not be put together into one page image and were left out (counts of images)
+    partial: int = 0
+    partial_undecodable: int = 0
+    partial_failed: int = 0
+    partial_left_out: int = 0
 
     @property
     def unread(self) -> int:
@@ -194,7 +227,20 @@ class _ScanResult:
     @property
     def retry(self) -> bool:
         """A failure that may go away (model back, missing component installed): try again later."""
-        return bool(self.undecodable or self.model_failed)
+        return bool(self.undecodable or self.model_failed or self.partial_undecodable or self.partial_failed)
+
+    def partial_note(self) -> str:
+        """German note on the pages that were read only partly."""
+        parts = []
+        if self.partial_undecodable:
+            why = f": {self.decode_error}" if self.decode_error else ""
+            parts.append(f"{self.partial_undecodable} Bild(er) nicht lesbar{why}")
+        if self.partial_failed:
+            parts.append(f"{self.partial_failed} Bild(er): Bildauswertung fehlgeschlagen")
+        if self.partial_left_out:
+            parts.append(f"{self.partial_left_out} Bild(er) nicht ausgewertet (mehr als {MAX_IMAGES_PER_PAGE} "
+                         "Bilder je Seite, nicht zu einem Seitenbild zusammensetzbar)")
+        return f"{self.partial} Seite(n) nur teilweise gelesen ({'; '.join(parts)})"
 
     def reason(self) -> str:
         parts = []
@@ -252,12 +298,17 @@ def _image_payload(image) -> tuple[bytes, str]:
         return image.data, mime
     if fits and mime == "image/jpeg" and pil.mode in ("L", "RGB"):
         return image.data, mime
+    return _encode(pil)
+
+
+def _encode(img) -> tuple[bytes, str]:
+    """A Pillow image as JPEG (colour) or PNG (bilevel/grey), scaled down to MAX_IMAGE_PIXELS."""
     from PIL import Image  # installed with requirements.txt; pypdf needs it for images anyway
 
-    img = pil
+    width, height = img.size
     if img.mode not in ("1", "L", "RGB"):
         img = img.convert("RGB")  # CMYK, palette, alpha channel, 16 bit
-    if not fits:
+    if width * height > MAX_IMAGE_PIXELS:
         if img.mode == "1":
             img = img.convert("L")  # scaling bilevel scans keeps text readable in grey
         f = (MAX_IMAGE_PIXELS / (width * height)) ** 0.5
@@ -270,52 +321,226 @@ def _image_payload(image) -> tuple[bytes, str]:
     return out.getvalue(), "image/png"
 
 
+# -- images as drawn on a page -------------------------------------------------------------------------
+_IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+MAX_FORM_DEPTH = 6
+
+
+def _mul(m, n) -> tuple[float, ...]:
+    """PDF matrix product m × n ([a b c d e f])."""
+    a, b, c, d, e, f = m
+    A, B, C, D, E, F = n
+    return (a * A + b * C, a * B + b * D, c * A + d * C, c * B + d * D, e * A + f * C + E, e * B + f * D + F)
+
+
+def _drawn_images(page) -> list[tuple[object, tuple[float, ...]]]:
+    """The images a page actually draws, in drawing order: (key for ``page.images``, transformation
+    matrix). Follows q/Q/cm and form XObjects (keys as pypdf names them: "/Im1", ["/Fm1", "/Im1"],
+    inline images "~0~"). Resources listed but never drawn (some PDF tools share one resource
+    dictionary between all pages) are not included. Raises if the content cannot be followed."""
+    from pypdf.generic import ContentStream
+
+    found: list[tuple[object, tuple[float, ...]]] = []
+    inline = 0
+
+    def walk(content, resources, ctm, path: list[str], seen: tuple) -> None:
+        nonlocal inline
+        stack: list[tuple[float, ...]] = []
+        xobjects = resources.get("/XObject") if resources is not None else None
+        xobjects = xobjects.get_object() if xobjects is not None else None
+        for operands, op in content.operations:
+            if op == b"q":
+                stack.append(ctm)
+            elif op == b"Q":
+                ctm = stack.pop() if stack else ctm
+            elif op == b"cm" and len(operands) == 6:
+                ctm = _mul(tuple(float(x) for x in operands), ctm)
+            elif op == b"INLINE IMAGE":
+                if not path:  # pypdf only lists inline images of the page itself
+                    found.append((f"~{inline}~", ctm))
+                    inline += 1
+            elif op == b"Do" and operands and xobjects is not None:
+                name = str(operands[0])
+                xobj = xobjects.get(name)
+                xobj = xobj.get_object() if xobj is not None else None
+                if xobj is None:
+                    continue
+                subtype = xobj.get("/Subtype")
+                if subtype == "/Image":
+                    found.append(((name if not path else [*path, name]), ctm))
+                elif subtype == "/Form" and len(path) < MAX_FORM_DEPTH:
+                    ref = getattr(xobj, "indirect_reference", None)
+                    if ref is not None and ref in seen:
+                        continue
+                    matrix = tuple(float(x) for x in xobj.get("/Matrix", _IDENTITY))
+                    inner = xobj.get("/Resources")
+                    walk(ContentStream(xobj, page.pdf), inner.get_object() if inner is not None else resources,
+                         _mul(matrix, ctm), [*path, name], (*seen, ref))
+
+    content = page.get_contents()
+    if content is None:
+        return found
+    resources = page.get("/Resources")
+    walk(content, resources.get_object() if resources is not None else None, _IDENTITY, [], ())
+    return found
+
+
+def _corners(ctm) -> dict[str, tuple[float, float]]:
+    """Where the image's top-left, top-right and bottom-left corners land on the page (points)."""
+    a, b, c, d, e, f = ctm
+    return {"tl": (c + e, d + f), "tr": (a + c + e, b + d + f), "bl": (e, f)}
+
+
+def _compose(placed: list[tuple[object, tuple[float, ...]]]):
+    """Put the images of a page together at their positions into one page image (Pillow), or None
+    when that is not possible (skewed or empty placement). ``placed``: (Pillow image, matrix)."""
+    from PIL import Image
+
+    boxes = []
+    scale = 0.0
+    for img, ctm in placed:
+        k = _corners(ctm)
+        right = (k["tr"][0] - k["tl"][0], k["tr"][1] - k["tl"][1])
+        down = (k["bl"][0] - k["tl"][0], k["bl"][1] - k["tl"][1])
+        straight = abs(right[1]) < 1e-6 * max(1.0, abs(right[0])) and abs(down[0]) < 1e-6 * max(1.0, abs(down[1]))
+        turned = abs(right[0]) < 1e-6 * max(1.0, abs(right[1])) and abs(down[1]) < 1e-6 * max(1.0, abs(down[0]))
+        if not (straight or turned):
+            return None  # skewed or rotated by an odd angle
+        width_pt = abs(right[0]) + abs(down[0])
+        height_pt = abs(right[1]) + abs(down[1])
+        if width_pt < 1e-3 or height_pt < 1e-3:
+            return None
+        xs = [p[0] for p in k.values()] + [k["tr"][0] + down[0]]
+        ys = [p[1] for p in k.values()] + [k["tr"][1] + down[1]]
+        boxes.append((img, right, down, turned, min(xs), max(ys), width_pt, height_pt))
+        pixels_wide = img.size[1] if turned else img.size[0]
+        scale = max(scale, pixels_wide / width_pt)
+    left = min(b[4] for b in boxes)
+    top = max(b[5] for b in boxes)
+    right_edge = max(b[4] + b[6] for b in boxes)
+    bottom = min(b[5] - b[7] for b in boxes)
+    w_pt, h_pt = right_edge - left, top - bottom
+    scale = min(scale, (MAX_IMAGE_PIXELS / (w_pt * h_pt)) ** 0.5)
+    size = (max(1, round(w_pt * scale)), max(1, round(h_pt * scale)))
+    colour = any(img.mode not in ("1", "L", "LA", "I", "I;16", "F") for img, *_ in boxes)
+    canvas = Image.new("RGB" if colour else "L", size, "white")
+    for img, right, down, turned, x0, y0, wp, hp in boxes:
+        if turned:  # image columns run down the page: swap axes first
+            img = img.transpose(Image.Transpose.TRANSPOSE)
+            right, down = down, right
+        if right[0] < 0:
+            img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        if down[1] > 0:  # PDF y grows upwards: the image's rows run up the page
+            img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        target = (max(1, round(wp * scale)), max(1, round(hp * scale)))
+        mask = None
+        if img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info):
+            img = img.convert("RGBA")
+            mask = img.getchannel("A").resize(target, Image.Resampling.BILINEAR)
+        if img.mode == "1":
+            img = img.convert("L")  # scaling bilevel scans keeps text readable in grey
+        img = img.convert(canvas.mode).resize(target, Image.Resampling.LANCZOS)
+        canvas.paste(img, (round((x0 - left) * scale), round((top - y0) * scale)), mask)
+    return canvas
+
+
 def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
     """Let the multimodal model read the images of pages without a text layer.
 
-    Pages without any image (blank pages) count as nothing to read. A page counts as undecodable or
-    failed – and the document is retried later – if one of its images could not be decoded or the
-    model call failed and nothing else on the page was read; only a page whose images the model read
-    without finding text counts as "no text"."""
+    Up to MAX_IMAGES_PER_PAGE images of a page are sent one by one; a page with more (strip or tile
+    scans) is put together into one page image at the images' positions. Pages without any image
+    (blank pages) count as nothing to read. A page none of whose images could be read counts as
+    undecodable or failed – the document is retried later; only a page whose images the model read
+    without finding text counts as "no text". A page of which only some images were read counts as
+    read *partly*: its text is kept and the document stays incomplete (and is retried when the cause
+    may go away)."""
     result = _ScanResult()
     for i, page in empty_pages:
-        decode_failed = model_failed = False
-        texts = []
         try:
             images = page.images  # decoded one by one below, so one broken image spoils nothing else
-            keys = list(images.keys())
+            try:
+                drawn = _drawn_images(page)
+            except Exception as exc:  # noqa: BLE001 – unusual content stream: all listed images, unplaced
+                log.debug("%s Seite %d: Bildpositionen nicht bestimmbar (%s)", name, i, exc)
+                drawn = []
+            listed = list(images.keys())
+            if not drawn and listed:
+                drawn = [(key, None) for key in listed]
         except Exception as exc:  # noqa: BLE001 – broken resources: the page cannot be read now
             log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, i, exc)
             result.decode_error = result.decode_error or _decode_problem(exc)
             result.undecodable += 1
             continue
-        if not keys:
+        if not drawn:
             continue
-        for key in keys[:MAX_IMAGES_PER_PAGE]:
-            try:
-                data, mime = _image_payload(images[key])
-            except Exception as exc:  # noqa: BLE001 – missing Pillow/jbig2dec, unsupported or broken image
-                log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, i, exc)
-                result.decode_error = result.decode_error or _decode_problem(exc)
-                decode_failed = True
-                continue
+        payloads, undecodable, left_out = _page_payloads(images, drawn, name, i, result)
+        texts, failed = [], 0
+        for data, mime in payloads:
             try:
                 text = llm.describe_image(data, mime, VISION_PROMPT).text
             except Exception as exc:  # noqa: BLE001
                 log.warning("%s Seite %d: Bildauswertung fehlgeschlagen (%s)", name, i, exc)
-                model_failed = True
+                failed += 1
                 continue
             if text and text.strip():
                 texts.append(text)
         if texts:
             result.pages.append(Page(i, "\n".join(texts)))
-        elif decode_failed:
+            if undecodable or failed or left_out:
+                result.partial += 1
+                result.partial_undecodable += undecodable
+                result.partial_failed += failed
+                result.partial_left_out += left_out
+                log.warning("%s Seite %d nur teilweise gelesen (%d nicht lesbar, %d fehlgeschlagen, %d nicht "
+                            "ausgewertet)", name, i, undecodable, failed, left_out)
+        elif undecodable:
             result.undecodable += 1
-        elif model_failed:
+        elif failed:
             result.model_failed += 1
         else:
             result.no_text += 1
     return result
+
+
+def _page_payloads(images, drawn, name: str, number: int, result: _ScanResult):
+    """The images of one page as (bytes, MIME type) for the model, plus the number of images that
+    could not be decoded and the number left out. More than MAX_IMAGES_PER_PAGE images are put
+    together into one page image; if that is not possible, the largest ones are sent."""
+    decoded, undecodable = [], 0
+    for key, ctm in drawn:
+        try:
+            decoded.append((images[key], ctm))
+        except Exception as exc:  # noqa: BLE001 – missing Pillow/jbig2dec, unsupported or broken image
+            log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, exc)
+            result.decode_error = result.decode_error or _decode_problem(exc)
+            undecodable += 1
+    if len(drawn) > MAX_IMAGES_PER_PAGE and decoded:
+        combined = None
+        if all(ctm is not None and getattr(image, "image", None) is not None for image, ctm in decoded):
+            try:
+                combined = _compose([(image.image, ctm) for image, ctm in decoded])
+            except Exception as exc:  # noqa: BLE001 – e.g. out of memory: fall back to the largest images
+                log.warning("%s Seite %d: Bilder nicht zusammensetzbar (%s)", name, number, exc)
+        if combined is not None:
+            try:
+                return [_encode(combined)], undecodable, 0
+            except Exception as exc:  # noqa: BLE001
+                log.warning("%s Seite %d: Seitenbild nicht erzeugbar (%s)", name, number, exc)
+        decoded.sort(key=lambda x: -_pixels(x[0]))  # stable: equal sizes keep drawing order
+    payloads = []
+    for image, _ctm in decoded[:MAX_IMAGES_PER_PAGE]:
+        try:
+            payloads.append(_image_payload(image))
+        except Exception as exc:  # noqa: BLE001 – unsupported format, conversion failed
+            log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, exc)
+            result.decode_error = result.decode_error or _decode_problem(exc)
+            undecodable += 1
+    return payloads, undecodable, max(0, len(decoded) - MAX_IMAGES_PER_PAGE)
+
+
+def _pixels(image) -> int:
+    pil = getattr(image, "image", None)
+    return pil.size[0] * pil.size[1] if pil is not None else 0
 
 
 def _docx(data: bytes) -> Extracted:
@@ -351,10 +576,7 @@ def _eml(data: bytes) -> Extracted:
     body = msg.get_body(("plain", "html"))
     text = ""
     if body is not None:
-        try:
-            text = body.get_content()
-        except (LookupError, UnicodeDecodeError):
-            text = decode_text(body.get_payload(decode=True) or b"")
+        text = mime_text(body)
         if body.get_content_type() == "text/html":
             text = html_to_text(text)
     return Extracted([Page(None, f"{head}\n\n{text}".strip())])
