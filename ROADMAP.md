@@ -6,7 +6,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
 
 ## Phase A – Aufbau
 
-- [ ] **1. Konfiguration und Dienstestatus** – Alle Einstellungen aus Umgebungsvariablen
+- [x] **1. Konfiguration und Dienstestatus** – Alle Einstellungen aus Umgebungsvariablen
   (`projektakte/config.py` erweitern: `DATA_DIR`, `PROJECTS_DIR`, `MAIL_DIR`, `PROJECT_NUMBER_PATTERN`,
   `LLM_URL`, `LLM_MODEL`, `EMBED_URL`, `EMBED_MODEL`, `RERANK_URL`, `DEMO_MODE`). `GET /health/deps`
   prüft LLM, Embeddings und Reranker mit kurzem Timeout und meldet je Dienst ok/Fehler.

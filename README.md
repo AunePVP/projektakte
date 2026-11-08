@@ -11,8 +11,9 @@ im lokalen Netz mit lokalen Modellen.
 
 ## Stand
 
-Grundgerüst: FastAPI-Anwendung mit `GET /health` und `GET /api/version`. Alles Weitere entsteht
-nach der Roadmap.
+Roadmap-Schritt 1: Konfiguration aus Umgebungsvariablen, vollständige Clients für alle drei
+KI-Dienste, Fake-Dienste (`python -m projektakte.fake_ai`) und `GET /health/deps`.
+Getroffene Entscheidungen: [DECISIONS.md](DECISIONS.md), Änderungen: [CHANGELOG.md](CHANGELOG.md).
 
 ## Starten
 
@@ -43,8 +44,72 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `PORT` | `8000` | HTTP-Port |
 | `DATA_DIR` | `./data` | Index, Datenbank, Demo-Daten |
 | `APP_ENV` | `dev` | `dev`, `staging` oder `production` |
+| `PROJECTS_DIR` | `$DATA_DIR/projekte` (mit `DEMO_MODE=1`: `$DATA_DIR/demo/projekte`) | Projektordner (read-only) |
+| `MAIL_DIR` | `$DATA_DIR/mails` (mit `DEMO_MODE=1`: `$DATA_DIR/demo/mails`) | Ordner mit `.eml`-Dateien (read-only) |
+| `PROJECT_NUMBER_PATTERN` | `BS-\d{4}-\d{4}` | Regulärer Ausdruck für Projektnummern |
+| `DEMO_MODE` | `0` | `1` = Demo-Datensatz verwenden (und beim Start erzeugen, falls er fehlt) |
+| `AI_MODE` | `real` | `fake` = Fake-KI-Dienste im selben Prozess starten, URLs werden ignoriert |
+| `LLM_URL` | `http://192.168.178.62:8000/v1` | Sprachmodell (OpenAI-kompatibel) |
+| `LLM_MODEL` | `qwen3.8-flash-next` | Modellname |
+| `LLM_VISION` | `0` | `1` = Modell kann Bilder lesen (Rückfall für Scans/Pläne) |
+| `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | `120` / `800` | Sekunden / Antwortlänge |
+| `LLM_EXTRA_BODY` | – | JSON, das in jede Chat-Anfrage gemischt wird, z. B. `{"chat_template_kwargs":{"enable_thinking":false}}` |
+| `EMBED_URL` | `http://192.168.178.62:8001` | Embedding-Dienst (ohne `/v1`) |
+| `EMBED_MODEL` | `qwen3-embedding-4b` | Modellname |
+| `EMBED_FORMAT` | `auto` | `auto`, `openai` (`/v1/embeddings`) oder `tei` (`/embed`) |
+| `EMBED_TIMEOUT` / `EMBED_BATCH` | `60` / `32` | Sekunden / Texte pro Anfrage |
+| `EMBED_QUERY_INSTRUCTION` | Qwen3-Instruktion | Präfix für Suchanfragen |
+| `RERANK_URL` | `http://192.168.178.62:4343/rerank` | Reranker (vollständige URL) |
+| `RERANK_FORMAT` | `auto` | `auto`, `tei` (`texts`) oder `cohere` (`documents`) |
+| `RERANK_MODEL` | – | nur falls der Server ein `model`-Feld verlangt |
+| `RERANK_TIMEOUT` / `RERANK_TOP_K` | `30` / `30` | Sekunden / Kandidaten für das Reranking |
+| `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
+| `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 
-Weitere Variablen (Projektordner, Mailquelle, KI-Dienste) kommen mit Roadmap-Schritt 1.
+## Fake-KI-Dienste
+
+Für Entwicklung und Tests gibt es deterministische Fakes aller drei Dienste auf einem Port:
+
+```bash
+python -m projektakte.fake_ai --port 8999
+LLM_URL=http://127.0.0.1:8999/v1 EMBED_URL=http://127.0.0.1:8999 \
+  RERANK_URL=http://127.0.0.1:8999/rerank python -m projektakte
+```
+
+Kürzer: `AI_MODE=fake` startet dieselben Fakes im Prozess der Anwendung. Optionen des Fake-Servers:
+`--embed-format openai|tei|both`, `--rerank-format tei|cohere|both`, `--no-think`, `--delay`.
+
+## Echte KI-Dienste anbinden
+
+Keine Codeänderung nötig – nur Umgebungsvariablen setzen (`AI_MODE` weglassen oder `real`):
+
+```bash
+LLM_URL=http://192.168.178.62:8000/v1 LLM_MODEL=qwen3.8-flash-next \
+EMBED_URL=http://192.168.178.62:8001 EMBED_MODEL=qwen3-embedding-4b \
+RERANK_URL=http://192.168.178.62:4343/rerank python -m projektakte
+```
+
+Danach `GET /health/deps` aufrufen: Dort steht je Dienst `ok`, das **erkannte Format**
+(`openai-chat`; `openai`/`tei`; `tei`/`cohere`), die Antwortzeit und ggf. der Fehler. Die Formate
+vorher von Hand prüfen (siehe [docs/ki-dienste.md](docs/ki-dienste.md)):
+
+```bash
+curl -s http://192.168.178.62:8000/v1/models
+curl -s http://192.168.178.62:8000/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-flash-next","messages":[{"role":"user","content":"Sag OK."}],"max_tokens":8}'
+curl -s http://192.168.178.62:8001/v1/embeddings -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3-embedding-4b","input":["Rauchableitung im Treppenraum"]}'
+curl -s http://192.168.178.62:8001/embed -H 'Content-Type: application/json' \
+  -d '{"inputs":["Rauchableitung im Treppenraum"]}'
+curl -s http://192.168.178.62:4343/rerank -H 'Content-Type: application/json' \
+  -d '{"query":"Rauchableitung","texts":["Text A","Text B"]}'
+curl -s http://192.168.178.62:4343/rerank -H 'Content-Type: application/json' \
+  -d '{"query":"Rauchableitung","documents":["Text A","Text B"],"top_n":2}'
+```
+
+Erkennt der Client das Format nicht oder rät falsch, lässt es sich mit `EMBED_FORMAT` bzw.
+`RERANK_FORMAT` festlegen. Fällt der Reranker aus, sucht Projektakte ohne ihn weiter; fällt das
+Sprachmodell aus, antwortet die Fragefunktion mit „KI-Dienst nicht erreichbar“.
 
 ## Datenschutz
 
