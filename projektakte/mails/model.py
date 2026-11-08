@@ -10,6 +10,13 @@ from email.utils import getaddresses, parsedate_to_datetime
 
 from ..extract import decode_text, html_to_text
 
+try:
+    from zoneinfo import ZoneInfo
+
+    LOCAL_TZ = ZoneInfo("Europe/Berlin")  # the office's time zone (dates shown to people)
+except Exception:  # noqa: BLE001 – no tz database available: fall back to UTC
+    LOCAL_TZ = timezone.utc
+
 
 @dataclass
 class Attachment:
@@ -34,6 +41,8 @@ class MailRecord:
     content_hash: str = ""
     # assignment made by a human in plMail (JMAP property "plmail:projektakte"); not part of the hash
     external_assignment: dict | None = None
+    # header that marks a newsletter/mass mailing ("List-Unsubscribe", "Precedence: bulk"); not hashed
+    bulk: str | None = None
 
     def compute_hash(self) -> str:
         h = hashlib.sha256()
@@ -49,6 +58,48 @@ def iso_utc(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def local_time(iso: str | None) -> datetime | None:
+    """A stored ISO timestamp (UTC) in the office's local time; None if missing or unreadable."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(LOCAL_TZ)
+
+
+def local_day(iso: str | None) -> str | None:
+    """Local calendar day (YYYY-MM-DD) of a stored UTC timestamp – a mail at 00:30 in Berlin belongs
+    to that day, not to the UTC day before."""
+    dt = local_time(iso)
+    return dt.date().isoformat() if dt else None
+
+
+def de_datetime(iso: str | None) -> str:
+    """German local date and time ("26.02.2025 16:58") as shown on the mail page; "" if unknown."""
+    dt = local_time(iso)
+    return dt.strftime("%d.%m.%Y %H:%M") if dt else ""
+
+
+BULK_PRECEDENCE = ("bulk", "junk")
+
+
+def bulk_marker(msg) -> str | None:
+    """Header that identifies a newsletter or mass mailing, or None.
+
+    ``List-Unsubscribe`` is what newsletter senders must set; ``Precedence: bulk/junk`` marks mass
+    mailings. ``List-Id`` alone is not used – project teams may use mailing lists."""
+    if msg.get("List-Unsubscribe"):
+        return "List-Unsubscribe"
+    precedence = str(msg.get("Precedence") or "").strip().lower()
+    if precedence in BULK_PRECEDENCE:
+        return f"Precedence: {precedence}"
+    return None
 
 
 def _addresses(value) -> list[tuple[str, str]]:
@@ -94,7 +145,8 @@ def parse_eml(data: bytes, source_key: str, fallback_date: datetime | None = Non
     rec = MailRecord(
         source="eml", source_key=source_key, subject=str(msg.get("Subject", "") or "").strip(),
         sender=sender.lower(), sender_name=sender_name, recipients=recipients, date=date,
-        body=body.strip(), message_id=str(msg.get("Message-ID") or "") or None,
-        in_reply_to=str(msg.get("In-Reply-To") or "") or None, attachments=attachments)
+        body=body.strip(), message_id=str(msg.get("Message-ID") or "").strip() or None,
+        in_reply_to=str(msg.get("In-Reply-To") or "").strip() or None, attachments=attachments,
+        bulk=bulk_marker(msg))
     rec.compute_hash()
     return rec

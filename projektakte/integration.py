@@ -56,13 +56,17 @@ class SuggestRequest(BaseModel):
     sender: str = Field("", alias="from")
     attachments: list[str] = []
     limit: int = 3
+    # optional mail headers; only newsletter markers are used (List-Unsubscribe, Precedence)
+    headers: dict[str, str] = {}
 
     model_config = {"populate_by_name": True}
 
 
 @router.post("/suggest")
 def suggest(request: Request, req: SuggestRequest) -> dict:
-    """Project suggestions for the mail a human is reading. Stores and assigns nothing."""
+    """Project suggestions for the mail a human is reading. Stores and assigns nothing.
+
+    Newsletters and advertising (by header, sender address or wording) get no content suggestion."""
     s = request.app.state.settings
     if not (req.subject.strip() or req.body.strip() or req.attachments):
         raise HTTPException(400, "Betreff, Text oder Anhangnamen fehlen")
@@ -72,7 +76,9 @@ def suggest(request: Request, req: SuggestRequest) -> dict:
             conn, request.app.state.ai, str(s.db_path), s.project_number_pattern,
             subject=req.subject[:1000], body=req.body[:MAX_TEXT], attachments=[a[:300] for a in req.attachments[:50]],
             sender=req.sender[:300], limit=max(1, min(req.limit, 10)),
-            min_share=s.assign_min_share, min_lead=s.assign_min_lead)
+            min_share=s.assign_min_share, min_lead=s.assign_min_lead,
+            min_similarity=getattr(s, "assign_min_similarity", 0.0),
+            headers={str(k)[:100]: str(v)[:1000] for k, v in list(req.headers.items())[:50]})
     for it in items:
         it["url"] = f"{base}/projekte/{it['number']}"
     return {"suggestions": items}

@@ -1,14 +1,20 @@
 import json
 import sqlite3
 from email.message import EmailMessage
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from projektakte import db
 from projektakte.ai.services import AIServices
+from projektakte.assign import assign_mails, decide
 from projektakte.demo import generate
 from projektakte.indexer import run_index
+from projektakte.mails import eml_source, store
+from projektakte.mails.eml_source import sync_eml_folder
 from projektakte.mails.model import parse_eml
+from projektakte.mails.store import bulk_markers, safe_filename, upgrade_mail_texts
 from projektakte.main import create_app
 
 from .conftest import fake_settings
@@ -90,3 +96,229 @@ def test_mails_api(indexed):
     detail = client.get(f"/api/mails/{with_att['id']}").json()
     assert detail["body"] and detail["attachments"][0]["chunks"] >= 1
     assert client.get("/api/mails/999999").status_code == 404
+
+
+# --------------------------------------------------------------------------- robustness (review findings)
+PATTERN = r"BS-\d{4}-\d{4}"
+
+
+def write_eml(path, subject, body, *, date="Tue, 18 Jun 2024 10:30:00 +0200", attachments=(), headers=(),
+              msgid=None, sender="Anna Bauer <anna@bauamt.example>"):
+    m = EmailMessage()
+    m["From"] = sender
+    m["To"] = "buero@ib.example"
+    m["Subject"] = subject
+    m["Date"] = date
+    m["Message-ID"] = msgid or f"<{abs(hash((subject, body)))}@bauamt.example>"
+    for k, v in headers:
+        m[k] = v
+    m.set_content(body)
+    for name, data in attachments:
+        m.add_attachment(data, maintype="text", subtype="plain", filename=name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(m))
+    return path
+
+
+@pytest.fixture()
+def maildb(tmp_path):
+    path = tmp_path / "x.sqlite3"
+    db.init_db(path)
+    conn = db.connect(path)
+    conn.execute("INSERT INTO projects(number, name, path) VALUES('BS-2024-0001', 'Testhalle', ?)",
+                 (str(tmp_path / "p"),))
+    conn.commit()
+    yield conn, tmp_path / "mails", tmp_path / "cache", path
+    conn.close()
+
+
+def sync(conn, mail_dir, cache, **kw):
+    return sync_eml_folder(conn, mail_dir, cache_dir=cache, **kw)
+
+
+def test_safe_filename_counts_bytes_and_keeps_the_extension():
+    long_name = "Prüfbericht_" + "設計図面の確認" * 15 + ".pdf"
+    safe = safe_filename(long_name)
+    assert len(safe.encode()) <= 180 and safe.endswith(".pdf") and safe.startswith("Prüfbericht_")
+    assert safe_filename("../../etc/passwd") == "_.._etc_passwd"
+    assert safe_filename("..") == "anhang" and safe_filename("") == "anhang"
+    assert safe_filename("a\x00b\nc.txt") == "a_b_c.txt"
+    odd = safe_filename("x." + "y" * 300)  # absurd "extension" is cut like the rest of the name
+    assert len(odd.encode()) <= 180
+
+
+def test_long_attachment_name_is_stored(maildb):
+    """BUG-3/BUG-4: an attachment name of more than 255 bytes is stored (cache name cut in bytes)."""
+    conn, mail_dir, cache, _ = maildb
+    name = "Prüfbericht_" + "設計図面の確認" * 15 + ".txt"
+    write_eml(mail_dir / "lang.eml", "Rückfrage BS-2024-0001", "Bitte prüfen",
+              attachments=[(name, "Rettungsweg".encode())])
+    assert sync(conn, mail_dir, cache)["errors"] == 0
+    filename, cache_path = conn.execute("SELECT filename, cache_path FROM documents").fetchone()
+    assert filename == name and Path(cache_path).read_bytes().startswith(b"Rettungsweg")
+
+
+def test_failed_mail_leaves_nothing_behind_and_is_retried(maildb, monkeypatch):
+    """BUG-4: a failure after the mail row was written rolls everything back; the next run stores
+    the mail completely (with its attachment) instead of reporting it as unchanged."""
+    conn, mail_dir, cache, _ = maildb
+    write_eml(mail_dir / "ok.eml", "Erste Mail", "Text")
+    write_eml(mail_dir / "anhang.eml", "Prüfbericht", "Anbei", attachments=[("Bericht.txt", b"Rettungsweg frei")])
+    real = store.write_document
+
+    def boom(*args, **kwargs):
+        raise OSError("Platte voll")
+    monkeypatch.setattr(store, "write_document", boom)
+    stats = sync(conn, mail_dir, cache)
+    assert (stats["new"], stats["errors"]) == (1, 1)
+    assert [r[0] for r in conn.execute("SELECT subject FROM mails")] == ["Erste Mail"]
+    assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 1  # only the first mail's body
+    monkeypatch.setattr(store, "write_document", real)
+    stats = sync(conn, mail_dir, cache)
+    assert (stats["new"], stats["errors"], stats["unchanged"]) == (1, 0, 1)
+    assert [r[0] for r in conn.execute("SELECT d.filename FROM documents d JOIN mails m ON m.id = d.mail_id "
+                                       "WHERE m.subject = 'Prüfbericht'")] == ["Bericht.txt"]
+
+
+def test_no_write_lock_while_extracting_attachments(maildb, monkeypatch):
+    """BUG-2: attachments are extracted before the write transaction; earlier mails are committed."""
+    conn, mail_dir, cache, path = maildb
+    for i in range(3):
+        write_eml(mail_dir / f"m{i}.eml", f"Mail {i}", "Text", attachments=[(f"A{i}.txt", f"Inhalt {i}".encode())])
+    results = []
+    real = store.prepare_document
+
+    def extract_and_write(**kwargs):
+        other = sqlite3.connect(path, timeout=0)  # fails at once if the database is locked
+        try:
+            other.execute("INSERT INTO meta(key, value) VALUES('probe', 'x') ON CONFLICT(key) DO UPDATE "
+                          "SET value = excluded.value")
+            other.commit()
+            results.append("ok")
+        except sqlite3.OperationalError as exc:
+            results.append(str(exc))
+        finally:
+            other.close()
+        return real(**kwargs)
+
+    monkeypatch.setattr(store, "prepare_document", extract_and_write)
+    assert sync(conn, mail_dir, cache)["new"] == 3
+    assert results == ["ok"] * 3
+
+
+def test_moved_eml_keeps_mail_and_human_decision(maildb):
+    """BUG-9: moving/renaming a file inside MAIL_DIR keeps the mail id, its sections and the decision."""
+    conn, mail_dir, cache, _ = maildb
+    src = write_eml(mail_dir / "2024-06-18.eml", "Frage zur Halle", "Wie breit wird das Tor?")
+    sync(conn, mail_dir, cache)
+    assign_mails(conn, PATTERN, min_share=0.5, min_lead=0.2, vector_key="k")
+    mail_id = conn.execute("SELECT id FROM mails").fetchone()[0]
+    chunks = conn.execute("SELECT id FROM chunks WHERE mail_id = ?", (mail_id,)).fetchall()
+    decide(conn, mail_id, "assign", "BS-2024-0001", user="anna")
+    (mail_dir / "archiv").mkdir()
+    src.rename(mail_dir / "archiv" / "umbenannt.eml")
+    stats = sync(conn, mail_dir, cache)
+    assert (stats["moved"], stats["new"], stats["removed"]) == (1, 0, 0)
+    row = conn.execute("SELECT id, source_key, project, assign_status FROM mails").fetchone()
+    assert tuple(row) == (mail_id, "eml:archiv/umbenannt.eml", "BS-2024-0001", "confirmed")
+    assert conn.execute("SELECT id FROM chunks WHERE mail_id = ?", (mail_id,)).fetchall() == chunks
+    assign_mails(conn, PATTERN, min_share=0.5, min_lead=0.2, vector_key="k")
+    assert tuple(conn.execute("SELECT assign_status, assign_reason FROM mails").fetchone()) == \
+        ("confirmed", "Von anna zugeordnet.")
+
+
+def test_decision_survives_removal_and_reimport_under_another_name(maildb):
+    """BUG-9: the decision is also stored by Message-ID – a re-exported file with a new name gets it."""
+    conn, mail_dir, cache, _ = maildb
+    src = write_eml(mail_dir / "a.eml", "Frage zur Halle", "Wie breit wird das Tor?", msgid="<abc@x.example>")
+    sync(conn, mail_dir, cache)
+    assign_mails(conn, PATTERN, min_share=0.5, min_lead=0.2, vector_key="k")
+    decide(conn, conn.execute("SELECT id FROM mails").fetchone()[0], "none", user="ben")
+    src.unlink()
+    write_eml(mail_dir / "dummy.eml", "Andere Mail", "Text")  # MAIL_DIR is not empty
+    assert sync(conn, mail_dir, cache)["removed"] == 1
+    write_eml(mail_dir / "neu" / "export.eml", "Frage zur Halle", "Wie breit wird das Tor? (neu exportiert)",
+              msgid="<abc@x.example>")
+    sync(conn, mail_dir, cache)
+    assign_mails(conn, PATTERN, min_share=0.5, min_lead=0.2, vector_key="k")
+    row = conn.execute("SELECT assign_status, assign_reason FROM mails WHERE source_key = 'eml:neu/export.eml'"
+                       ).fetchone()
+    assert tuple(row) == ("none", "Von ben als ohne Projektbezug markiert.")
+
+
+def test_missing_or_empty_mail_dir_deletes_nothing(maildb):
+    """ops-06: an unmounted network drive (missing or empty MAIL_DIR) must not empty the index."""
+    conn, mail_dir, cache, _ = maildb
+    for i in range(3):
+        write_eml(mail_dir / f"m{i}.eml", f"Mail {i}", "Text")
+    assert sync(conn, mail_dir, cache)["new"] == 3
+    mail_dir.rename(mail_dir.with_name("weg"))
+    stats = sync(conn, mail_dir, cache)
+    assert stats["removed"] == 0 and "nicht erreichbar" in stats["warning"]
+    mail_dir.mkdir()  # mount point without the mount
+    stats = sync(conn, mail_dir, cache)
+    assert stats["removed"] == 0 and "keine .eml-Dateien mehr (bisher 3)" in stats["warning"]
+    assert conn.execute("SELECT COUNT(*) FROM mails").fetchone()[0] == 3
+    # emptied on purpose
+    assert sync(conn, mail_dir, cache, allow_empty=True)["removed"] == 3
+
+
+def test_unreadable_subfolder_deletes_nothing(maildb, monkeypatch):
+    conn, mail_dir, cache, _ = maildb
+    write_eml(mail_dir / "a.eml", "Mail a", "Text")
+    write_eml(mail_dir / "sub" / "b.eml", "Mail b", "Text")
+    assert sync(conn, mail_dir, cache)["new"] == 2
+    real_walk = eml_source.os.walk
+
+    def walk_without_sub(top, onerror=None):
+        for dirpath, dirnames, filenames in real_walk(top):
+            if "sub" in dirnames:
+                dirnames.remove("sub")
+                onerror(PermissionError(13, "Keine Berechtigung", str(Path(dirpath) / "sub")))
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(eml_source.os, "walk", walk_without_sub)
+    stats = sync(conn, mail_dir, cache)
+    assert stats["removed"] == 0 and "nicht lesbar" in stats["warning"]
+    assert conn.execute("SELECT COUNT(*) FROM mails").fetchone()[0] == 2
+
+
+def test_section_header_and_attachment_date_use_local_time(maildb):
+    """DEMO-5/BUG-11: 00:30 in Berlin is 22:30 UTC the day before – shown as on the mail page."""
+    conn, mail_dir, cache, _ = maildb
+    write_eml(mail_dir / "nacht.eml", "Nachtmail", "Text", date="Tue, 18 Jun 2024 00:30:00 +0200",
+              attachments=[("Notiz.txt", b"Rettungsweg")])
+    sync(conn, mail_dir, cache)
+    assert conn.execute("SELECT date FROM mails").fetchone()[0] == "2024-06-17T22:30:00+00:00"  # stored in UTC
+    text = conn.execute("SELECT text FROM chunks WHERE doc_id IS NULL").fetchone()[0]
+    assert "Datum: 18.06.2024 00:30" in text and "T22:30" not in text
+    assert conn.execute("SELECT doc_date FROM documents").fetchone()[0] == "2024-06-18"
+
+
+def test_old_iso_header_is_rewritten_once(maildb):
+    """DEMO-5: sections indexed by older versions get the local German date (in place, vectors stay)."""
+    conn, mail_dir, cache, _ = maildb
+    write_eml(mail_dir / "a.eml", "Mail", "Text", date="Wed, 26 Feb 2025 16:58:00 +0100")
+    sync(conn, mail_dir, cache)
+    cid, text = conn.execute("SELECT id, text FROM chunks WHERE doc_id IS NULL").fetchone()
+    old = text.replace("Datum: 26.02.2025 16:58", "Datum: 2025-02-26T15:58:00+00:00")
+    conn.execute("UPDATE chunks SET text = ?, embedding = x'00' WHERE id = ?", (old, cid))
+    conn.execute("UPDATE chunks_fts SET body = ? WHERE rowid = ?", (old.lower(), cid))
+    conn.execute("DELETE FROM meta WHERE key = 'mail_header_format'")
+    conn.commit()
+    assert upgrade_mail_texts(conn) == 1 and upgrade_mail_texts(conn) == 0
+    text, emb = conn.execute("SELECT text, embedding FROM chunks WHERE id = ?", (cid,)).fetchone()
+    assert "Datum: 26.02.2025 16:58" in text and emb == b"\x00"
+    assert conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE chunks_fts MATCH '\"26.02.2025\"'").fetchone()[0] == 1
+
+
+def test_newsletter_header_is_remembered(maildb):
+    conn, mail_dir, cache, _ = maildb
+    write_eml(mail_dir / "n.eml", "Fachartikel", "Text", headers=[("List-Unsubscribe", "<mailto:x@y.example>")])
+    write_eml(mail_dir / "p.eml", "Rundschreiben", "Text", headers=[("Precedence", "bulk")])
+    write_eml(mail_dir / "m.eml", "Normale Mail", "Text")
+    sync(conn, mail_dir, cache)
+    assert bulk_markers(conn) == {"eml:n.eml": "List-Unsubscribe", "eml:p.eml": "Precedence: bulk"}
+    (mail_dir / "n.eml").unlink()
+    sync(conn, mail_dir, cache)
+    assert set(bulk_markers(conn)) == {"eml:p.eml"}

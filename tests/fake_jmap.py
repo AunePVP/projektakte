@@ -1,7 +1,9 @@
 """Small fake of the plMail JMAP API (session, Email/query, Email/get, Email/changes, download).
 
 Mimics the documented pitfalls: accountId must be a string, Email/get answers in database order,
-request-level errors come as application/problem+json, no Email/queryChanges.
+request-level errors come as application/problem+json, no Email/queryChanges. Tests can cap the
+query limit (``max_query_limit``), let downloads fail (``failing_blobs``: blob id → HTTP status) and
+change the mailbox while Projektakte pages through it (``after_query`` hooks).
 """
 from __future__ import annotations
 
@@ -27,6 +29,10 @@ class FakePlMail:
         self.project_extension = True  # advertise the Projektakte capability + Email property
         self.usings: list[list[str]] = []
         self.using: list[str] = []
+        self.max_query_limit: int | None = None  # server-side cap of Email/query "limit"
+        self.failing_blobs: dict[str, int] = {}  # blob id → HTTP status of the download
+        self.after_query: list = []  # callables(fake, account, ids) run after each Email/query
+        self.downloads: list[str] = []
         self._next = 0
         self.lock = threading.Lock()
 
@@ -74,6 +80,9 @@ class FakePlMail:
             del self.accounts[account][eid]
             self._bump(account, "destroyed", eid)
 
+    def blob_ids(self, account: str, eid: str) -> list[str]:
+        return [a["blobId"] for a in self.accounts[account][eid]["attachments"]]
+
     def _bump(self, account: str, kind: str, eid: str) -> None:
         self.state[account] = self.state.get(account, 0) + 1
         self.log.setdefault(account, []).append((self.state[account], kind, eid))
@@ -94,8 +103,13 @@ class FakePlMail:
             ordered = sorted(emails.values(), key=lambda e: e["receivedAt"],
                              reverse=not args.get("sort", [{}])[0].get("isAscending", False))
             pos, lim = int(args.get("position", 0)), int(args.get("limit", 100))
-            return ["Email/query", {"accountId": acc, "ids": [e["id"] for e in ordered[pos:pos + lim]],
-                                    "position": pos, "queryState": str(self.state.get(acc, 0))}]
+            answer = {"accountId": acc, "position": pos, "queryState": str(self.state.get(acc, 0))}
+            if self.max_query_limit and lim > self.max_query_limit:
+                lim = answer["limit"] = self.max_query_limit  # RFC 8620 5.5: report the enforced limit
+            answer["ids"] = [e["id"] for e in ordered[pos:pos + lim]]
+            for hook in list(self.after_query):
+                hook(self, acc, answer["ids"])
+            return ["Email/query", answer]
         if name == "Email/get":
             ids = args.get("ids") or []
             found = [emails[i] for i in sorted(ids) if i in emails]  # database order, not request order
@@ -171,6 +185,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 return
             _, _, _, acc, blob, name = path.split("/", 5)
+            fake.downloads.append(blob)
+            if blob in fake.failing_blobs:
+                return self._send(fake.failing_blobs[blob], {"error": "download failed"})
             if blob not in fake.blobs:
                 return self._send(404, {"error": "blob not found"})
             data, mime = fake.blobs[blob]

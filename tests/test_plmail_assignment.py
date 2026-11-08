@@ -78,7 +78,7 @@ def test_assignment_in_plmail_is_taken_over(env):
     run_index(s, ai)
     r = row(s, f"jmap:7:{ids['content']}")
     assert (r["project"], r["assign_status"], r["assign_method"]) == ("BS-2024-0137", "confirmed", "plmail")
-    assert "in plMail von anna am 10.03.2025 zugeordnet" == r["assign_reason"]
+    assert "In plMail von anna am 10.03.2025 zugeordnet." == r["assign_reason"]
     conn = sqlite3.connect(s.db_path)
     # its sections now belong to the project → found by project search/questions
     assert {p for (p,) in conn.execute("SELECT project FROM chunks WHERE mail_id = ?", (r["id"],))} == \
@@ -103,7 +103,7 @@ def test_unknown_project_from_plmail_is_reported(env):
     fake.assign("7", ids["num"], "BS-2099-0001")
     run_index(s, ai)
     r = row(s, f"jmap:7:{ids['num']}")
-    assert r["project"] is None and r["assign_status"] == "plmail_open" and "unbekannt" in r["assign_reason"]
+    assert r["project"] is None and r["assign_status"] == "plmail_open" and "nicht bekannt" in r["assign_reason"]
 
 
 def test_projektakte_cannot_override_plmail(env):
@@ -225,3 +225,37 @@ def test_integration_notify_triggers_sync(env):
         while time.time() < deadline and row(s, f"jmap:7:{ids['num']}")["assign_status"] != "confirmed":
             time.sleep(0.05)
         assert row(s, f"jmap:7:{ids['num']}")["project"] == "BS-2024-0137"
+
+
+def test_plmail_choice_is_taken_over_once_the_project_exists(env):
+    """BUG-14: a plMail assignment to a project Projektakte does not know yet stays 'in plMail offen'
+    and is taken over as soon as the project folder appears – without a new change in plMail."""
+    s, ai, fake, ids = env
+    fake.assign("7", ids["content"], "BS-2026-0001", user="anna")
+    run_index(s, ai)
+    assert row(s, f"jmap:7:{ids['content']}")["assign_status"] == "plmail_open"
+    stats = run_index(s, ai)["assignment"]  # still unknown: checked, nothing written
+    assert stats["plmail_open"] == 0 and stats["unchanged"] >= 1
+    (s.projects_dir / "BS-2026-0001 Feuerwache Nord").mkdir()
+    fake.methods.clear()
+    run_index(s, ai)
+    r = row(s, f"jmap:7:{ids['content']}")
+    assert (r["project"], r["assign_status"], r["assign_method"]) == ("BS-2026-0001", "confirmed", "plmail")
+    assert fake.methods.count("Email/get") == 0  # nothing was re-read from plMail
+
+
+def test_integration_suggest_ignores_newsletters(api):
+    client, _ = api
+    body = {"subject": "Fachartikel Tiefgaragen", "from": "redaktion@fachblatt.example",
+            "body": "Maschinelle Entrauchung von Tiefgaragen mit 12-fachem Luftwechsel, CO-Warnanlagen und Rampen."}
+    assert client.post("/api/integration/suggest", headers=H, json={
+        **body, "headers": {"List-Unsubscribe": "<mailto:abmelden@fachblatt.example>"}}).json()["suggestions"] == []
+    spam = client.post("/api/integration/suggest", headers=H, json={
+        "subject": "Rauchwarnmelder für Kitas zum Sonderpreis", "from": "verkauf@melder-shop.example",
+        "body": "Funkvernetzte Rauchwarnmelder nach DIN 14676 für Schlafräume und Gruppenräume in Kitas – "
+                "jetzt 20 % Rabatt!"}).json()["suggestions"]
+    assert spam == []
+    # a project number is still "sicher", even in a newsletter
+    numbered = client.post("/api/integration/suggest", headers=H, json={
+        **body, "subject": "BS-2022-0901 im Fachartikel", "headers": {"Precedence": "bulk"}}).json()["suggestions"]
+    assert [(x["number"], x["confidence"]) for x in numbered] == [("BS-2022-0901", "sicher")]
