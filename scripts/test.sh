@@ -10,4 +10,5 @@ if [ ! -x "$VENV/bin/python" ]; then
   "$VENV.tmp/bin/pip" install -q --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
   mv "$VENV.tmp" "$VENV"
 fi
-exec "$VENV/bin/python" -m pytest -q -p no:cacheprovider "$@"
+# parallel workers (pytest-xdist): PYTEST_WORKERS=0 runs everything in one process
+exec "$VENV/bin/python" -m pytest -q -p no:cacheprovider -n "${PYTEST_WORKERS:-auto}" --maxprocesses 6 "$@"

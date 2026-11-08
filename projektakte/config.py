@@ -84,7 +84,7 @@ class Settings:
     auth_disabled: bool = False
     secret_key: str = field(default="", repr=False)
     session_hours: float = 12.0
-    cookie_secure: bool = False
+    cookie_secure: bool | None = None  # None = not set: on in APP_ENV=production, otherwise off
     # plMail (JMAP)
     plmail_url: str = ""
     plmail_token: str = field(default="", repr=False)
@@ -104,6 +104,7 @@ class Settings:
     assign_min_similarity: float = 0.0
     # reverse proxy: comma-separated IPs whose X-Forwarded-* headers are trusted (uvicorn)
     forwarded_allow_ips: str = ""
+    log_level: str = "INFO"
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
@@ -182,7 +183,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         auth_disabled=_bool(e.get("AUTH_DISABLED")),
         secret_key=e.get("SECRET_KEY", ""),
         session_hours=_float(e.get("SESSION_HOURS"), 12.0),
-        cookie_secure=_bool(e.get("COOKIE_SECURE")),
+        cookie_secure=_bool(e.get("COOKIE_SECURE")) if (e.get("COOKIE_SECURE") or "").strip() else None,
+        log_level=(e.get("LOG_LEVEL") or "INFO").strip().upper(),
         plmail_url=(e.get("PLMAIL_URL") or "").rstrip("/"),
         plmail_token=e.get("PLMAIL_TOKEN", ""),
         plmail_timeout=_float(e.get("PLMAIL_TIMEOUT"), 30.0),
