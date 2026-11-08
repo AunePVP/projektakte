@@ -28,7 +28,8 @@ Projektakte verloren, wird die Zuordnung beim nächsten Abgleich wiederhergestel
 
 Alle Aufrufe **serverseitig** aus plMail (nie aus dem Browser – das Token darf nicht zum Client),
 mit `Authorization: Bearer <INTEGRATION_TOKEN>`. Das Token gilt nur für `/api/integration/*`.
-Basis-URL z. B. `http://projektakte.lan:8000`. Antworten sind JSON, Fehler `{"detail": "…"}` mit
+Basis-URL z. B. `https://projektakte.lan` (über den TLS-Proxy – das Token nie über unverschlüsseltes
+HTTP schicken). Antworten sind JSON, Fehler `{"detail": "…"}` mit
 HTTP-Status (401 falsches/fehlendes Token, 400 ungültige Anfrage).
 
 ### `GET /api/integration/info`
@@ -36,9 +37,9 @@ HTTP-Status (401 falsches/fehlendes Token, 400 ungültige Anfrage).
 Für die Statusanzeige in plMail.
 
 ```json
-{"name": "Projektakte", "version": "0.3.0", "assign_mode": "manual", "projects": 8,
+{"name": "Projektakte", "version": "0.4.0", "assign_mode": "manual", "projects": 8,
  "jmap": {"capability": "urn:plmail:params:jmap:projektakte", "property": "plmail:projektakte"},
- "url": "http://projektakte.lan:8000"}
+ "url": "https://projektakte.lan"}
 ```
 
 ### `GET /api/integration/projects?q=&limit=500`
@@ -48,7 +49,7 @@ plMail sollte die Liste einige Minuten zwischenspeichern.
 
 ```json
 {"count": 8, "projects": [
-  {"number": "BS-2025-0019", "name": "Kita Regenbogen", "url": "http://projektakte.lan:8000/projekte/BS-2025-0019"},
+  {"number": "BS-2025-0019", "name": "Kita Regenbogen", "url": "https://projektakte.lan/projekte/BS-2025-0019"},
   {"number": "BS-2024-0137", "name": "Grundschule Am Lindenhof", "url": "…/projekte/BS-2024-0137"}]}
 ```
 
@@ -58,8 +59,14 @@ Vorschläge für die gerade gelesene Mail. Speichert nichts, ordnet nichts zu.
 
 ```json
 {"subject": "AW: Termin Außentreppe", "body": "Text der Mail (max. 20 000 Zeichen)",
- "from": "feld@nordlicht-architekten.example", "attachments": ["Plan_EG.pdf"], "limit": 3}
+ "from": "feld@nordlicht-architekten.example", "attachments": ["Plan_EG.pdf"], "limit": 3,
+ "headers": {"List-Unsubscribe": "<mailto:…>", "Precedence": "bulk"}}
 ```
+
+`headers` ist optional; ausgewertet werden nur `List-Unsubscribe` und `Precedence`. Newsletter und
+Werbung (an diesen Kopfzeilen, an Massenabsendern wie `newsletter@`/`noreply@` oder an
+Werbeformulierungen erkannt) bekommen keine inhaltlichen Vorschläge; eine Projektnummer bleibt
+`sicher`. Inhaltliche Vorschläge brauchen mindestens 3 gemeinsame Fachbegriffe mit dem Projekt.
 
 ```json
 {"suggestions": [
@@ -141,8 +148,8 @@ Abgleich wie bisher, die Mails bleiben dann offen.
 ## Prüfen
 
 ```bash
-curl -s -H "Authorization: Bearer $INTEGRATION_TOKEN" http://projektakte.lan:8000/api/integration/info
-curl -s -H "Authorization: Bearer $INTEGRATION_TOKEN" http://projektakte.lan:8000/api/integration/projects
+curl -s -H "Authorization: Bearer $INTEGRATION_TOKEN" https://projektakte.lan/api/integration/info
+curl -s -H "Authorization: Bearer $INTEGRATION_TOKEN" https://projektakte.lan/api/integration/projects
 curl -s -H "Authorization: Bearer $PLMAIL_TOKEN" https://mail.lan/.well-known/jmap | grep projektakte
 ```
 

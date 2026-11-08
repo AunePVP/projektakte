@@ -76,6 +76,18 @@ Fallstricke (laut plMail-Doku):
 - Danach nur `Email/changes` (mit `maxChanges`, solange `hasMoreChanges`); `created`/`updated` werden
   per `Email/get` geholt, `destroyed` aus dem Index entfernt. Bei `cannotCalculateChanges` folgt ein
   vollständiger Abgleich.
+- **Robuster Erstabgleich:** Die Seiten überlappen sich; danach folgt ein Abgleich nur über die IDs
+  (`Email/query` ohne `Email/get`). Fehlende Mails werden nachgeholt (Statistik `recovered`),
+  gelöscht wird nur, was `Email/get` als nicht vorhanden (`notFound`) bestätigt. Ein vom Server
+  begrenztes `limit` wird beachtet. Grund: Ohne Anker-Paging verschiebt ein Löschen während des
+  Blätterns die Positionen, sonst fehlte eine Mail dauerhaft.
+- **Fehler isoliert:** Eine fehlerhafte Mail oder ein nicht ladbarer Anhang wird protokolliert,
+  gezählt (`errors`) und mit wachsendem Abstand erneut versucht (15 min, verdoppelt, höchstens
+  1 Tag; Wiederholliste in `meta`, Schlüssel `jmap_retry:<Konto>`). Anhänge, die plMail nicht mehr
+  hat (404/410), werden übersprungen; nach 6 Fehlversuchen wird die Mail ohne den fehlenden Anhang
+  übernommen. Die übrigen Mails, Embeddings und die Zuordnung laufen weiter.
+- Anhänge werden vor dem Schreiben in die Datenbank heruntergeladen und extrahiert; jede Mail wird
+  atomar (SAVEPOINT) gespeichert und einzeln committet.
 - Reine Flag-Änderungen (gelesen/markiert) lösen keinen erneuten Anhang-Download aus: Ein
   Fingerabdruck aus Betreff, Absender, Datum, Text und Blob-IDs wird verglichen.
 - `accountId` wird immer als String gesendet. Fehler auf Request-Ebene (`application/problem+json`)
@@ -91,4 +103,7 @@ Fallstricke (laut plMail-Doku):
 - **`messageId`/`inReplyTo`/`references` in `Email/get`**: würde erlauben, Antworten über Konten
   hinweg demselben Vorgang zuzuordnen. Projektakte fragt nur die dokumentierten Eigenschaften ab.
 - **`Email/queryChanges`** würde das Blättern bei sehr großen Postfächern beim Erstabgleich
-  entbehrlich machen (derzeit `position` + `limit`).
+  entbehrlich machen (derzeit `position` + `limit` mit Überlappung und ID-Abgleich).
+- **`header:List-Unsubscribe` / `header:Precedence` in `Email/get`**: Damit ließen sich Newsletter
+  auch bei plMail-Mails an der Kopfzeile erkennen; bisher geht das dort nur über Absender und
+  Formulierungen.

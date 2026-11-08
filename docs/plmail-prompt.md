@@ -67,6 +67,8 @@ Nur **serverseitig** (CSP ist `connect-src 'self'`, und das Token darf nie in de
   – Projektliste (neueste zuerst). Etwa 300 s cachen, nach einem Fehler nur etwa 60 s.
 - `POST {PROJEKTAKTE_URL}/api/integration/suggest` mit
   `{"subject":"…","body":"<bodyText, max. 20000 Zeichen>","from":"absender@…","attachments":["datei.pdf"],"limit":3}`
+  (optional zusätzlich `"headers": {"List-Unsubscribe": "…", "Precedence": "…"}`, falls plMail diese
+  Kopfzeilen kennt – dann bekommen Newsletter keine Vorschläge)
   → `{"suggestions":[{"number":"…","name":"…","confidence":"sicher|hoch|niedrig","score":1.0,
   "reason":"Projektnummer BS-0000-0000 im Betreff","url":"…"}]}`. Speichert nichts, ordnet nichts
   zu. Leere Liste = kein Vorschlag.
@@ -189,7 +191,8 @@ bestehenden Tabellen.
 **Konfiguration** (in FORK.md dokumentieren, nicht in `.env`; sonst schlägt
 `DocumentationCoverageTest` an):
 
-- `PROJEKTAKTE_URL` = Basis-URL von Projektakte im LAN, vom plMail-Container aus erreichbar.
+- `PROJEKTAKTE_URL` = Basis-URL von Projektakte im LAN (https über den TLS-Proxy von Projektakte),
+  vom plMail-Container aus erreichbar.
 - `PROJEKTAKTE_TOKEN` = dasselbe Geheimnis wie `INTEGRATION_TOKEN` in Projektakte.
 
 ## Tests und Abnahme

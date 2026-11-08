@@ -6,7 +6,8 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
 
 ## Phase A – Aufbau
 
-Stand 2026-11-08: alle 14 Schritte umgesetzt (Version 0.2.0). Vor dem produktiven Einsatz: Formate
+Stand 2026-11-08: alle 14 Schritte umgesetzt, dazu Zuordnung in plMail (15) und die Nachbesserung
+nach der unabhängigen Prüfung (16; Version 0.4.0). Vor dem produktiven Einsatz: Formate
 der echten KI-Dienste prüfen und in docs/ki-dienste.md eintragen, Schwellwerte mit echten Daten
 überprüfen (siehe DECISIONS.md).
 
@@ -54,6 +55,12 @@ der echten KI-Dienste prüfen und in docs/ki-dienste.md eintragen, Schwellwerte 
 - [x] **15. Zuordnung in plMail** – keine automatische Zuordnung; der Mensch wählt das Projekt in plMail
   beim Lesen, Projektakte übernimmt es per JMAP (docs/plmail-integration.md). Projektakte-Seite fertig
   und gegen einen Fake-plMail getestet; die plMail-Seite beschreibt docs/plmail-prompt.md.
+
+- [x] **16. Nachbesserung nach unabhängiger Prüfung** – 67 bestätigte Mängel (Antwortqualität und
+  Fake-KI, Indexierung, Mails/Zuordnung, Betrieb/Sicherheit, Oberfläche) behoben und gegengeprüft;
+  Messwerkzeug `python -m projektakte.evaluate --real` für die echten Dienste.
+- [ ] **17. Mit den echten Diensten kalibrieren** – im Büronetz `evaluate --real` laufen lassen,
+  Formate in docs/ki-dienste.md eintragen, Schwellwerte einstellen; danach Version 1.0.
 
 ## Phase B – Ideen (nur mit benanntem Nutzen)
 

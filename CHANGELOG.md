@@ -3,6 +3,87 @@
 Alle nennenswerten Änderungen. Format angelehnt an „Keep a Changelog“; ein Abschnitt je
 Roadmap-Schritt.
 
+## [0.4.0] – 2026-11-08 – Nachbesserung nach unabhängiger Prüfung
+
+Eine Prüfung mit 12 Prüfern (6 Blickwinkel, 6 Gegenprüfer) fand 67 bestätigte Mängel. Alle sind
+behoben (5 Pakete, eigene Commits) und erneut gegengeprüft; nur die Prüfung gegen die echten
+KI-Dienste ist hier nicht möglich (dafür gibt es jetzt `python -m projektakte.evaluate --real`).
+
+### Antworten und Suche
+- Fake-Sprachmodell als extraktiver Leser: beantwortet frei formulierte Fragen (Synonyme,
+  Abkürzungen, Wortformen), zählt Projektnummer/-name nicht als Treffer, beantwortet „letzter
+  Stand“ mit der neuesten Quelle, zitiert den passenden Satz einmal („Laut Baugenehmigung (S. 2),
+  Auflage 7 …: … [1]“), nie Überschriften, Tabellen, Grußformeln; sonst „Nicht gefunden.“.
+  Fake-Reranker ignoriert Füllwörter und Projektnummern.
+- Status-Vertrag von `/api/ask`: `answered`, `no_citation` (unbelegt, keine Quellen), `not_found`,
+  `truncated` (neu: abgeschnittene Ausgabe/nur Denkschritte), `llm_unavailable`; `context` enthält
+  immer die Fundstellen. Absagen echter Modelle und Quellenformen (`[Quelle 2]`, `[1–3]`, „Quelle 2“)
+  werden erkannt und vereinheitlicht; Prompt mit nummerierten Regeln und Formatbeispiel;
+  Dokumentquellen mit Datum; überlappende Abschnitte zusammengeführt; Aufzählungen mit dem besten
+  Treffer je Projekt.
+- Volltext mit Abkürzungen/Synonymen (eingebaute Liste + `SYNONYMS_FILE`) und Wortformen; Daten in
+  Quellenangaben in Ortszeit. `/health/deps`: fehlendes `GET /models` ist nur ein Hinweis.
+- `python -m projektakte.evaluate [--real]`: Antwortqualität und Schwellwerte gegen die
+  konfigurierten Dienste messen. Evaluationssatz 79 statt 20 Fragen.
+- Demo-Daten (Version 4): Datumsangaben passen zu den Texten, Sommer-/Winterzeit, erkennbarer
+  Fluchtwegplan; Mail-Kategorien unverändert.
+
+### Indexierung
+- Extraktionsprofil je Dokument: Nach `LLM_VISION=1` oder Modellwechsel werden übersprungene/
+  unvollständige Dokumente (auch Anhänge) nachgelesen; Fehler mit Backoff (15 min … 7 Tage)
+  wiederholt; fehlgeschlagene Bildseiten werden gemeldet statt still verworfen.
+- Kurze Schreibtransaktionen (Lesen/Extrahieren außerhalb der Sperre, Commit je Dokument).
+- Vektorsuche mit Projektfilter berücksichtigt Zuordnungen sofort; Matrix nur einmal je
+  Embedding-Lauf neu geladen, halber Spitzenspeicher.
+- Umbenannte/verschobene Projektordner behalten Dokumente und Vektoren, neue Namen erneuern die
+  Volltext-Titel; Dateien verschwundener Projekte verlassen den Index.
+- Schutz bei fehlendem/leerem Laufwerk (Warnung statt Deaktivieren/Löschen), Symlinks aus
+  `PROJECTS_DIR` heraus werden nie gelesen, UTF-16/32-Textdateien.
+- Migration 6 (`documents.extract_profile`, `incomplete`, `attempts`, `retry_after`).
+
+### Mails und Zuordnung
+- Mail-Import: Anhänge vor dem Schreiben vorbereitet, jede Mail atomar (SAVEPOINT) und einzeln
+  committet; Cache-Dateinamen byte-sicher. plMail: Fehler je Mail isoliert und mit Backoff
+  wiederholt, Erstabgleich mit Überlappung und ID-Abgleich.
+- Verschobene .eml-Dateien behalten Mail und Entscheidung; Entscheidungen zusätzlich unter der
+  Message-ID. Fehlendes/leeres `MAIL_DIR` löscht nichts.
+- Zuordnung in Häppchen (4000 Mails: 277 s → 10 s, Eingang bleibt bedienbar); unbekannte
+  Projektnummern ohne Fremdvorschlag und automatische Zuordnung, sobald der Ordner existiert (auch
+  für plMail-Zuordnungen); Vorschläge brauchen gemeinsame Fachbegriffe (optional
+  `ASSIGN_MIN_SIMILARITY`), Newsletter/Werbung bekommen keine; Begründungen in Alltagssprache.
+- Mailkopf im Abschnittstext mit deutscher Ortszeit; `/api/integration/suggest` nimmt optional
+  `headers`.
+
+### Betrieb und Sicherheit
+- Abmelden beendet alle Sitzungen des Benutzers serverseitig (Sitzungsepoche); Laufzeit
+  serverseitig begrenzt; kaputte Cookies führen nicht mehr zu HTTP 500.
+- Anmeldebremse mit exponentiellem Backoff statt fester Sperre, Geräte-Cookie gegen Aussperren,
+  begrenzte gleichzeitige Passwortprüfungen; Proxy-Vertrauen über `FORWARDED_ALLOW_IPS`.
+- Startprüfungen: `AUTH_DISABLED` nur mit `APP_ENV=dev`, in `production` starker `SECRET_KEY`
+  Pflicht, `DATA_DIR` muss beschreibbar sein (deutsche Meldung). `COOKIE_SECURE` in `production`
+  standardmäßig an. Docker-Image: `APP_ENV=production`, HEALTHCHECK, schlanker (`.dockerignore`),
+  `constraints.txt`.
+- Sicherheits-Header (CSP ohne `unsafe-inline`, Frame-Schutz, nosniff, Referrer-Policy,
+  `Cache-Control: no-store`) und Ablehnung zustandsändernder Anfragen fremder Seiten.
+- Zugriffsprotokoll ohne Query-Strings, einheitliches Logformat, `LOG_LEVEL`.
+- Neu: `GET /health/ready`, `python -m projektakte.backup`, Betriebsbeispiel mit TLS-Proxy unter
+  `deploy/`. Login und Logout in `auth_web.py`.
+
+### Oberfläche
+- Antwortanzeige nach Status-Vertrag: zitierte Quellen mit denselben Nummern wie im Text, weitere
+  Fundstellen eingeklappt; sonst „Mögliche Fundstellen“ und „In der Suche öffnen“. Bereichszitate
+  `[1–3]` werden vollständig verlinkt.
+- Suche blendet schwache Treffer aus (`SEARCH_MIN_RERANK`, einblendbar), hebt Suchbegriffe hervor.
+- Zuordnungs-Eingang: 50 Mails je Seite mit Filtern, eine gemeinsame Projektliste, Zähler und
+  Badge aktualisieren sich sofort, verworfene Karten bleiben bedienbar, belegte Datenbank gibt
+  einen freundlichen Hinweis (API: 503 + `Retry-After`). `/api/inbox` paginiert.
+- Projektseite mit „Anhänge aus Mails“, echte Plurale, Daten in Ortszeit; Statusseite zeigt
+  Warnungen und im Fake-Modus „simuliert“; roter Balken bei ausgeschaltetem Zugangsschutz; keine
+  Inline-Skripte/-Styles.
+
+### Tests
+- 559 Tests, parallel mit pytest-xdist (≈ 25 s auf 4 Kernen; `PYTEST_WORKERS=0` für einen Prozess).
+
 ## [0.3.0] – 2026-11-08 – Zuordnung in plMail
 
 - `ASSIGN_MODE=manual` (Standard, sobald plMail angebunden ist): keine automatische Zuordnung mehr.

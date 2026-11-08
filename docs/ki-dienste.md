@@ -81,12 +81,46 @@ PROJEKTAKTE_INTEGRATION=1 LLM_URL=http://192.168.178.62:8000/v1 EMBED_URL=http:/
 ```
 
 Beim ersten Lauf mit den echten Embeddings erkennt Projektakte am Fingerabdruck, dass sich der
-Dienst geändert hat, und berechnet alle Vektoren neu. Die Schwellwerte für Mail-Vorschläge
-(`ASSIGN_MIN_SHARE`, `ASSIGN_MIN_LEAD`) und `ASK_MIN_RERANK` wurden mit den Fakes eingestellt und
-sollten mit echten Daten einmal überprüft werden.
+Dienst geändert hat, und berechnet alle Vektoren neu.
+
+### Antwortqualität messen und Schwellwerte einstellen
+
+```bash
+python -m projektakte.evaluate --real --json ergebnis.json
+```
+
+indexiert den Demo-Datensatz mit den echten Diensten in einen eigenen Index (`$DATA_DIR/eval`) und
+lässt den Evaluationssatz (79 Fragen) laufen. Die Ausgabe zeigt je Frage, ob die erwartete Quelle
+unter den ersten 5 Treffern steht, ob Fakt und Quelle in der Antwort stehen, den Status und die
+Rerank-Scores; zusammengefasst die Score-Verteilung und eine Schwellwerttabelle (wie viele
+erwartete Quellen unter einer Schwelle lägen gegen wie viele Fragen ohne Antwort sie erreichen).
+Damit `ASK_MIN_RERANK` (Standard 0,01), `SEARCH_MIN_RERANK` (0,05) und `ASSIGN_MIN_SIMILARITY`
+(aus) für die echten Modelle einstellen. Die Werte stammen aus der Entwicklung mit den Fakes.
+
+### Denkmodelle
+
+Qwen3 denkt standardmäßig in `<think>…</think>`. Reicht `LLM_MAX_TOKENS` nicht, endet die Ausgabe
+mitten im Denken (`finish_reason: length`, nur `reasoning_content` oder offenes `<think>`).
+Projektakte meldet das als Status `truncated` („Antwort abgebrochen“) mit den Fundstellen statt als
+„nicht gefunden“. Abhilfe: `LLM_EXTRA_BODY={"chat_template_kwargs":{"enable_thinking":false}}` oder
+ein größeres `LLM_MAX_TOKENS`. Absagen echter Modelle („Dazu liegen keine Informationen vor“, „Die
+Quellen enthalten keine Angaben …“) und Quellenformen wie `[Quelle 2]`, `[1–3]` oder „laut Quelle 2“
+werden erkannt.
+
+### Abkürzungen und Synonyme
+
+Die Volltextsuche (Fragen und Suche, nicht die Mail-Zuordnung) erweitert Abkürzungen und
+Fachsynonyme aus einer eingebauten Liste (`projektakte/textutil.py`, `BUILTIN_SYNONYMS`) und aus
+einer eigenen UTF-8-Datei (`SYNONYMS_FILE`, eine Gruppe je Zeile, `BMA = Brandmeldeanlage` in beide
+Richtungen, `EG -> Erdgeschoss` nur in eine, `#` Kommentar). Echte Embeddings kennen Synonyme
+ohnehin; die Liste hilft dem Volltext.
 
 ## Fake-Dienste
 
 `python -m projektakte.fake_ai --port 8999` bildet alle drei Schnittstellen auf einem Port nach
-(`--embed-format`, `--rerank-format`, `--no-think`, `--delay`); `AI_MODE=fake` startet dieselben
-Fakes im Prozess der Anwendung. Die Tests nutzen sie auf `127.0.0.1` mit zufälligem Port.
+(`--embed-format`, `--rerank-format`, `--no-think`, `--delay`, `--chat-quirk
+length|reasoning_only|unterminated_think`, `--no-models`); `AI_MODE=fake` startet dieselben Fakes
+im Prozess der Anwendung. Die Tests nutzen sie auf `127.0.0.1` mit zufälligem Port. Der Fake-Chat
+ist ein extraktiver Leser (Sätze nach Themenwörtern, Synonymen und IDF bewertet, Projektname zählt
+nicht, „letzter Stand“ = neueste Quelle) – er zeigt den Ablauf glaubwürdig, sagt aber nichts über
+die Antwortqualität des echten Modells.

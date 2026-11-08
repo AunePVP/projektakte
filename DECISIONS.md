@@ -35,10 +35,12 @@ Zusammenfassung, darunter die Details je Roadmap-Schritt.
 12. **Demo-Daten byte-genau reproduzierbar**, mit schweren Negativbeispielen und einem
     Evaluationssatz aus 20 Fragen (darunter 2 ohne Antwort), der in den Tests vollständig besteht.
 
-Bekannte Grenzen: Die Schwellwerte (`ASSIGN_MIN_SHARE`, `ASSIGN_MIN_LEAD`, `ASK_MIN_RERANK`) sind mit
-den Fakes eingestellt und müssen mit echten Modellen und Daten überprüft werden. Die
-Antwortqualität mit dem Fake-LLM sagt nur etwas über den Ablauf, nicht über das echte Modell. Die
-Versionsnummer bleibt daher unter 1.0 (0.2.0), bis die echten Dienste geprüft sind.
+Bekannte Grenzen: Die Schwellwerte (`ASSIGN_MIN_SHARE`, `ASSIGN_MIN_LEAD`, `ASK_MIN_RERANK`,
+`SEARCH_MIN_RERANK`, `ASSIGN_MIN_SIMILARITY`) sind mit den Fakes eingestellt und müssen mit echten
+Modellen und Daten überprüft werden (`python -m projektakte.evaluate --real`). Die Antwortqualität
+mit dem Fake-LLM sagt nur etwas über den Ablauf, nicht über das echte Modell. Die Versionsnummer
+bleibt daher unter 1.0, bis die echten Dienste geprüft sind. Nach der unabhängigen Prüfung wurden
+67 Mängel behoben (Abschnitt „Nachbesserung“ unten).
 
 ## Allgemein
 
@@ -291,3 +293,94 @@ Versionsnummer bleibt daher unter 1.0 (0.2.0), bis die echten Dienste geprüft s
   (FORK.md 22); hier ist die Eigenschaft trotzdem richtig, weil die Zuordnung über `Email/changes`
   bemerkt werden muss – das kostet drei kleine markierte Änderungen am Original.
 - **Mail-Link in plMail**: `https://<plmail>/mail/message/{emailId}` (Route `MailController::message`).
+
+## Nachbesserung nach der unabhängigen Prüfung (0.4.0)
+
+Die Prüfung (12 Prüfer) fand 67 bestätigte Mängel. Behoben in fünf Paketen mit getrennten
+Dateien, die parallel bearbeitet und danach zusammengeführt wurden; anschließend hat ein
+unabhängiger Prüfer jeden Befund mit den ursprünglichen Nachstell-Skripten erneut geprüft. Einige
+frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
+
+**Antworten und Suche**
+- *Fake-Chat als extraktiver Leser* (ersetzt die Wortabdeckungsregel aus Schritt 10): Sätze werden
+  nach den Themenwörtern der Frage bewertet (Synonyme, Wortformen, IDF über die gegebenen Quellen,
+  Wortart-Gewichte), geantwortet wird ab 70 % Abdeckung der nicht projektbezogenen Themenwörter.
+  Grund: Der alte Fake und der Evaluationssatz waren aufeinander abgestimmt; freie Fragen endeten
+  meist mit „nicht gefunden“, Fragen mit Projektnamen bekamen unpassende Zitate. Geprüft an freien
+  Fragen des Prüfers, die nicht im Evaluationssatz stehen.
+- *Evaluationssatz 79 Fragen*, Prüfstrings stehen nicht in der Frage, Negativfragen nennen ein
+  Projekt. Er bleibt ein Ablaufnachweis; die Qualität echter Modelle misst `projektakte.evaluate --real`.
+- *Synonyme nur auf der Fragenseite des Volltexts*, nicht in Embeddings und Zuordnung – stabile
+  Vektor-Fingerabdrücke und Zuordnungsqualität, echte Embeddings kennen Synonyme ohnehin.
+- *Unbelegte Antworten* (`no_citation`) werden gezeigt, aber als unbelegt und ohne Quellenliste
+  (ersetzt Schritt 10, wo alle Fundstellen als Quellen kamen). *`truncated`* ist ein eigener Status:
+  Ein technischer Abbruch darf nicht als fachliches „nicht gefunden“ erscheinen.
+- *„Mögliche Fundstellen“ bei jedem Status außer `answered`*: Ein falsches „nicht gefunden“ ist im
+  Brandschutz gefährlicher als eine unsichere Antwort; Nachprüfbarkeit geht vor.
+- *Quellennummern bleiben die des Antworttextes*, nicht zitierte Stellen eingeklappt – das Zitat [3]
+  muss zur Liste passen.
+- *Suchschwelle nur mit Reranker*: Nur dessen Score ist vergleichbar; ohne Reranker wird nichts
+  ausgeblendet.
+
+**Indexierung**
+- *Extraktionsprofil je Dokument* (Bildauswertung an/aus, Modell): Unverändert heißt jetzt Größe und
+  mtime gleich **und** Ergebnis vollständig oder Profil gleich und Wiederholzeit nicht erreicht. So
+  wirkt der angekündigte Wechsel auf das multimodale Modell ohne Datenbanklöschung; vollständige
+  Ergebnisse werden bei einem Modellwechsel bewusst nicht neu gelesen (zu teuer). Fehler mit
+  Backoff 15 min × 2^(n−1), höchstens wöchentlich.
+- *Kurze Schreibtransaktionen*: Extraktion (`prepare_document`) und Schreiben (`write_document`)
+  getrennt, Commit je Dokument bzw. Mail, Zuordnung in Häppchen von höchstens 50 Mails bzw. 0,5 s.
+  SQLite hat nur einen Schreiber; die Sperre darf nie während langsamer Arbeit gehalten werden.
+- *Projektfilter der Vektorsuche per SQL* (ersetzt das Mitspeichern des Projekts in der Matrix):
+  Zuordnungen ändern sich ohne neue Vektoren; der Filter kostet je Suche 1–2 ms.
+- *Dateien verschwundener Projekte verlassen den Index* (ergänzt Schritt 4): abgeleitete Daten, die
+  zurückkommen, sobald der Ordner wieder da ist; Mails und Entscheidungen bleiben. Gleiche Nummer
+  mit neuem Pfad wird verschoben statt neu extrahiert; ein neuer Name erneuert nur die
+  Volltext-Titel, nicht die Vektoren.
+- *Plausibilitätsprüfung der Quellen*: Ein fehlender, unlesbarer oder plötzlich leerer
+  `PROJECTS_DIR`/`MAIL_DIR` ändert nichts (Warnung statt Deaktivieren/Löschen) – ein nicht
+  eingebundenes Netzlaufwerk darf den Index nicht leeren.
+- *Symlinks*: Grenze ist `PROJECTS_DIR` (aufgelöst); Datei-Links nur mit Ziel innerhalb, Ordner-Links
+  werden nie betreten, gelesen wird mit `O_NOFOLLOW`.
+
+**Mails und Zuordnung**
+- *Mindest-Evidenz über gemeinsame Fachbegriffe* (≥ 3, ohne Projekthistorie ≥ 4) statt fester BM25-
+  oder Vektorwerte: modellunabhängig und in der Begründung nachvollziehbar; die Vektorschwelle ist
+  optional (`ASSIGN_MIN_SIMILARITY`). Sehr häufige Wörter (> 50 % der Abschnitte) zählen nicht.
+- *Newsletter/Werbung über Kopfzeilen, Absender und Formulierungen*, nicht über Ähnlichkeit –
+  themenspezifische Werbung ist inhaltlich genauso ähnlich wie echte Projektpost.
+- *Unbekannte Projektnummer = kein Vorschlag für ein anderes Projekt*: Die erste Mail zu einem neuen
+  Projekt kommt oft vor dem Ordner; ein falscher Vorschlag würde aus Gewohnheit bestätigt.
+- *Entscheidungen zusätzlich unter der Message-ID*, verschobene Dateien am Inhalts-Hash erkannt:
+  Pfade sind kein stabiler Schlüssel, Entscheidungen sind die einzigen nicht wiederherstellbaren
+  Daten. Merker (Newsletter, plMail-Wiederholliste) liegen in `meta` – keine Schemaänderung.
+- *plMail-Vollabgleich mit Überlappung und ID-Abgleich*, gelöscht wird erst nach Bestätigung durch
+  `Email/get` (kein Anker-Paging in plMail).
+
+**Betrieb und Sicherheit**
+- *Sitzungsepoche statt Sitzungstabelle* (ersetzt das rein zustandslose Cookie aus Schritt 13):
+  Abmelden erhöht die Epoche des Benutzers und beendet alle seine Sitzungen, auch kopierte Cookies
+  und über Neustarts hinweg; Abmelden auf einem Gerät meldet auch die anderen ab – für ein
+  Büro-Tool akzeptabel, an Gemeinschaftsrechnern erwünscht.
+- *Bremse statt Sperre* (ersetzt die feste Sperre nach 5 Fehlversuchen aus Schritt 13): Die feste
+  Sperre je IP und Name ließ sich hinter einem gemeinsamen Proxy oder Terminalserver zum Aussperren
+  von Kollegen missbrauchen. Exponentielles Backoff mit Obergrenze plus Geräte-Cookie (OWASP-Muster
+  „device cookies“) verhindert das und hält das Raten trotzdem langsam.
+- *CSRF über `Sec-Fetch-Site`/`Origin`* zusätzlich zu SameSite=Lax: SameSite schützt nicht vor
+  Nachbar-Subdomains und nicht vor Basic-Zugangsdaten. Kein Token, weil alle unterstützten Browser
+  `Sec-Fetch-Site` senden und ein Token jedes Formular und jeden HTMX-Aufruf berührt hätte.
+- *CSP ohne `unsafe-inline`*, über einen Test abgesichert.
+- *`AUTH_DISABLED` per Allowlist* (`dev`, `test`) statt Blocklist (`production`): Ein vertipptes oder
+  vergessenes `APP_ENV` darf den Zugangsschutz nicht abschalten. *Image standardmäßig `production`*:
+  sichere Voreinstellung für das Auslieferungsartefakt; die Demo setzt `APP_ENV=dev`.
+- *TLS beim Reverse-Proxy*, die App bleibt bei HTTP; `COOKIE_SECURE` in `production` an.
+  *Proxy-Vertrauen explizit* (`FORWARDED_ALLOW_IPS`), sonst sähe die Anmeldebremse nur die Proxy-IP
+  oder Clients könnten ihre Adresse fälschen.
+- *Zugriffsprotokoll ohne Query-String*: Suchbegriffe sind Projekt- und Personendaten.
+- *`/health/ready` öffentlich, aber datenarm* – Monitoring und HEALTHCHECK ohne Zugangsdaten;
+  `/health/deps` bleibt geschützt. *Sicherung über die SQLite-Backup-API* plus JSON der
+  Entscheidungen als schemaunabhängiges zweites Netz.
+
+**Tests**
+- *Parallel mit pytest-xdist* (neue Entwicklungsabhängigkeit, gepinnt): Mit 559 Tests lag der
+  serielle Lauf bei 73 s und damit über der Leitplanke „< 1 min“; parallel ≈ 25 s.
