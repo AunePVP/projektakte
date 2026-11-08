@@ -15,6 +15,7 @@ import sqlite3
 from .assign import INBOX_STATUSES
 
 PAGE_SIZE = 50  # mails per page in the web interface
+MAX_PAGE_IDS = 2 * PAGE_SIZE  # ids of the cards of one page a decision may send along
 MAX_API_LIMIT = 500
 
 _INBOX_COLUMNS = (
@@ -131,6 +132,38 @@ def count_between(conn: sqlite3.Connection, first: SortKey, last: SortKey, *, st
     return conn.execute(
         f"SELECT COUNT(*) FROM mails m WHERE {where} AND ({_KEY}) <= (?, ?, ?) AND ({_KEY}) >= (?, ?, ?)",
         (*args, *first, *last)).fetchone()[0]
+
+
+def count_ids(conn: sqlite3.Connection, ids: list[int], *, status: str = "") -> tuple[int, int]:
+    """Of the mails ``ids`` (the cards of a page): how many are still in the inbox – in any inbox
+    status, a rejected suggestion stays actionable on its page – and how many of those match the
+    filter ``status``."""
+    ids = list(dict.fromkeys(int(i) for i in ids))[:MAX_PAGE_IDS]
+    if not ids:
+        return 0, 0
+    marks = ",".join("?" * len(ids))
+    wanted = statuses_for(status)
+    left = in_filter = 0
+    for (st,) in conn.execute(f"SELECT assign_status FROM mails WHERE deleted = 0 AND id IN ({marks})", ids):
+        if st in INBOX_STATUSES:
+            left += 1
+            in_filter += 1 if st in wanted else 0
+    return left, in_filter
+
+
+def encode_ids(mails: list[dict]) -> str:
+    """Ids of the cards of a page as a form value: '12,13,40'."""
+    return ",".join(str(int(m["id"])) for m in mails)
+
+
+def decode_ids(text: str | None) -> list[int]:
+    """Ids from a form value; malformed parts are ignored, at most :data:`MAX_PAGE_IDS`."""
+    out: list[int] = []
+    for part in (text or "").split(",")[:MAX_PAGE_IDS]:
+        part = part.strip()
+        if part.isdigit() and len(part) <= 18:
+            out.append(int(part))
+    return out
 
 
 def mail_row(conn: sqlite3.Connection, mail_id: int) -> dict | None:

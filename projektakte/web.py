@@ -24,7 +24,7 @@ from .assign import INBOX_STATUSES, DecisionError, decide
 from .registry import get_project, list_projects
 from .search import hybrid_search
 from .webtext import (breakable_path, highlight, matcher, parse_blocks, passage, render_html, same_heading,
-                      snippet)
+                      snippet, trim_overlap)
 
 log = logging.getLogger("projektakte.web")
 
@@ -380,7 +380,8 @@ def ask_submit(request: Request, question: str = Form(""), project: str = Form("
             result = answer_question(conn, request.app.state.ai, str(s.db_path), question,
                                      project=p["number"] if p else None, top_k=s.ask_top_k,
                                      context_chars=s.ask_context_chars, min_rerank=s.ask_min_rerank,
-                                     rerank_top_k=s.rerank_top_k, synonyms_file=s.synonyms_file)
+                                     rerank_top_k=s.rerank_top_k, synonyms_file=s.synonyms_file,
+                                     deadline_s=s.ask_deadline)
         projects = list_projects(conn)
     if is_htmx(request):
         return templates.TemplateResponse(request, "_answer.html", {"result": result, "question": question})
@@ -463,9 +464,11 @@ def _inbox_page_rows(conn, status: str, total: int, *, ab: str, vor: str, ende: 
 
 def inbox_range(first: int, last: int, total: int, pager: bool = False) -> dict:
     """What the summary line and the pager say about the shown part of the inbox: positions
-    ``first``–``last`` of ``total`` open mails (``done``: nothing of the page is left open)."""
+    ``first``–``last`` of ``total`` open mails (``done``: nothing of the page is left open). A page
+    with a pager keeps the "first–last of total" form after decisions even when the total falls to
+    one page – "29 Mails" would claim that all of them are on this page."""
     return {"first": first, "last": last, "total": total, "done": last < first,
-            "paged": total > inbox.PAGE_SIZE or first > 1, "pager": pager}
+            "paged": total > inbox.PAGE_SIZE or first > 1 or pager, "pager": pager}
 
 
 @router.get("/eingang", response_class=HTMLResponse)
@@ -490,7 +493,8 @@ def inbox_page(request: Request, status: str = "", ab: str = "", vor: str = "", 
     page_state = None
     if mails:
         page_state = {"seite_status": status, "seite_von": inbox.encode_key(first_key),
-                      "seite_bis": inbox.encode_key(last_key), "seite_pager": "1" if shown["paged"] else ""}
+                      "seite_bis": inbox.encode_key(last_key), "seite_pager": "1" if shown["paged"] else "",
+                      "seite_ids": inbox.encode_ids(mails)}
     return render(request, "inbox.html", mails=mails, projects=projects, assign_mode=s.assign_mode,
                   counts=counts, status=status, total=total, back=back, shown=shown, page_state=page_state,
                   filter_urls={k: inbox_url(k) for k in INBOX_FILTERS},
@@ -502,14 +506,25 @@ def inbox_page(request: Request, status: str = "", ab: str = "", vor: str = "", 
 
 def _page_summary(conn, state: dict) -> dict | None:
     """The summary line of the inbox page a decision came from (sent with the HTMX request as
-    ``seite_*``): position of the mails still open on that page and the total of its filter."""
+    ``seite_*``): position of the mails still open on that page and the total of its filter.
+
+    "Still open" are the cards of the page (``seite_ids``) that can still be decided. A rejected
+    suggestion is one of them although its sort key changed (it moves behind the suggestions, and
+    in the filter "Mit Vorschlag" it no longer belongs to the filter – it is counted on top of the
+    filter's total then, so the line never claims fewer open mails than the page shows). Pages
+    rendered without ids fall back to the key range of the page."""
     first_key, last_key = inbox.decode_key(state.get("von")), inbox.decode_key(state.get("bis"))
     status = state.get("status") or ""
     if first_key is None or last_key is None or status not in ("", *INBOX_STATUSES):
         return None
     total = inbox.counts_by_status(conn)[status]
     before = inbox.count_before(conn, first_key, status=status)
-    left = inbox.count_between(conn, first_key, last_key, status=status)
+    ids = inbox.decode_ids(state.get("ids"))
+    if ids:
+        left, in_filter = inbox.count_ids(conn, ids, status=status)
+        total += left - in_filter
+    else:
+        left = inbox.count_between(conn, first_key, last_key, status=status)
     return inbox_range(before + 1, before + left, total, pager=state.get("pager") == "1")
 
 
@@ -573,14 +588,14 @@ def _card_context(outcome: dict, back: str) -> dict:
 @router.post("/eingang/{mail_id}", response_class=HTMLResponse)
 def inbox_decide(request: Request, mail_id: int, action: str = Form(...), project: str = Form(""),
                  back: str = Form("/eingang"), seite_status: str = Form(""), seite_von: str = Form(""),
-                 seite_bis: str = Form(""), seite_pager: str = Form("")):
+                 seite_bis: str = Form(""), seite_pager: str = Form(""), seite_ids: str = Form("")):
     """A decision from an inbox card or the mail page. HTMX requests carry the cursor of their page
     (``seite_*``, set on the card list) so the summary line of that page is updated as well."""
     s = _settings(request)
     back = safe_back(back)
     user = getattr(request.state, "user", None)
-    page_state = ({"status": seite_status, "von": seite_von, "bis": seite_bis, "pager": seite_pager}
-                  if is_htmx(request) and seite_von else None)
+    page_state = ({"status": seite_status, "von": seite_von, "bis": seite_bis, "pager": seite_pager,
+                   "ids": seite_ids} if is_htmx(request) and seite_von else None)
     try:
         with db.session(s.db_path) as conn:
             outcome = _decide(conn, mail_id, action, project, user, s.assign_mode, page_state)
@@ -622,16 +637,18 @@ def _busy_response(request: Request, mail_id: int, back: str, typed: str = "") -
 # ------------------------------------------------------------------------------------- mails, documents
 @router.get("/mails/{mail_id}", response_class=HTMLResponse)
 def mail_page(request: Request, mail_id: int):
-    with db.session(_settings(request).db_path) as conn:
+    s = _settings(request)
+    with db.session(s.db_path) as conn:
         m = conn.execute("SELECT m.*, p.name AS project_name FROM mails m LEFT JOIN projects p ON "
                          "p.number = m.project WHERE m.id = ? AND m.deleted = 0", (mail_id,)).fetchone()
         if not m:
             raise HTTPException(404, "Mail nicht gefunden")
         atts = [dict(r) for r in conn.execute(
-            "SELECT id, filename, ext, size, status, message FROM documents WHERE mail_id = ? ORDER BY id",
-            (mail_id,))]
+            "SELECT id, filename, ext, size, status, message, path, cache_path, mail_id FROM documents "
+            "WHERE mail_id = ? ORDER BY id", (mail_id,))]
         projects = list_projects(conn)
-    s = _settings(request)
+    for a in atts:  # "Datei öffnen" only for a file that is there (not for "Anhang ausstehend")
+        a["available"] = original_file(s, a) is not None
     m = dict(m)
     in_plmail = m["source"] == "jmap" and (s.assign_mode == "manual" or bool(m.get("external_assignment")))
     plmail_link = None
@@ -644,17 +661,35 @@ def mail_page(request: Request, mail_id: int):
 
 @router.get("/dokumente/{doc_id}", response_class=HTMLResponse)
 def document_page(request: Request, doc_id: int):
-    with db.session(_settings(request).db_path) as conn:
+    s = _settings(request)
+    with db.session(s.db_path) as conn:
         d = conn.execute("SELECT d.*, p.name AS project_name FROM documents d LEFT JOIN projects p ON "
                          "p.number = d.project WHERE d.id = ?", (doc_id,)).fetchone()
         if not d:
             raise HTTPException(404, "Dokument nicht gefunden")
-        chunks = [chunk_view(dict(r)) for r in conn.execute(
+        rows = [dict(r) for r in conn.execute(
             "SELECT id, ord, page, heading, text FROM chunks WHERE doc_id = ? ORDER BY ord", (doc_id,))]
         mail = None
         if d["mail_id"]:
             mail = conn.execute("SELECT id, subject, date FROM mails WHERE id = ?", (d["mail_id"],)).fetchone()
-    return render(request, "document.html", d=dict(d), chunks=chunks, mail=dict(mail) if mail else None)
+    d = dict(d)
+    d["available"] = original_file(s, d) is not None
+    chunks = [chunk_view(c) for c in without_overlap(rows)]
+    return render(request, "document.html", d=d, chunks=chunks, mail=dict(mail) if mail else None)
+
+
+def without_overlap(chunks: list[dict]) -> list[dict]:
+    """The sections of a document as one continuous text: chunking repeats the last paragraph of a
+    section at the beginning of the next one (same page and heading); the page shows it only once.
+
+    The repeated lines are left out at the end of the earlier section, not at the beginning of the
+    later one, so every section (anchor ``#c<id>`` of search hits and answer sources) still starts
+    with its own complete text and a passage found in the overlap is right below the anchor."""
+    out = [dict(c) for c in chunks]
+    for cur, nxt in zip(out, out[1:]):
+        if cur.get("page") == nxt.get("page") and (cur.get("heading") or "") == (nxt.get("heading") or ""):
+            cur["text"] = trim_overlap(cur.get("text") or "", nxt.get("text") or "")
+    return out
 
 
 def chunk_view(chunk: dict) -> dict:
@@ -670,6 +705,25 @@ def chunk_view(chunk: dict) -> dict:
     return {**chunk, "context": " · ".join(context), "html": render_html(blocks)}
 
 
+def original_file(s, d) -> Path | None:
+    """The original file of a document row (``path``, ``cache_path``, ``mail_id``, ``status``) if it
+    can be opened: known to the index, below the configured roots and present. A mail attachment
+    that the source has not delivered yet ("Anhang ausstehend") has no file."""
+    if d["mail_id"]:
+        if d["status"] == "pending" or not d["cache_path"]:
+            return None
+        raw = d["cache_path"]
+    else:
+        raw = d["path"]
+    if not raw:
+        return None
+    path = Path(raw).resolve()
+    roots = [s.projects_dir.resolve(), s.cache_dir.resolve()]
+    if not any(path.is_relative_to(r) for r in roots) or not path.is_file():
+        return None
+    return path
+
+
 @router.get("/dokumente/{doc_id}/datei")
 @router.get("/dokumente/{doc_id}/datei/{filename:path}")
 def document_file(request: Request, doc_id: int, filename: str = ""):
@@ -677,13 +731,12 @@ def document_file(request: Request, doc_id: int, filename: str = ""):
     The file name at the end of the address only names the browser tab; ``doc_id`` decides."""
     s = _settings(request)
     with db.session(s.db_path) as conn:
-        d = conn.execute("SELECT path, cache_path, filename, mail_id FROM documents WHERE id = ?",
+        d = conn.execute("SELECT path, cache_path, filename, mail_id, status FROM documents WHERE id = ?",
                          (doc_id,)).fetchone()
     if not d:
         raise HTTPException(404, "Dokument nicht gefunden")
-    path = Path(d["cache_path"] if d["mail_id"] else d["path"]).resolve()
-    roots = [s.projects_dir.resolve(), s.cache_dir.resolve()]
-    if not any(path.is_relative_to(r) for r in roots) or not path.is_file():
+    path = original_file(s, d)
+    if path is None:
         raise HTTPException(404, "Datei nicht verfügbar")
     inline = path.suffix.lower() in (".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg")
     return FileResponse(path, filename=d["filename"],

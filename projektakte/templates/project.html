@@ -27,7 +27,7 @@
       <span class="date">{{ e.date|de_date }}</span>
       <span class="tag {{ e.kind }}">{{ 'Mail' if e.kind == 'mail' else 'Dokument' }}</span>
       {% if e.kind == 'mail' %}<a href="/mails/{{ e.id }}">{{ e.title or '(ohne Betreff)' }}</a> <span class="muted">– {{ e.sub }}</span>
-      {% if e.atts %}<span class="atts-inline">📎 {% for a in e.atts %}<a href="/dokumente/{{ a.id }}">{{ a.filename|path }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}
+      {% if e.atts %}<span class="atts-inline">📎 {% for a in e.atts %}<a href="/dokumente/{{ a.id }}">{{ a.filename|path }}</a>{% if a.status == 'pending' %} <span class="muted small">(Anhang ausstehend)</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}
       {% else %}<a href="/dokumente/{{ e.id }}">{{ e.title|path }}</a> <span class="muted">{{ e.sub }}</span>{% endif %}
     </li>
     {% endfor %}
@@ -45,7 +45,7 @@
       <td><a href="/dokumente/{{ d.id }}">{{ d.rel_path|path }}</a></td>
       <td class="hide-sm">{{ d.ext[1:]|upper }}</td>
       <td class="date">{{ d.doc_date|de_date }}</td>
-      <td>{% if d.status != 'ok' %}<span class="pill warn" title="{{ d.message or '' }}">{{ DOC_STATUS[d.status] }}</span>{% elif d.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
+      <td>{% if d.status != 'ok' %}<span class="pill warn" title="{{ d.message or '' }}">{{ DOC_STATUS.get(d.status, d.status) }}</span>{% elif d.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
     </tr>
     {% else %}<tr><td colspan="4" class="empty">Keine Dokumente.</td></tr>{% endfor %}
     </tbody>
@@ -63,7 +63,7 @@
         <span class="show-sm small">aus der Mail <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a> <span class="muted">vom {{ a.date|de_date }}</span></span></td>
       <td class="hide-sm">{{ a.ext[1:]|upper }}</td>
       <td class="hide-sm"><span class="muted">{{ a.date|de_date }}</span> <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a></td>
-      <td>{% if a.status != 'ok' %}<span class="pill warn" title="{{ a.message or '' }}">{{ DOC_STATUS[a.status] }}</span>{% elif a.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
+      <td>{% if a.status != 'ok' %}<span class="pill warn" title="{{ a.message or '' }}">{{ DOC_STATUS.get(a.status, a.status) }}</span>{% elif a.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
     </tr>
     {% else %}<tr><td colspan="4" class="empty">Keine Anhänge in den zugeordneten Mails.</td></tr>{% endfor %}
     </tbody>

@@ -208,7 +208,7 @@ def ask(request: Request, body: AskRequest) -> dict:
         result = answer_question(conn, request.app.state.ai, str(s.db_path), question, project=project,
                                  top_k=s.ask_top_k, context_chars=s.ask_context_chars,
                                  min_rerank=s.ask_min_rerank, rerank_top_k=s.rerank_top_k,
-                                 synonyms_file=s.synonyms_file)
+                                 synonyms_file=s.synonyms_file, deadline_s=s.ask_deadline)
     return result.to_dict()
 
 

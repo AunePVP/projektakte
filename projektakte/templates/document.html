@@ -8,11 +8,14 @@
   {% if mail %}<dt>Anhang von</dt><dd><a href="/mails/{{ mail.id }}">{{ mail.subject }}</a> ({{ mail.date|de_date(true) }})</dd>{% endif %}
   <dt>Datum</dt><dd>{{ d.doc_date|de_date }}</dd>
   <dt>Größe</dt><dd>{{ d.size|filesize }}{% if d.pages %} · {{ d.pages|plural('Seite', 'Seiten') }}{% endif %}</dd>
-  <dt>Status</dt><dd>{% if d.status == 'ok' %}indexiert{% if d.method == 'vision' %} (per Bildauswertung){% endif %}{% else %}<span class="pill warn">{{ DOC_STATUS[d.status] }}</span> {{ d.message or '' }}{% endif %}</dd>
+  <dt>Status</dt><dd>{% if d.status == 'ok' %}indexiert{% if d.method == 'vision' %} (per Bildauswertung){% endif %}{% else %}<span class="pill warn">{{ DOC_STATUS.get(d.status, d.status) }}</span> {{ d.message or '' }}{% endif %}</dd>
 </dl>
-<p><a class="button secondary" href="{{ file_url(d.id, d.filename) }}">Originaldatei öffnen</a></p>
+{% if d.available %}<p><a class="button secondary" href="{{ file_url(d.id, d.filename) }}">Originaldatei öffnen</a></p>
+{% elif d.status == 'pending' %}<p class="note info">Originaldatei noch nicht da – sie wird automatisch nachgeladen, sobald plMail sie liefert.</p>
+{% else %}<p class="note warn">Die Originaldatei ist nicht verfügbar.</p>{% endif %}
 <h2>Abschnitte</h2>
-{#- c.html: the chunk text without markdown syntax (web.chunk_view) – headings, tables, lists -#}
+{#- c.html: the chunk text without markdown syntax (web.chunk_view) – headings, tables, lists; the
+    paragraph chunking repeats at the beginning of the next section is shown only once (web.without_overlap) -#}
 {% for c in chunks %}
 <section class="chunk" id="c{{ c.id }}">
   {% if c.context %}<p class="muted small chunk-context">{{ c.context }}</p>{% endif %}

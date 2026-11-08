@@ -7,9 +7,13 @@ that way as well), pipe tables (``| Angabe | Inhalt |`` with ``|---|---|``, DOCX
 * :func:`parse_blocks` / :func:`render_html` – structured view of a chunk for the document page
   (headings as headings, HTML tables, lists),
 * :func:`plain_text` – clean text for snippets (table rows as "Spalte: Wert"),
-* :func:`snippet` – a window of the clean text around the words of a query,
+* :func:`snippet` – a window of the clean text around the words of a query; it starts and ends at
+  word boundaries, and of a mail it shows the body only (:func:`mail_body`: no Betreff/Von/Datum
+  lines, salutation or closing – the label of the hit names subject, sender and date),
 * :func:`highlight` – ``<mark>`` for the query words. Identifiers (project numbers, file numbers,
-  "T90", "DIN 4102") are matched as a whole, never as single parts, and never inside dates.
+  "T90", "DIN 4102") are matched as a whole, never as single parts, and never inside dates,
+* :func:`trim_overlap` – the paragraph that chunking repeats at the start of the next section is
+  shown only once on the document page.
 
 :class:`QueryMatcher` is the one place that decides what counts as a match; the search page also
 uses it to keep hits that literally contain an identifier of the query.
@@ -392,12 +396,30 @@ def highlight(text: str, query: str) -> Markup:
 
 
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-ZÄÖÜ\"„])")
+_SPACE = re.compile(r"\s")
+# A window may grow by width // LINE_SLACK characters to start at its line instead of mid-line, and
+# by width // WORD_SLACK to start (or end) at a word instead of inside one.
+LINE_SLACK = 10
+WORD_SLACK = 4
+
+
+def _word_starts(plain: str, lo: int, hi: int) -> list[int]:
+    """Positions in [lo, hi] where a word begins (start of the text or after white space)."""
+    return [i for i in range(max(0, lo), min(hi, len(plain)) + 1) if i == 0 or plain[i - 1].isspace()]
+
+
+def _line_start(plain: str, pos: int) -> int:
+    return max(plain.rfind("\n", 0, pos), plain.rfind("\r", 0, pos)) + 1
 
 
 def _window(plain: str, spans: list[tuple[int, int, str]], width: int) -> tuple[int, int, int]:
-    """(start, end, end of the last match) of the window of ``width`` characters with the most
-    different query words (the earliest on a tie). It starts at the beginning of the line or
-    sentence of its first match when that is not too far back."""
+    """(start, end, end of the last match) of the window of about ``width`` characters with the most
+    different query words (the earliest on a tie).
+
+    The window never starts inside a word. It starts at the beginning of the line or sentence of its
+    first match when that is not too far back, else at a word with a little context before the
+    match. If no word begins in that room (a match inside a long token such as a mail address), it
+    starts a bit earlier at its line or word and the window grows instead of cutting the word."""
     anchor, last_end, best_score = 0, 0, (-1, -1)
     for i, (s0, _, _) in enumerate(spans):
         inside = [sp for sp in spans[i:] if sp[1] <= s0 + width]
@@ -409,40 +431,125 @@ def _window(plain: str, spans: list[tuple[int, int, str]], width: int) -> tuple[
         return 0, width, last_end
     room = max(0, width - (last_end - anchor))  # context that still fits before the first match
     lead = min(room, width * 2 // 3)
-    start = plain.rfind("\n", 0, anchor) + 1  # beginning of the line
-    if anchor - start > lead:
-        sentences = [m.end() for m in _SENTENCE.finditer(plain, start, anchor)]
-        start = next((b for b in sentences if anchor - b <= lead), start)
-    if anchor - start > lead:
+    start = line = _line_start(plain, anchor)
+    if anchor - line > lead:
+        sentences = [m.end() for m in _SENTENCE.finditer(plain, line, anchor)]
+        start = next((b for b in sentences if anchor - b <= lead), line)
+    # neither the sentence nor – at the cost of a few characters more – the line: a word before the match
+    if anchor - start > lead and anchor - line > lead + width // LINE_SLACK:
         back = min(lead, width // 6)
-        start = plain.rfind(" ", 0, anchor - back + 1) + 1
-        if anchor - start > lead:
-            start = anchor - back
-    if len(plain) - start < width:  # close to the end: use the full width, from a line if possible
+        words = _word_starts(plain, max(line, anchor - lead), anchor)
+        with_context = [w for w in words if w <= anchor - back]
+        if with_context:
+            start = with_context[-1]
+        elif words:
+            start = words[0]
+        elif anchor - line <= lead + width // WORD_SLACK:
+            start = line
+        else:  # the word of the match begins further back: start at it if it is not too long ago
+            before = _word_starts(plain, anchor - lead - width // WORD_SLACK, anchor)
+            start = before[-1] if before else anchor
+    if len(plain) - start < width:  # close to the end: use the full width, from a line or word if possible
         target = max(0, len(plain) - width)
-        line = plain.find("\n", target, start)
-        space = plain.find(" ", target, start)
-        start = line + 1 if line >= 0 else space + 1 if space >= 0 and target else target if target else 0
-    return start, min(len(plain), start + width), last_end
+        if target == 0:
+            start = 0
+        else:
+            line_at = plain.find("\n", target, start)
+            words = _word_starts(plain, target, start)
+            start = line_at + 1 if line_at >= 0 else words[0] if words else start
+    return start, min(len(plain), max(start + width, last_end)), last_end
+
+
+def _end_at_boundary(plain: str, start: int, end: int, floor: int, width: int) -> int:
+    """End of a snippet at a sentence, line or word boundary – never before ``floor`` (the end of
+    the last match) and never inside a word if a boundary follows soon."""
+    if end >= len(plain):
+        return len(plain)
+    cut = max(plain.rfind(". ", start, end) + 1, plain.rfind("\n", start, end))
+    if cut < max(floor, start + width // 2):
+        cut = max((m.start() for m in _SPACE.finditer(plain, start, end)), default=-1)
+    if cut >= floor:
+        return cut
+    if end > start and (plain[end].isspace() or plain[end - 1].isspace()):
+        return end
+    nxt = _SPACE.search(plain, end)
+    stop = nxt.start() if nxt else len(plain)
+    return stop if stop - end <= width // WORD_SLACK else end
+
+
+# Header lines of an indexed mail section (mails.store.mail_text, extract.py for .eml/.msg files) –
+# the label of the hit shows subject, sender and date already – plus salutation and closing.
+_MAIL_HEADER = re.compile(r"^(?:Betreff|Von|An|Cc|Datum|Gesendet):(?:[ \t]|$)")
+_GREETING = re.compile(r"^(?:Guten\s+(?:Tag|Morgen|Abend)|Hallo|Moin|Servus|Sehr\s+geehrte[rs]?|Liebe[rs]?|Hi)\b"
+                       r"(?:[^,;:.!?\n]|\b(?:Dr|Prof|Dipl|Ing|Hr|Fr)\.){0,80}(?:[,!]\s*|$)", re.I)
+_CLOSING = re.compile(r"^(?:Mit\s+(?:freundlichen|besten|herzlichen|kollegialen|freundlichem)\s+Grü(?:ß|ss)en?"
+                      r"|(?:Freundliche|Viele|Beste|Herzliche|Schöne|Liebe|Sonnige)\s+Grü(?:ß|ss)e"
+                      r"|Gru(?:ß|ss)|Grü(?:ß|ss)e|MfG|Best regards|Kind regards)\b", re.I)
+_CLOSING_LINE_MAX = 60
+
+
+def mail_body(plain: str) -> str:
+    """The text of a mail section without what the hit's label repeats or what says nothing: header
+    lines (Betreff, Von, Datum), the salutation and the closing with the signature. Text that does
+    not start like an indexed mail (``Betreff:`` followed by ``Von:``/``Datum:``) is returned as
+    it is, and so is a mail whose body would be empty."""
+    lines = plain.split("\n")
+    if not lines or not lines[0].startswith("Betreff:"):
+        return plain
+    i = 0
+    while i < len(lines) and _MAIL_HEADER.match(lines[i].strip()):
+        i += 1
+    if not any(ln.startswith(("Von:", "Datum:")) for ln in lines[1:i]):
+        return plain
+    body = lines[i:]
+    while body and not body[0].strip():
+        body.pop(0)
+    if body and (g := _GREETING.match(body[0].strip())):
+        rest = body[0].strip()[g.end():].strip()
+        body = ([rest] if rest else []) + body[1:]
+    for j, ln in enumerate(body):
+        if j > 0 and len(ln.strip()) <= _CLOSING_LINE_MAX and _CLOSING.match(ln.strip()):
+            body = body[:j]
+            break
+    text = "\n".join(body).strip()
+    return text or plain
 
 
 def snippet(text: str, query: str = "", width: int = SNIPPET_CHARS) -> str:
     """Clean text of a chunk cut to about ``width`` characters around the words of ``query`` –
-    the passage that matches, not the beginning of the chunk. '…' marks cut text."""
-    plain = plain_text(text)
+    the passage that matches, not the beginning of the chunk. '…' marks cut text; it never starts
+    or ends inside a word. Of a mail only the body counts (no header lines, greeting or closing):
+    the hit's label shows subject, sender and date."""
+    plain = mail_body(plain_text(text))
     if len(plain) <= width:
         return plain
     spans = matcher(query or "").spans(plain)
     start, end, last_end = _window(plain, spans, width) if spans else (0, width, 0)
     if end < len(plain):  # end at a sentence or word boundary, after the last match
-        floor = max(last_end, start + width // 3)
-        cut = max(plain.rfind(". ", start, end) + 1, plain.rfind("\n", start, end))
-        if cut < max(floor, start + width // 2):
-            cut = plain.rfind(" ", start, end)
-        if cut >= floor:
-            end = cut
+        end = _end_at_boundary(plain, start, end, max(last_end, start + width // 3), width)
     body = plain[start:end].strip()
     return (ELLIPSIS + " " if start > 0 else "") + body + (" " + ELLIPSIS if end < len(plain) else "")
+
+
+# ------------------------------------------------------------------------------------- overlap
+MAX_OVERLAP_LINES = 8
+
+
+def _norm_line(line: str) -> str:
+    return " ".join(line.split())
+
+
+def trim_overlap(text: str, following: str) -> str:
+    """``text`` without the lines at its end that the following section repeats at its beginning
+    word for word (chunking.py carries the last paragraph of a section over into the next one).
+    At least one line of ``text`` always stays; blank lines do not count."""
+    lines = text.split("\n")
+    filled = [i for i, ln in enumerate(lines) if ln.strip()]
+    nxt = [_norm_line(ln) for ln in following.split("\n") if ln.strip()]
+    for k in range(min(len(filled) - 1, len(nxt), MAX_OVERLAP_LINES), 0, -1):
+        if [_norm_line(lines[i]) for i in filled[-k:]] == nxt[:k]:
+            return "\n".join(lines[:filled[-k]]).rstrip()
+    return text
 
 
 def passage(snippet_text: str | None, full_text: str | None, query: str = "",
