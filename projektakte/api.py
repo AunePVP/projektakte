@@ -197,3 +197,29 @@ def ask(request: Request, body: AskRequest) -> dict:
                                  top_k=s.ask_top_k, context_chars=s.ask_context_chars,
                                  min_rerank=s.ask_min_rerank, rerank_top_k=s.rerank_top_k)
     return result.to_dict()
+
+
+@router.get("/status")
+def status(request: Request) -> dict:
+    """Indexing state and counts – cheap, no AI calls."""
+    s = _settings(request)
+    with db.session(s.db_path) as conn:
+        one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
+        counts = {
+            "projects": one("SELECT COUNT(*) FROM projects WHERE active = 1"),
+            "documents": one("SELECT COUNT(*) FROM documents WHERE mail_id IS NULL"),
+            "documents_skipped": one("SELECT COUNT(*) FROM documents WHERE status != 'ok'"),
+            "mails": one("SELECT COUNT(*) FROM mails WHERE deleted = 0"),
+            "inbox": one("SELECT COUNT(*) FROM mails WHERE deleted = 0 AND "
+                         "assign_status IN ('suggested', 'unassigned')"),
+            "chunks": one("SELECT COUNT(*) FROM chunks"),
+            "chunks_without_vector": one("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL"),
+        }
+    return {"indexing": request.app.state.indexer.status(), "counts": counts,
+            "ai_mode": s.ai_mode, "demo_mode": s.demo_mode}
+
+
+@router.post("/reindex", status_code=202)
+def reindex(request: Request) -> dict:
+    request.app.state.indexer.trigger()
+    return {"status": "angestoßen"}

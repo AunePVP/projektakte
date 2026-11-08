@@ -6,6 +6,7 @@ background worker, the CLI (``python -m projektakte.index``) and the tests.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from . import db
@@ -20,19 +21,37 @@ from .vectors import embed_pending
 log = logging.getLogger("projektakte.indexer")
 
 
-def run_index(settings: Settings, ai: AIServices | None = None) -> dict:
+_RUN_LOCK = threading.Lock()
+
+
+def run_index(settings: Settings, ai: AIServices | None = None, progress=None) -> dict:
+    """One pass over all sources. ``progress(phase)`` is called with the current phase."""
+    def phase(name: str) -> None:
+        if progress:
+            progress(name)
+
+    with _RUN_LOCK:  # never two passes at the same time (background worker + CLI/test)
+        return _run(settings, ai, phase)
+
+
+def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
     started = time.time()
     db.init_db(settings.db_path)
     stats: dict = {}
     with db.session(settings.db_path) as conn:
+        phase("Projekte")
         folders = scan_projects(settings.projects_dir, settings.project_number_pattern)
         stats["projects"] = sync_projects(conn, folders)
         conn.commit()
         llm = ai.llm if ai else None
+        phase("Dokumente")
         stats["documents"] = index_all_documents(conn, llm=llm)
+        phase("Mails")
         stats["mails"] = sync_eml_folder(conn, settings.mail_dir, cache_dir=settings.cache_dir, llm=llm)
         if ai is not None:
+            phase("Embeddings")
             stats["embeddings"] = embed_pending(conn, ai.embed)
+        phase("Zuordnung")
         stats["assignment"] = assign_mails(conn, settings.project_number_pattern,
                                            min_share=settings.assign_min_share,
                                            min_lead=settings.assign_min_lead,

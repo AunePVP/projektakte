@@ -1,18 +1,33 @@
 """HTTP application."""
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from . import __version__, db
 from .ai.services import AIServices, resolve_settings
+from .background import BackgroundIndexer
 from .config import Settings, load_settings
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, *, background: bool = True) -> FastAPI:
     settings = resolve_settings(settings or load_settings())
-    app = FastAPI(title="Projektakte", version=__version__)
+    ai = AIServices.from_settings(settings)
+    indexer = BackgroundIndexer(settings, ai)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # start-up must stay fast: indexing (and demo data generation) runs in the background
+        if background:
+            indexer.start()
+        yield
+        indexer.stop()
+
+    app = FastAPI(title="Projektakte", version=__version__, lifespan=lifespan)
     app.state.settings = settings
-    app.state.ai = AIServices.from_settings(settings)
+    app.state.ai = ai
+    app.state.indexer = indexer
     db.init_db(settings.db_path)
 
     @app.get("/health")

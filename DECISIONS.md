@@ -164,3 +164,16 @@ Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
   ist absichtlich niedrig (0,01), weil echte Reranker-Scores anders verteilt sind als die der Fakes.
 - **Ausfall des Sprachmodells** ist kein HTTP-Fehler: Status `llm_unavailable` mit den Fundstellen.
 - Fragen werden nicht protokolliert (Datenschutz); nur Fehler der Dienste landen im Log.
+
+## Schritt 11 – Hintergrund-Indexierung
+
+- **Ein Thread statt Task-Queue**: Ein Daemon-Thread mit `Event`-gesteuertem Warten reicht für ein
+  Büro dieser Größe; keine zusätzliche Infrastruktur (Celery, Redis). Der Thread startet im
+  FastAPI-`lifespan`, sodass Importe und Tests ohne `with TestClient(...)` keine Threads starten.
+- **SQLite im WAL-Modus** mit kurzen Transaktionen (Commit je Projekt, je 50 Mails, je
+  Embedding-Stapel): Leser sehen den Fortschritt, Schreibzugriffe der Oberfläche (Zuordnungen) warten
+  höchstens kurz (`busy_timeout`).
+- **Globale Sperre um `run_index`**, damit CLI, Tests und Hintergrund-Thread nie gleichzeitig
+  indexieren.
+- **Demo-Daten im Hintergrund**: auch das Erzeugen des Demo-Datensatzes verzögert den Start nicht.
+  Veraltete Demo-Daten (andere `DEMO_VERSION`) werden neu erzeugt.

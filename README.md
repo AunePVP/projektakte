@@ -64,14 +64,26 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `RERANK_MODEL` | – | nur falls der Server ein `model`-Feld verlangt |
 | `RERANK_TIMEOUT` / `RERANK_TOP_K` | `30` / `30` | Sekunden / Kandidaten für das Reranking |
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
+| `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
 | `ASK_TOP_K` / `ASK_CONTEXT_CHARS` / `ASK_MIN_RERANK` | `6` / `8000` / `0.01` | Quellen je Frage / Zeichenbudget im Prompt / Mindest-Score des Rerankers |
 | `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 
 ## Indexieren
 
+Die Anwendung indexiert im Hintergrund: beim Start und danach alle `INDEX_INTERVAL` Sekunden
+(Standard 300; `0` = nur beim Start und auf Anforderung). Der Webserver ist sofort erreichbar.
+Mit `DEMO_MODE=1` wird der Demo-Datensatz vorher in `$DATA_DIR/demo` erzeugt, falls er fehlt.
+Stand und Zahlen: `GET /api/status`; sofort neu indexieren: `POST /api/reindex`.
+
 ```bash
-python -m projektakte.index      # ein Durchlauf im Vordergrund (Projekte, später Dokumente/Mails)
+python -m projektakte.index      # ein Durchlauf im Vordergrund (ohne Webserver)
+```
+
+Schnellster Weg zu einer laufenden Demo (ein Container, keine weiteren Dienste):
+
+```bash
+docker build -t projektakte . && docker run -p 8000:8000 -e DEMO_MODE=1 -e AI_MODE=fake projektakte
 ```
 
 Unterstützte Formate: TXT, Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften
@@ -114,6 +126,8 @@ Fundstellen mit dem Hinweis „KI-Dienst nicht erreichbar“.
 |---|---|
 | `GET /health` | Lebenszeichen, ruft nie KI-Dienste auf |
 | `GET /health/deps` | Zustand der KI-Dienste (erreichbar, Format, Antwortzeit) |
+| `GET /api/status` | Indexierungsstand (Phase, letzter Lauf, Fehler) und Zahlen |
+| `POST /api/reindex` | Indexierung sofort anstoßen |
 | `GET /api/projects?q=` | Projektliste, optional gefiltert nach Nummer/Name |
 | `GET /api/projects/{nummer}` | ein Projekt |
 | `GET /api/projects/{nummer}/documents` | Dokumente eines Projekts mit Status (ok/übersprungen/Fehler) |

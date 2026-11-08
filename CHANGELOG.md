@@ -5,6 +5,14 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 11 – Hintergrund-Indexierung
+- Indexierung in einem Hintergrund-Thread: beim Start, danach alle `INDEX_INTERVAL` Sekunden und auf
+  Anforderung (`POST /api/reindex`); nie zwei Läufe gleichzeitig.
+- `DEMO_MODE=1` erzeugt fehlende oder veraltete Demo-Daten beim Start (im Hintergrund).
+- `GET /api/status`: Phase, letzter Lauf, Statistik, Fehler, Zählerstände.
+- Startzeit unabhängig von der Datenmenge; `/health` antwortet auch während der Indexierung sofort.
+- Logging-Konfiguration beim Start über `python -m projektakte`.
+
 ### Schritt 10 – Fragen beantworten
 - `POST /api/ask` (Projekt optional): hybride Suche → Prompt mit nummerierten Quellen (Zeichenbudget)
   → Antwort mit `[n]`-Verweisen; zurück kommen nur die tatsächlich zitierten Quellen.
