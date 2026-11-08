@@ -250,7 +250,8 @@ def _contact(p: dict, role: str) -> tuple[str, str, str]:
 
 
 def _greeting(person: str) -> str:
-    return f"Mit freundlichen Grüßen\n{person}"
+    role = "\nPrüfingenieurin für Brandschutz" if person == data.PRUEFING[1] else ""
+    return f"Mit freundlichen Grüßen\n{person}{role}"
 
 
 def _attachment(filename: str, lines: list[str]) -> tuple[str, bytes, str]:

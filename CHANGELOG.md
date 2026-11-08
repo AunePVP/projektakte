@@ -5,6 +5,18 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 10 – Fragen beantworten
+- `POST /api/ask` (Projekt optional): hybride Suche → Prompt mit nummerierten Quellen (Zeichenbudget)
+  → Antwort mit `[n]`-Verweisen; zurück kommen nur die tatsächlich zitierten Quellen.
+- „Nicht gefunden“ ohne LLM-Aufruf, wenn nichts passt; erkennt auch „Nicht gefunden“ des Modells.
+- Ausfall des Sprachmodells: Antwort „KI-Dienst nicht erreichbar“ mit den Fundstellen statt Fehler.
+- Antworten ohne Quellenverweis werden markiert (`status: no_citation`).
+- Fake-LLM: bessere Satzgrenzen (Ordnungszahlen, Abkürzungen), Überschriften und Mailkopf werden
+  nicht zitiert; Stemmer kennt „zu“-Infinitive (abzunehmen → abnehmen).
+- Evaluationssatz als Test: alle 18 Fragen mit Antwort enthalten den erwarteten Fakt und zitieren
+  eine erwartete Quelle; beide Fragen ohne Antwort ergeben „nicht gefunden“.
+- Demo-Daten Version 3: Signatur der Prüfingenieurin mit Funktionsbezeichnung.
+
 ### Schritt 9 – Hybride Suche mit Reranker
 - Volltext (FTS5/BM25, Titelspalte doppelt gewichtet) + Vektorsuche, Reciprocal Rank Fusion,
   höchstens 3 Abschnitte je Quelle, Reranker auf die besten 30 Kandidaten (beide Antwortformate).

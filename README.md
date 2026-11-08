@@ -64,6 +64,7 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `RERANK_MODEL` | – | nur falls der Server ein `model`-Feld verlangt |
 | `RERANK_TIMEOUT` / `RERANK_TOP_K` | `30` / `30` | Sekunden / Kandidaten für das Reranking |
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
+| `ASK_TOP_K` / `ASK_CONTEXT_CHARS` / `ASK_MIN_RERANK` | `6` / `8000` / `0.01` | Quellen je Frage / Zeichenbudget im Prompt / Mindest-Score des Rerankers |
 | `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 
@@ -88,6 +89,15 @@ Rank Fusion verschmolzen werden (höchstens 3 Abschnitte je Dokument/Mail). Die 
 Suche; fällt der Embedding-Dienst aus, sucht Projektakte nur im Volltext. Jeder Treffer nennt seine
 Quelle („01 Genehmigung/Baugenehmigung.pdf, S. 2“ bzw. „Mail vom 18.06.2024 (Absender): Betreff“).
 
+### Fragen beantworten
+
+Die besten `ASK_TOP_K` (6) Treffer der Suche gehen – nummeriert und bis `ASK_CONTEXT_CHARS`
+(8000 Zeichen) – mit der Frage an das Sprachmodell. Es darf nur diese Quellen verwenden, muss sie als
+`[n]` zitieren und sonst „Nicht gefunden“ antworten. Die Antwort enthält die zitierten Quellen
+(Datei/Seite bzw. Mail/Datum). Ohne passende Treffer (oder Reranker-Score unter `ASK_MIN_RERANK`)
+wird das Modell gar nicht erst gefragt. Ist das Sprachmodell nicht erreichbar, kommen die
+Fundstellen mit dem Hinweis „KI-Dienst nicht erreichbar“.
+
 ### Zuordnung der Mails
 
 1. **Sicher**: bekannte Projektnummer im Betreff, sonst im Text, sonst im Anhangnamen.
@@ -111,6 +121,7 @@ Quelle („01 Genehmigung/Baugenehmigung.pdf, S. 2“ bzw. „Mail vom 18.06.202
 | `GET /api/mails?project=&status=&q=` | Mails (neueste zuerst), filterbar |
 | `GET /api/mails/{id}` | eine Mail mit Text und Anhängen |
 | `GET /api/search?q=&project=&k=` | Hybride Suche (Volltext + Vektor, Reranker), Treffer mit Quelle |
+| `POST /api/ask` | Frage beantworten: `{"question": "…", "project": "BS-…"}` (Projekt optional) → Antwort, `found`, zitierte Quellen |
 | `GET /api/inbox` | Zuordnungs-Eingang: Mails ohne sichere Zuordnung, mit Vorschlag und Begründung |
 | `POST /api/mails/{id}/assign` | Entscheidung: `{"action": "confirm"}`, `{"action": "assign", "project": "BS-…"}`, `{"action": "reject"}` (Vorschlag verwerfen), `{"action": "none"}` (kein Projektbezug) |
 

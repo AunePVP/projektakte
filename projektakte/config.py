@@ -64,6 +64,9 @@ class Settings:
     rerank_timeout: float
     rerank_top_k: int
     health_timeout: float
+    ask_top_k: int
+    ask_context_chars: int
+    ask_min_rerank: float
     # indexing / assignment
     index_interval: float
     assign_min_share: float
@@ -131,6 +134,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         rerank_timeout=_float(e.get("RERANK_TIMEOUT"), 30.0),
         rerank_top_k=max(1, _int(e.get("RERANK_TOP_K"), 30)),
         health_timeout=_float(e.get("HEALTH_TIMEOUT"), 3.0),
+        ask_top_k=max(1, _int(e.get("ASK_TOP_K"), 6)),
+        ask_context_chars=max(1000, _int(e.get("ASK_CONTEXT_CHARS"), 8000)),
+        ask_min_rerank=_float(e.get("ASK_MIN_RERANK"), 0.01),
         index_interval=_float(e.get("INDEX_INTERVAL"), 300.0),
         assign_min_share=_float(e.get("ASSIGN_MIN_SHARE"), 0.5),
         assign_min_lead=_float(e.get("ASSIGN_MIN_LEAD"), 0.2),

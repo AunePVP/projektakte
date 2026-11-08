@@ -32,7 +32,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
 - [x] **9. Hybride Suche mit Reranker** – Volltext (FTS5) + Vektor kombinieren, Reranker-Client
   (beide Antwortformate, siehe docs/ki-dienste.md), `GET /api/search?q=…&project=…`;
   Evaluationssatz als Test (erwartete Quelle unter den Top 5).
-- [ ] **10. Fragen beantworten** – `POST /api/ask` mit Projekt optional: Retrieval → Prompt mit
+- [x] **10. Fragen beantworten** – `POST /api/ask` mit Projekt optional: Retrieval → Prompt mit
   nummerierten Quellen → Antwort mit Quellenverweisen; „nicht gefunden“, wenn nichts passt.
   Fake-LLM in Tests.
 - [ ] **11. Hintergrund-Indexierung** – beim Start und periodisch neue/geänderte Dateien und Mails

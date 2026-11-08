@@ -149,3 +149,18 @@ Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
 - **Reranker-Eingabe** = Titelzeile (Datei bzw. Betreff, Projekt, Überschrift) + Abschnittstext,
   auf 2000 Zeichen gekürzt; nur die besten 30 Kandidaten (docs/ki-dienste.md).
 - **Vielfalt**: höchstens 3 Abschnitte je Dokument bzw. Mail in der Ergebnisliste.
+
+## Schritt 10 – Fragen beantworten
+
+- **Prompt**: Systemanweisung (nur Quellen, `[n]` zitieren, sonst „Nicht gefunden“, Zahlen wörtlich)
+  und eine Nutzernachricht `Quellen: [1] <Quelle> – Projekt …\n<Text> … Frage: …`. Der Fake-LLM
+  parst genau dieses Format; ein echtes Modell braucht es nicht, profitiert aber von der klaren
+  Struktur. Kontextfenster sparsam: höchstens 6 Abschnitte bzw. 8000 Zeichen.
+- **Nur zitierte Quellen** werden als Belege zurückgegeben; alle übergebenen Quellen stehen zusätzlich
+  in `context`. Ungültige Nummern werden ignoriert. Ohne jeden Verweis wird die Antwort markiert
+  und alle Fundstellen werden gezeigt – Nachprüfbarkeit geht vor.
+- **„Nicht gefunden“ zweistufig**: ohne Suchtreffer bzw. mit Reranker-Score < `ASK_MIN_RERANK`
+  wird das Modell nicht gefragt; sonst entscheidet das Modell anhand der Anweisung. Der Schwellwert
+  ist absichtlich niedrig (0,01), weil echte Reranker-Scores anders verteilt sind als die der Fakes.
+- **Ausfall des Sprachmodells** ist kein HTTP-Fehler: Status `llm_unavailable` mit den Fundstellen.
+- Fragen werden nicht protokolliert (Datenschutz); nur Fehler der Dienste landen im Log.

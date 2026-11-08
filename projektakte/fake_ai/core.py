@@ -87,9 +87,26 @@ def parse_sources(prompt: str) -> tuple[str, list[tuple[int, str, str]]]:
     return question, sources
 
 
+_ABBREV = re.compile(r"(\b(Nr|Abs|ca|bzw|ggf|inkl|vgl|Dipl|Ing|Str|Tel|z\. ?B|d\. ?h)|\d)\.$")
+_META_LINE = re.compile(r"^(#|Betreff:|Von:|Datum:|An:|\|)")
+
+
 def _sentences(text: str) -> list[str]:
-    parts = re.split(r"(?<=[.!?])\s+|\n+", text)
-    return [p.strip() for p in parts if len(p.strip()) > 3]
+    """Sentences without headings and mail header lines; 'im 2. Obergeschoss' is no sentence end."""
+    out: list[str] = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if len(line) <= 3 or _META_LINE.match(line):
+            continue
+        buf = ""
+        for piece in re.split(r"(?<=[.!?])\s+", line):
+            buf = f"{buf} {piece}".strip()
+            if not _ABBREV.search(buf):
+                out.append(buf)
+                buf = ""
+        if buf:
+            out.append(buf)
+    return [s for s in out if len(s) > 3]
 
 
 def answer_from_sources(question: str, sources: list[tuple[int, str, str]]) -> str:

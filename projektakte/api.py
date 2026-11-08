@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from . import db
 from .assign import INBOX_STATUSES, DecisionError, decide
+from .ask import ask as answer_question
 from .search import hybrid_search
 from .registry import get_project, list_projects
 
@@ -170,3 +171,29 @@ def search(request: Request, q: str, project: str | None = None, k: int = 10) ->
                             k=max(1, min(k, 50)), rerank_top_k=s.rerank_top_k)
     return {"query": res.query, "project": res.project, "reranked": res.reranked, "notes": res.notes,
             "hits": [h.to_dict() for h in res.hits]}
+
+
+class AskRequest(BaseModel):
+    question: str
+    project: str | None = None
+
+
+@router.post("/ask")
+def ask(request: Request, body: AskRequest) -> dict:
+    s = _settings(request)
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(400, "Frage fehlt")
+    if len(question) > 2000:
+        raise HTTPException(400, "Frage zu lang (max. 2000 Zeichen)")
+    with db.session(s.db_path) as conn:
+        project = None
+        if body.project:
+            p = get_project(conn, body.project)
+            if not p:
+                raise HTTPException(404, f"Projekt {body.project} nicht gefunden")
+            project = p["number"]
+        result = answer_question(conn, request.app.state.ai, str(s.db_path), question, project=project,
+                                 top_k=s.ask_top_k, context_chars=s.ask_context_chars,
+                                 min_rerank=s.ask_min_rerank, rerank_top_k=s.rerank_top_k)
+    return result.to_dict()

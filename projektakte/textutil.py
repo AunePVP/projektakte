@@ -42,12 +42,17 @@ def words(text: str) -> list[str]:
 
 
 _SUFFIXES = ("ungen", "ern", "em", "en", "er", "es", "e", "n", "s")
+# separable verbs with "zu" infix: abzunehmen → abnehmen, aufzuschalten → aufschalten
+_ZU_INFIX = re.compile(r"^(ab|an|auf|aus|bei|ein|fest|frei|her|hin|mit|nach|vor|weg|zuruck|zusammen)zu(\w{3,}n)$")
 
 
 def stem(word: str) -> str:
     """Very light German stemmer: enough to match Rettungsweg/Rettungswege/Rettungswegs."""
     if word.isdigit():
         return word
+    m = _ZU_INFIX.match(word)
+    if m:
+        word = m.group(1) + m.group(2)
     for suf in _SUFFIXES:
         if len(word) - len(suf) >= 4 and word.endswith(suf):
             if suf == "ungen":
