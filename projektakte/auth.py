@@ -9,13 +9,17 @@
   The expiry is bounded server-side by ``SESSION_HOURS`` (``iat`` + session length). Logging out
   increments the epoch (``meta`` table, key ``session_epoch:<user>``), which ends every session of
   that user on every device – a copied cookie is useless afterwards.
-* Failed logins slow down exponentially – per (client, user), per user and per client – instead of
-  locking an account. A browser that logged in successfully before carries a signed device cookie
-  and is throttled on its own, so nobody can lock a colleague out from a shared IP address
-  (terminal server, proxy). At most a few PBKDF2 checks run at the same time; waiting attempts
-  hold no worker thread. The failure table is bounded and cleaned up.
-* Everything except ``/health``, ``/health/ready``, ``/login`` and ``/static`` requires a login.
-  API clients may also send HTTP Basic credentials.
+* Failed logins slow down exponentially instead of locking an account (see "login throttling"):
+  failures for one user name – from one address or from anywhere – make further attempts for that
+  name wait (rejected without a password check). Failures of *other* names from the same address
+  (name spraying, a shared terminal server/NAT address) only space attempts out by at most
+  ``SOFT_SPACING_CAP`` seconds; a correct password still gets through. A browser that logged in
+  successfully before carries a signed device cookie and is throttled on its own; HTTP Basic
+  clients (scripts, monitoring) are only rejected after failures for their own user name from
+  their own address. At most a few PBKDF2 checks run at the same time; waiting attempts hold no
+  worker thread. The failure table is bounded and cleaned up.
+* Everything except ``/health``, ``/health/ready``, ``/login``, ``/favicon.ico`` and ``/static``
+  requires a login. API clients may also send HTTP Basic credentials.
 * ``AUTH_DISABLED=1`` switches the check off – only with ``APP_ENV=dev`` (``test`` for the
   automated tests). Any other environment refuses to start.
 * ``COOKIE_SECURE``: if not set, on in ``APP_ENV=production`` (TLS reverse proxy expected).
@@ -38,9 +42,9 @@ import threading
 import time
 from collections import OrderedDict
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Iterable, Mapping
+from typing import Awaitable, Callable, Iterable, Mapping
 
 import anyio
 import anyio.to_thread
@@ -68,6 +72,9 @@ MAX_USERNAME_LENGTH = 128
 MAX_PASSWORD_LENGTH = 1024
 VERIFY_SLOTS = max(1, min(4, (os.cpu_count() or 2) // 2))  # concurrent PBKDF2 checks
 VERIFY_QUEUE_SECONDS = 10.0  # longer waits for a slot are answered with "busy"
+SOFT_SPACING_CAP = 2.0  # seconds: the most a "soft" brake spaces out attempts of one key
+SOFT_QUEUE_SECONDS = 20.0  # longer queues behind a soft brake (a flood from one address) → "busy"
+BUSY_LOG_INTERVAL = 60.0  # seconds between two "busy" warnings in the log (no log flood)
 KEY_HINT = 'Neuen Schlüssel erzeugen: python -c "import secrets; print(secrets.token_urlsafe(48))"'
 
 _TOKEN = re.compile(r"[A-Za-z0-9_-]+")
@@ -87,14 +94,24 @@ def _dummy_hash() -> str:
     return _DUMMY[0]
 
 
-def parse_users(spec: str, file: str | None = None) -> dict[str, str]:
-    """``name:hash`` entries separated by commas/newlines (env) or one per line (file)."""
+def parse_users(spec: str, file: str | None = None, *, strict: bool = False) -> dict[str, str]:
+    """``name:hash`` entries separated by commas/newlines (env) or one per line (file).
+
+    An unreadable ``file`` is logged – or, with ``strict`` (production), raises ConfigError: the
+    application would run "healthy" without anybody being able to log in."""
     users: dict[str, str] = {}
     chunks = spec.replace("\n", ",").split(",")
     if file:
         try:
             chunks += Path(file).read_text(encoding="utf-8").splitlines()
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
+            reason = getattr(exc, "strerror", None) or type(exc).__name__
+            if strict:
+                raise ConfigError(
+                    f"AUTH_USERS_FILE '{file}' ist nicht lesbar ({reason}). Im Container die Datei einbinden, "
+                    f"z. B. -v /pfad/benutzer.txt:{file}:ro, und für die Benutzer-ID der Anwendung "
+                    f"lesbar machen (Image: 10001, z. B. 'sudo chown 10001:10001 benutzer.txt && "
+                    f"sudo chmod 600 benutzer.txt').") from None
             log.error("AUTH_USERS_FILE nicht lesbar: %s", exc)
     for chunk in chunks:
         chunk = chunk.strip()
@@ -192,36 +209,52 @@ def bounded_session_hours(hours: float) -> float:
 # -- login throttling -------------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Backoff:
-    """Delay after the n-th failure: none for the first ``free - 1`` ones, then doubling up to ``cap``."""
+    """Delay after the n-th failure: none for the first ``free - 1`` ones, then doubling up to ``cap``.
+
+    ``hard``: while the delay lasts, attempts are rejected without a password check (429). A *soft*
+    brake never rejects a correct password: attempts only queue up – spaced ``spacing()`` apart – and
+    are then checked normally. Only when the queue grows beyond SOFT_QUEUE_SECONDS (a flood) are
+    further attempts turned away as "busy", like any overload."""
     free: int
     base: float
     cap: float
+    hard: bool = True
 
     def delay(self, failures: int) -> float:
         if failures < self.free:
             return 0.0
-        return min(self.cap, self.base * 2.0 ** (failures - self.free))
+        # bounded exponent: under a soft brake the count keeps growing (2.0 ** 1024 overflows)
+        return min(self.cap, self.base * 2.0 ** min(failures - self.free, 60))
+
+    def spacing(self, failures: int) -> float:
+        """Minimum distance between two attempts of a key under this (soft) brake."""
+        return min(SOFT_SPACING_CAP, self.delay(failures))
 
 
 PAIR = Backoff(free=5, base=2.0, cap=300.0)     # one client, one user name
 USER = Backoff(free=10, base=1.0, cap=60.0)     # one user name from anywhere (distributed guessing)
-CLIENT = Backoff(free=20, base=1.0, cap=300.0)  # one client, any user names (name spraying, load)
+# one client, any user names (name spraying, load): soft – behind a shared address (terminal server,
+# NAT, proxy without FORWARDED_ALLOW_IPS) it would otherwise hit every colleague
+CLIENT = Backoff(free=20, base=0.25, cap=SOFT_SPACING_CAP, hard=False)
 DEVICE = Backoff(free=5, base=2.0, cap=300.0)   # a browser that logged in before (device cookie)
+# HTTP Basic (scripts, monitoring): failures for the user name elsewhere only slow it down
+USER_SOFT = replace(USER, hard=False)
 
 
 @dataclass
 class _Strikes:
     count: int = 0
     last: float = 0.0
-    until: float = 0.0
+    until: float = 0.0       # hard brake: no attempt before this time
+    next_free: float = 0.0   # soft brake: the next attempt's place in the queue
 
 
 class LoginThrottle:
     """Failure counters with exponential back-off instead of a hard lock-out.
 
-    Attempts during a wait are rejected without being counted, so a wait never grows by itself and
-    always ends. Counters are forgotten ``forget_after`` seconds after the last failure; the table
-    holds at most ``max_entries`` keys (least recently failed ones are dropped first)."""
+    Attempts during a (hard) wait are rejected without being counted, so a wait never grows by
+    itself and always ends. Counters are forgotten ``forget_after`` seconds after the last failure;
+    the table holds at most ``max_entries`` keys (least recently failed ones are dropped first)."""
 
     def __init__(self, *, max_entries: int = 10_000, forget_after: float = 900.0,
                  clock: Callable[[], float] = time.monotonic):
@@ -234,16 +267,43 @@ class LoginThrottle:
     def __len__(self) -> int:
         return len(self._entries)
 
-    def retry_after(self, keys: Iterable[str]) -> float:
-        """Seconds until all of ``keys`` may try again (0 = now)."""
+    def retry_after(self, keys: Iterable[str] | Mapping[str, Backoff]) -> float:
+        """Seconds until all of ``keys`` may try again (0 = now). For a mapping key → policy, only
+        the hard brakes count (soft ones never reject)."""
+        if isinstance(keys, Mapping):
+            keys = [key for key, policy in keys.items() if policy.hard]
         now = self._clock()
         with self._lock:
             waits = [e.until - now for k in keys if (e := self._entries.get(k)) is not None]
         return max([0.0, *waits])
 
+    def reserve(self, policies: Mapping[str, Backoff], max_wait: float) -> float | None:
+        """Takes the next place in the queue of every soft brake in ``policies`` that is active and
+        returns how long this attempt has to wait for it (0 = now). Attempts of such a key are thus
+        spaced at least ``policy.spacing(failures)`` apart, however many arrive in parallel. None –
+        and nothing reserved – if the wait would exceed ``max_wait``."""
+        now = self._clock()
+        with self._lock:
+            queued: list[tuple[_Strikes, float]] = []
+            start = now
+            for key, policy in policies.items():
+                entry = self._entries.get(key)
+                if policy.hard or entry is None or now - entry.last > self.forget_after:
+                    continue
+                spacing = policy.spacing(entry.count)
+                if spacing <= 0 and entry.next_free <= now:
+                    continue
+                queued.append((entry, spacing))
+                start = max(start, entry.next_free)
+            if start - now > max_wait:
+                return None
+            for entry, spacing in queued:
+                entry.next_free = start + spacing
+        return start - now
+
     def failure(self, policies: Mapping[str, Backoff]) -> tuple[float, list[tuple[str, int]]]:
-        """Counts a failure for every key. Returns the resulting wait and the keys whose throttling
-        just started (with their failure count) for logging."""
+        """Counts a failure for every key. Returns the resulting (hard) wait and the keys whose
+        throttling just started (with their failure count) for logging."""
         now = self._clock()
         wait, started = 0.0, []
         with self._lock:
@@ -255,11 +315,14 @@ class LoginThrottle:
                 entry.count += 1
                 entry.last = now
                 delay = policy.delay(entry.count)
+                # also for a soft use of the key: the same key may be checked hard elsewhere
+                # (user:<name> – soft for Basic clients, hard for the login form)
                 entry.until = now + delay
                 self._entries[key] = entry  # most recent failure at the end
                 if delay and entry.count == policy.free:
                     started.append((key, entry.count))
-                wait = max(wait, delay)
+                if policy.hard:
+                    wait = max(wait, delay)
             while len(self._entries) > self.max_entries:
                 self._entries.popitem(last=False)
         return wait, started
@@ -366,7 +429,8 @@ class Auth:
     def __init__(self, users: dict[str, str], secret_key: str, session_hours: float = 12.0,
                  disabled: bool = False, cookie_secure: bool = False, *,
                  epochs: SessionEpochs | None = None, throttle: LoginThrottle | None = None,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time,
+                 sleep: Callable[[float], Awaitable[None]] | None = None):
         self.users = users
         if not secret_key:
             if not disabled:
@@ -384,21 +448,31 @@ class Auth:
         self.epochs = epochs if epochs is not None else SessionEpochs()
         self.throttle = throttle if throttle is not None else LoginThrottle()
         self._clock = clock
+        self._sleep = sleep or anyio.sleep  # waiting behind a soft brake (tests: a fake clock)
+        self._sync_sleep: Callable[[float], None] = time.sleep  # check_credentials()
         self._slots = anyio.Semaphore(VERIFY_SLOTS)
         self._known_names = {name.lower() for name in users}
+        self._busy_logged = -BUSY_LOG_INTERVAL
 
     @classmethod
     def from_settings(cls, s) -> "Auth":
         """Applies the configuration policy (raises ConfigError for unsafe combinations)."""
         env = (s.app_env or "").strip().lower()
         disabled = check_auth_disabled(s.auth_disabled, env)
-        users = parse_users(s.auth_users, s.auth_users_file or None)
+        strict = env == "production" and not disabled
+        users = parse_users(s.auth_users, s.auth_users_file or None, strict=strict)
         secure = resolve_cookie_secure(s)
         if disabled:
             log.warning("Zugangsschutz ausgeschaltet (AUTH_DISABLED=1, APP_ENV=%s) – nur für die Entwicklung!",
                         env)
         else:
             check_secret_key(s.secret_key, env)
+            if not users and strict:
+                raise ConfigError("Keine Benutzer konfiguriert (AUTH_USERS bzw. AUTH_USERS_FILE) – niemand "
+                                  "könnte sich anmelden. Benutzer mit 'python -m projektakte.passwd NAME' anlegen "
+                                  "und die ausgegebene Zeile in AUTH_USERS oder in die Datei unter "
+                                  "AUTH_USERS_FILE eintragen (Docker: die Datei mit "
+                                  "-v /pfad/benutzer.txt:/run/secrets/users:ro einbinden).")
             if not users:
                 log.warning("Keine Benutzer konfiguriert (AUTH_USERS/AUTH_USERS_FILE) – Anmeldung unmöglich")
             if env == "production" and not secure:
@@ -410,18 +484,23 @@ class Auth:
 
     # -- passwords --------------------------------------------------------------------------------
     async def authenticate(self, user: str, password: str, client: str = "",
-                           device: str | None = None) -> LoginResult:
-        """Checks a login attempt (form or Basic). The PBKDF2 work runs in a worker thread, at most
+                           device: str | None = None, *, basic: bool = False) -> LoginResult:
+        """Checks a login attempt (form, or HTTP Basic with ``basic=True``). Attempts behind a soft
+        brake wait (asynchronously) for their turn. The PBKDF2 work runs in a worker thread, at most
         VERIFY_SLOTS at a time; waiting for a slot holds no thread."""
-        keys = self._throttle_keys(user, client, device)
+        keys = self._throttle_keys(user, client, device, basic=basic)
         if blocked := self._blocked(keys):
             return blocked
+        delay = self.throttle.reserve(keys, SOFT_QUEUE_SECONDS)
+        if delay is None:
+            return self._busy("zu viele Anmeldeversuche von derselben Adresse")
+        if delay > 0:
+            await self._sleep(delay)
         try:
             with anyio.fail_after(VERIFY_QUEUE_SECONDS):
                 await self._slots.acquire()
         except TimeoutError:
-            log.warning("Anmeldung abgewiesen: zu viele gleichzeitige Passwortprüfungen")
-            return LoginResult("busy", retry_after=5)
+            return self._busy("zu viele gleichzeitige Passwortprüfungen")
         try:
             if blocked := self._blocked(keys):  # failures counted while this attempt was queued
                 return blocked
@@ -434,18 +513,24 @@ class Auth:
         creds = parse_basic(header)
         if creds is None:
             return LoginResult("invalid")
-        return await self.authenticate(creds[0], creds[1], client)
+        return await self.authenticate(creds[0], creds[1], client, basic=True)
 
-    def check_credentials(self, user: str, password: str, client: str = "") -> bool:
-        """Synchronous variant (scripts, tests): same throttling, no concurrency limit."""
-        keys = self._throttle_keys(user, client, None)
+    def check_credentials(self, user: str, password: str, client: str = "", *, basic: bool = False) -> bool:
+        """Synchronous variant (scripts, tests): same throttling (waits behind a soft brake by
+        sleeping), no concurrency limit."""
+        keys = self._throttle_keys(user, client, None, basic=basic)
         if self._blocked(keys):
             return False
+        delay = self.throttle.reserve(keys, SOFT_QUEUE_SECONDS)
+        if delay is None:
+            return False
+        if delay > 0:
+            self._sync_sleep(delay)
         return self._record(keys, user, self._verify(user, password)).ok
 
     def basic_user(self, header: str | None, client: str = "") -> str | None:
         creds = parse_basic(header)
-        return creds[0] if creds and self.check_credentials(creds[0], creds[1], client) else None
+        return creds[0] if creds and self.check_credentials(creds[0], creds[1], client, basic=True) else None
 
     def _verify(self, user: str, password: str) -> bool:
         encoded = self.users.get(user)
@@ -454,17 +539,31 @@ class Auth:
         ok = verify_password(password[:MAX_PASSWORD_LENGTH], encoded or _dummy_hash())
         return ok and encoded is not None
 
-    def _throttle_keys(self, user: str, client: str, device: str | None) -> dict[str, Backoff]:
+    def _throttle_keys(self, user: str, client: str, device: str | None, *,
+                       basic: bool = False) -> dict[str, Backoff]:
+        """Brakes for one attempt (key → policy). Only failures for this user name can reject a
+        correct password: from this address (pair), and – for the login form – from anywhere (user).
+        Failures of other names from this address (client) never reject, they only space attempts
+        out; HTTP Basic clients are spaced out by failures for their name elsewhere, too."""
         name = user.lower()[:MAX_USERNAME_LENGTH]
         device_id = self.device_id(device, user) if device else None
         if device_id:  # a browser this user logged in with before: not affected by others' failures
             return {f"device:{device_id}": DEVICE}
         host = client_key(client)
-        return {f"pair:{host}|{name}": PAIR, f"user:{name}": USER, f"client:{host}": CLIENT}
+        return {f"pair:{host}|{name}": PAIR, f"user:{name}": USER_SOFT if basic else USER,
+                f"client:{host}": CLIENT}
 
-    def _blocked(self, keys: Iterable[str]) -> LoginResult | None:
+    def _blocked(self, keys: Mapping[str, Backoff]) -> LoginResult | None:
         wait = self.throttle.retry_after(keys)
         return LoginResult("throttled", retry_after=math.ceil(wait)) if wait > 0 else None
+
+    def _busy(self, reason: str) -> LoginResult:
+        """Overload: the attempt is turned away unchecked and uncounted (warned at most once a minute)."""
+        now = time.monotonic()
+        if now - self._busy_logged >= BUSY_LOG_INTERVAL:
+            self._busy_logged = now
+            log.warning("Anmeldungen abgewiesen: %s", reason)
+        return LoginResult("busy", retry_after=5)
 
     def _record(self, keys: Mapping[str, Backoff], user: str, ok: bool) -> LoginResult:
         if ok:
@@ -472,7 +571,10 @@ class Auth:
             return LoginResult("ok", user=user)
         wait, started = self.throttle.failure(keys)
         for key, count in started:
-            log.warning("Anmeldung gedrosselt nach %d Fehlversuchen: %s", count, self._describe(key))
+            if key.startswith("client:"):  # soft for everybody (user:<name> is hard for the login form)
+                log.warning("Anmeldungen werden verzögert nach %d Fehlversuchen: %s", count, self._describe(key))
+            else:
+                log.warning("Anmeldung gedrosselt nach %d Fehlversuchen: %s", count, self._describe(key))
         return LoginResult("invalid", retry_after=math.ceil(wait))
 
     def _describe(self, key: str) -> str:

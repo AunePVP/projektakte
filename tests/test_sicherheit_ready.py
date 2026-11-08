@@ -1,6 +1,7 @@
 """ops-09: public, data-poor readiness endpoint and the Docker HEALTHCHECK command."""
 import json
 import secrets
+import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -8,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 from fastapi.testclient import TestClient
 
+import projektakte.main as main_mod
 from projektakte import healthcheck
 from projektakte.auth import hash_password
 from projektakte.config import load_settings
@@ -29,7 +31,7 @@ def test_ready_is_public_and_data_poor(tmp_path):
     data = r.json()
     assert data["status"] == "ok"
     assert data["checks"] == {"database": "ok", "indexer": "off"}
-    assert data["indexing"]["pending_vectors"] == 0 and data["indexing"]["runs"] == 0
+    assert data["indexing"]["pending_vectors"] is None and data["indexing"]["runs"] == 0  # no run yet
     text = r.text
     for leak in (str(tmp_path), "geheimer-schluessel", "anna", "192.168"):
         assert leak not in text
@@ -64,6 +66,30 @@ def test_ready_reports_missing_database_without_creating_it(tmp_path):
         (tmp_path / f"projektakte.sqlite3{suffix}").unlink(missing_ok=True)
     assert TestClient(app).get("/health/ready").status_code == 503
     assert not (tmp_path / "projektakte.sqlite3").exists()
+
+
+def test_ready_probe_has_constant_cost(tmp_path, monkeypatch):
+    """diff-review: the public probe must not scan the sections table (COUNT over 300,000 sections
+    took 4 s with a cold cache – longer than the HEALTHCHECK timeout, and anybody in the LAN could
+    trigger it). Pending vectors come from the indexer's last run instead."""
+    app = make_app(tmp_path)
+    statements = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(main_mod.sqlite3, "connect", traced_connect)
+    app.state.indexer.state.update(runs=1, last_finished=_iso(timedelta(minutes=1)),
+                                   last_stats={"embeddings": {"embedded": 10, "pending": 7, "error": None}})
+    data = TestClient(app).get("/health/ready").json()
+    assert data["checks"]["database"] == "ok" and data["indexing"]["pending_vectors"] == 7
+    queries = [q for q in statements if q.lstrip().upper().startswith("SELECT")]
+    assert queries and all("LIMIT 1" in q and "COUNT" not in q.upper() for q in queries), statements
+    app.state.indexer.state.update(last_stats={"embeddings": {"error": "Zeitüberschreitung"}})
+    assert TestClient(app).get("/health/ready").json()["indexing"]["pending_vectors"] is None
 
 
 def _iso(delta: timedelta) -> str:

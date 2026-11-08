@@ -12,15 +12,17 @@ cp projektakte.env.example projektakte.env && chmod 600 projektakte.env   # SECR
 docker compose build
 docker run --rm -it projektakte:latest python -m projektakte.passwd anna  # je Benutzer; die ausgegebene
                                                                           # Zeile in benutzer.txt eintragen
-chmod 600 benutzer.txt
+sudo chown 10001:10001 benutzer.txt && sudo chmod 600 benutzer.txt       # nur für die App (uid 10001) lesbar
 # Caddyfile: Hostnamen eintragen; compose.yaml: Pfade der Projektordner und Mails anpassen
 docker compose up -d
 docker compose ps        # beide Dienste "healthy" bzw. "running"
 ```
 
 `APP_ENV=production` (Standard im Image) prüft beim Start: kein `AUTH_DISABLED`, ein zufälliger
-`SECRET_KEY` mit mindestens 32 Zeichen, beschreibbares `DATA_DIR`. Andernfalls bricht der Start mit
-einer deutschen Meldung im Log ab (`docker compose logs app`). Cookies werden in `production` nur über
+`SECRET_KEY` mit mindestens 32 Zeichen, beschreibbares `DATA_DIR`, mindestens ein Benutzer und eine
+lesbare `AUTH_USERS_FILE` (die Anwendung läuft als Benutzer-ID 10001 – eine Datei mit `chmod 600`,
+die root gehört, kann sie nicht lesen). Andernfalls bricht der Start mit einer deutschen Meldung im
+Log ab (`docker compose logs app`). Cookies werden in `production` nur über
 HTTPS gesendet (`COOKIE_SECURE` ist dort standardmäßig an).
 
 ## Zertifikat
@@ -40,12 +42,23 @@ Rechner wirkt und im Log die echte Adresse steht, wertet uvicorn `X-Forwarded-Fo
 `127.0.0.1`). Im Beispiel hat Caddy die feste Adresse `172.31.250.10`. Nie `*` setzen, solange der
 Port der Anwendung auch ohne Proxy erreichbar ist: Dann könnte jeder seine Adresse fälschen.
 
-## Zeitlimits (`LLM_TIMEOUT`)
+Stimmt `FORWARDED_ALLOW_IPS` nicht (oder sitzen alle hinter einem Terminalserver bzw. NAT), haben
+alle Clients dieselbe Adresse. Die Anmeldung bleibt trotzdem für alle möglich: Fehlversuche mit
+*anderen* Benutzernamen von dieser Adresse verzögern Anmeldungen nur (höchstens 2 s je Versuch);
+gesperrt – mit wachsender Wartezeit, höchstens 5 Minuten – wird nur der Benutzername, für den falsche
+Passwörter kamen. Ein Browser, mit dem sich der Benutzer schon einmal angemeldet hat, ist auch davon
+ausgenommen. Skripte und Überwachung mit HTTP Basic (am besten mit einem eigenen Benutzer) sperren
+nur Fehlversuche für genau diesen Benutzer von genau dieser Adresse. Nur wer von einer Adresse mit
+vielen parallelen Anfragen flutet, bekommt – wie bei jeder Überlast – 503 mit `Retry-After`.
 
-Eine Frage wird synchron beantwortet und darf bis `LLM_TIMEOUT` (Standard 120 s) dauern. Das
-Zeitlimit des Proxys muss darüber liegen, sonst bricht er mit 504 ab und die Fundstellen gehen
-verloren. Caddy: `response_header_timeout 180s` (im Beispiel gesetzt). nginx hat standardmäßig
-60 s – dort:
+## Zeitlimits (`EMBED_TIMEOUT`, `RERANK_TIMEOUT`, `LLM_TIMEOUT`)
+
+Eine Frage wird synchron beantwortet und wartet nacheinander auf den Embedding-Dienst, den Reranker
+und das Sprachmodell – im ungünstigsten Fall also `EMBED_TIMEOUT` + `RERANK_TIMEOUT` + `LLM_TIMEOUT`
+(Standard 60 + 30 + 120 = 210 s). Das Zeitlimit des Proxys muss über dieser Summe liegen (plus
+Reserve), sonst bricht er mit 504 ab und der Nutzer sieht statt der gefundenen Stellen eine
+Fehlerseite. Caddy: `response_header_timeout 240s` (im Beispiel gesetzt). Wer die Zeitlimits der
+Dienste erhöht, erhöht auch das des Proxys. nginx hat standardmäßig 60 s – dort:
 
 ```nginx
 location / {
@@ -53,9 +66,18 @@ location / {
     proxy_set_header Host $host;                       # sonst lehnt die App Formulare als fremd ab
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_read_timeout 180s;                           # > LLM_TIMEOUT
+    proxy_read_timeout 240s;                           # > EMBED_ + RERANK_ + LLM_TIMEOUT (210 s)
 }
 ```
+
+Läuft nginx direkt auf dem Server und die Anwendung in Docker (`-p 127.0.0.1:8000:8000`), kommen
+die Anfragen nicht von `127.0.0.1`, sondern von der Gateway-Adresse des Docker-Netzes (Standardnetz:
+`172.17.0.1`; nachsehen mit `docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}'`,
+bei Compose den Netznamen statt `bridge`). Dann `FORWARDED_ALLOW_IPS=172.17.0.1` setzen – sonst
+sieht die Anwendung alle Clients als eine Adresse und meldet auf der Anmeldeseite fälschlich
+„unverschlüsseltes HTTP“. Den Port dabei nur an `127.0.0.1` binden (nicht `-p 8000:8000`), denn
+alles, was über diesen Port hereinkommt, gilt als vertrauenswürdiger Proxy. Alternativ die
+Anwendung mit `--network host` betreiben; dann passt der Standard `127.0.0.1`.
 
 ## Datenverzeichnis
 
@@ -84,5 +106,13 @@ dort `projektakte.sqlite3-wal` und `-shm` löschen, `docker compose start app`.
 - `GET /health/ready` (ohne Anmeldung, ohne Inhalte): 200 mit `status` `ok` oder `degraded`
   (Indexierung veraltet oder letzter Lauf fehlgeschlagen), 503 wenn die Datenbank nicht nutzbar ist
   oder der Indexierungs-Thread nicht läuft. Der Docker-`HEALTHCHECK` nutzt denselben Endpunkt.
+  Die Abfrage kostet unabhängig von der Datenmenge nur Millisekunden (kein Tabellenscan);
+  `pending_vectors` ist der Stand nach dem letzten Indexierungslauf (`null` vor dem ersten).
 - Das Zugriffsprotokoll enthält keine Query-Strings (also keine Suchbegriffe); erfolgreiche
   Health-Abfragen werden nicht protokolliert. Logs werden im Beispiel auf 5 × 10 MB begrenzt.
+- Caddy schreibt kein Zugriffsprotokoll, aber Proxy-Fehler (502/504, etwa während die Anwendung
+  neu startet) mit der Anfrage. Das `Caddyfile` kürzt dort die Adresse um den Query-String und lässt
+  die Request-Header weg (`log default` mit `format filter`). Wer im Caddyfile ein Zugriffsprotokoll
+  (`log` im Site-Block) einschaltet, muss denselben Filter dort eintragen.
+- Die Startzeile im Log nennt Version und wirksame Konfiguration (ohne Geheimnisse):
+  `docker compose logs app | grep Konfiguration`.

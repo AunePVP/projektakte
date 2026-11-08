@@ -4,6 +4,9 @@
   the templates load scripts and styles only from /static, no inline code) and
   ``Cache-Control: no-store`` for everything except /static, so mails and documents do not stay
   in the browser cache of shared PCs.
+* Original files (``/dokumente/{id}/datei…``) open in the browser's own viewers (image, text, PDF),
+  which style their page inline and embed the PDF: they get a policy of their own – no scripts,
+  forms or framing, and a sandbox for everything but PDFs (PDF viewers refuse sandboxed documents).
 * Cross-site requests: a browser marks every request with ``Sec-Fetch-Site``; for older browsers
   the ``Origin`` header is compared with the own host. State-changing requests (POST, PUT, PATCH,
   DELETE) that another site – also a sibling subdomain (``same-site``) – triggered are rejected.
@@ -13,6 +16,7 @@
 """
 from __future__ import annotations
 
+import re
 from urllib.parse import urlsplit
 
 from starlette.datastructures import MutableHeaders
@@ -29,6 +33,9 @@ SECURITY_HEADERS: dict[str, str] = {
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
 }
+FILE_CONTENT_SECURITY_POLICY = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; "
+                                "object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+FILE_PATH = re.compile(r"/dokumente/\d+/datei(?:/.*)?\Z", re.DOTALL)  # also …/datei/<Dateiname>
 CACHEABLE_PREFIXES = ("/static/",)
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 SAME_ORIGIN_SITES = frozenset({"same-origin", "none"})  # "none": typed URL, bookmark
@@ -48,10 +55,14 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
         cacheable = scope["path"].startswith(self.cacheable_prefixes)
+        original_file = bool(FILE_PATH.match(scope["path"]))
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
+                if original_file:
+                    headers.setdefault("Content-Security-Policy", file_policy(
+                        headers.get("content-type", ""), headers.get("content-disposition", "")))
                 for name, value in SECURITY_HEADERS.items():
                     headers.setdefault(name, value)
                 if not cacheable:
@@ -59,6 +70,18 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
+
+
+def file_policy(content_type: str, content_disposition: str = "") -> str:
+    """CSP for an original file shown by the browser's own viewer. The application's own HTML
+    (an error page under the same address – original files always carry Content-Disposition)
+    keeps the normal policy; an HTML *file* is sandboxed like any other."""
+    media = content_type.split(";", 1)[0].strip().lower()
+    if media == "text/html" and not content_disposition:
+        return CONTENT_SECURITY_POLICY
+    if media == "application/pdf":
+        return FILE_CONTENT_SECURITY_POLICY
+    return FILE_CONTENT_SECURITY_POLICY + "; sandbox"
 
 
 def _normalize_host(netloc: str, scheme: str = "") -> str:

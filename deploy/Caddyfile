@@ -1,4 +1,21 @@
 # TLS reverse proxy for Projektakte. Replace the host name with the office DNS name.
+{
+	# Caddy writes no access log here (only with a "log" directive in the site block), but its own
+	# log records proxy errors (502/504, e.g. while the app restarts) together with the request.
+	# Search terms are project and personal data: cut the query string off the URI and leave out
+	# the request headers (Referer and HX-Current-URL carry the query string as well).
+	log default {
+		output stderr
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp \?.* ""
+				request>headers delete
+			}
+		}
+	}
+}
+
 projektakte.firma.lan {
 	# Office network without public DNS: Caddy's own certificate authority. Distribute its root
 	# certificate to the clients once (deploy/README.md, "Zertifikat").
@@ -11,14 +28,13 @@ projektakte.firma.lan {
 		-Server
 	}
 
-	# Caddy sets X-Forwarded-For/-Proto/-Host and keeps the Host header. Answers to questions can
-	# take up to LLM_TIMEOUT (default 120 s); this timeout must stay above it.
+	# Caddy sets X-Forwarded-For/-Proto/-Host and keeps the Host header. A question waits for the
+	# embedding service, the reranker and the language model one after the other – up to
+	# EMBED_TIMEOUT + RERANK_TIMEOUT + LLM_TIMEOUT (defaults 60 + 30 + 120 = 210 s). This timeout
+	# must stay above that sum, otherwise the user gets a 504 instead of the sources found.
 	reverse_proxy app:8000 {
 		transport http {
-			response_header_timeout 180s
+			response_header_timeout 240s
 		}
 	}
-
-	# No access log here on purpose: Caddy logs requests only with a "log" directive. If one is
-	# added, strip the query string (search terms) with a log filter.
 }

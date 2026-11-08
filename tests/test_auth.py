@@ -292,14 +292,17 @@ def test_production_login_sets_secure_cookie(tmp_path, monkeypatch):
 
 # -- SEC-04: per-client limit, bounded table, limited PBKDF2 concurrency --------------------------------
 def test_throttle_per_client_independent_of_user_name():
+    """Name spraying from one client: attempts get spaced out (soft brake), a correct password of
+    an unaffected user still gets through (SEC-05, see test_sicherheit_throttle.py)."""
     clock = FakeClock()
     auth = Auth({"anna": HASH}, STRONG_KEY, throttle=LoginThrottle(clock=clock))
-    for i in range(CLIENT.free):
+    slept = []
+    auth._sync_sleep = lambda seconds: (slept.append(seconds), clock.advance(seconds))
+    for i in range(CLIENT.free + 4):
         assert not auth.check_credentials(f"name{i}", "x", "10.0.0.9")  # a new name each time
-    assert not auth.check_credentials("anna", PW, "10.0.0.9")  # the client is throttled now
-    assert auth.check_credentials("anna", PW, "10.0.0.10")  # other clients are not
-    clock.advance(CLIENT.cap + 1)
-    assert auth.check_credentials("anna", PW, "10.0.0.9")  # and the wait ends
+    assert slept and max(slept) <= CLIENT.cap  # spaced out …
+    assert auth.check_credentials("anna", PW, "10.0.0.9")  # … but never locked out
+    assert auth.check_credentials("anna", PW, "10.0.0.10")  # other clients are not even delayed
 
 
 def test_failure_table_is_bounded_and_forgets():

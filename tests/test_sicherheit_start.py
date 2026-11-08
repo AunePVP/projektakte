@@ -29,11 +29,23 @@ def access_record(path: str) -> logging.LogRecord:
     ("/suche?q=Geheimprojekt+Mueller", "/suche"),
     ("/login?next=%2Fsuche%3Fq%3DGehalt", "/login"),
     ("/projekte/BS-2024-0137", "/projekte/BS-2024-0137"),
+    ('/suche?q=abc"Rohzitat5', "/suche"),  # raw quote (curl --path-as-is): must not end the filter
+    ('/suche?q=a" HTTP/1.1" 200 x"Rest', "/suche"),
+    ('/su"che?q=geheim', '/su"che'),
 ])
 def test_access_log_without_query_string(path, expected):
     record = access_record(path)
     assert StripQueryString().filter(record)
     assert record.getMessage() == f'10.0.0.5:51234 - "GET {expected} HTTP/1.1" 200'
+
+
+@pytest.mark.parametrize("message,expected", [
+    ('10.0.0.5:1 - "GET /suche?q=abc"Rohzitat5 HTTP/1.1" 200', '10.0.0.5:1 - "GET /suche HTTP/1.1" 200'),
+    ('"POST /fragen?q=x y HTTP/2" 303', '"POST /fragen HTTP/2" 303'),
+])
+def test_access_log_filter_on_other_message_shapes(message, expected):
+    record = logging.LogRecord("uvicorn.access", logging.INFO, "x.py", 1, message, None, None)
+    assert StripQueryString().filter(record) and record.getMessage() == expected
 
 
 def test_successful_health_probes_not_logged():
@@ -114,6 +126,35 @@ def test_refused_start_is_a_clear_message(tmp_path):
     assert r.returncode == 2 and "ist nicht beschreibbar" in r.stderr and "Traceback" not in r.stderr
 
 
+def test_production_refuses_start_without_users(tmp_path):
+    """README example without the users file mounted: the container ran "healthy", nobody could log in."""
+    base = {"APP_ENV": "production", "SECRET_KEY": "x" * 8 + "abcdefghijklmnopqrstuvwxyz1234"}
+    r = run_module({**base, "AUTH_USERS_FILE": str(tmp_path / "fehlt" / "users")}, tmp_path)
+    assert r.returncode == 2 and "Traceback" not in r.stderr
+    assert "AUTH_USERS_FILE" in r.stderr and "ist nicht lesbar" in r.stderr and "-v /pfad/benutzer.txt" in r.stderr
+    r = run_module({**base, "AUTH_USERS": ""}, tmp_path)
+    assert r.returncode == 2 and "Keine Benutzer konfiguriert" in r.stderr
+
+
+def test_users_file_checked_in_production_only(tmp_path, caplog):
+    from projektakte.auth import Auth, hash_password
+
+    users = tmp_path / "benutzer.txt"
+    users.write_text("anna:" + hash_password("x" * 12, iterations=1000) + "\n", encoding="utf-8")
+    key = "x" * 8 + "abcdefghijklmnopqrstuvwxyz1234"
+    ok = Auth.from_settings(load_settings({"APP_ENV": "production", "SECRET_KEY": key, "AUTH_USERS_FILE": str(users)}))
+    assert list(ok.users) == ["anna"]
+    with pytest.raises(ConfigError, match="AUTH_USERS_FILE .* ist nicht lesbar"):
+        Auth.from_settings(load_settings({"APP_ENV": "production", "SECRET_KEY": key,
+                                          "AUTH_USERS_FILE": str(tmp_path / "fehlt.txt")}))
+    users.write_text("# nur ein Kommentar\nanna:kein-hash\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="Keine Benutzer konfiguriert"):
+        Auth.from_settings(load_settings({"APP_ENV": "production", "SECRET_KEY": key, "AUTH_USERS_FILE": str(users)}))
+    caplog.set_level(logging.WARNING)  # elsewhere: only logged, the login page explains it
+    dev = Auth.from_settings(load_settings({"APP_ENV": "dev", "AUTH_USERS_FILE": str(tmp_path / "fehlt.txt")}))
+    assert dev.users == {} and "AUTH_USERS_FILE nicht lesbar" in caplog.text
+
+
 def test_server_log_has_timestamps_and_no_search_terms(tmp_path):
     port = free_port()
     env = {"PATH": os.environ.get("PATH", ""), "DATA_DIR": str(tmp_path / "data"), "PORT": str(port),
@@ -134,6 +175,10 @@ def test_server_log_has_timestamps_and_no_search_terms(tmp_path):
         opener.open(base + "/health?q=Geheimprojekt+Mueller", timeout=5).read()
         opener.open(base + "/login?next=%2Fsuche%3Fq%3DGeheimprojekt", timeout=5).read()
         opener.open(base + "/suche?q=Gehaltsliste+Brandschutz", timeout=30).read()
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:  # raw quote, like curl --path-as-is
+            raw.sendall(b'GET /suche?q=abc"Rohzitat5 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
+            while raw.recv(65536):
+                pass
         req = urllib.request.Request(base + "/api/version", headers={"X-Forwarded-For": "10.20.30.40"})
         resp = opener.open(req, timeout=5)
         assert resp.headers["X-Frame-Options"] == "DENY" and "server" not in resp.headers
@@ -143,9 +188,12 @@ def test_server_log_has_timestamps_and_no_search_terms(tmp_path):
         out, _ = proc.communicate(timeout=20)
     assert '"GET /suche HTTP/1.1" 200' in out and '"GET /login HTTP/1.1"' in out
     assert '"GET /health HTTP/1.1" 200' not in out  # successful probes are not logged
-    assert "Geheimprojekt" not in out and "Gehaltsliste" not in out
+    assert "Geheimprojekt" not in out and "Gehaltsliste" not in out and "Rohzitat" not in out
     assert "10.20.30.40" in out  # client address from the trusted proxy header
-    assert "Konfiguration: APP_ENV=dev, AI_MODE=fake" in out
+    from projektakte import __version__
+
+    assert f"Projektakte {__version__} – Konfiguration: APP_ENV=dev, AI_MODE=fake" in out  # ops-10: version
+    assert "Timeout 60s" in out and "Timeout 30s" in out  # embedding/reranker time limits (ops-12)
     lines = [line for line in out.splitlines() if line.strip()]
     stamped = [line for line in lines if line[:4].isdigit() and line[4] == "-"]
     assert len(stamped) == len(lines), [line for line in lines if line not in stamped]

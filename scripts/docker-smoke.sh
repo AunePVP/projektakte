@@ -1,8 +1,10 @@
 #!/bin/sh
 # Builds the image, starts a container (demo data, fake AI, APP_ENV=production from the image) and
-# checks /health, /health/ready, the HEALTHCHECK command, /health/deps, the access control, security
-# headers, the access log (no search terms), a question with sources, the backup and the refused
-# starts (AUTH_DISABLED outside dev, data directory not writable).
+# checks the installed packages (= constraints.txt), /health, /health/ready, the HEALTHCHECK command,
+# /health/deps, the access control, security headers, the German error page, the access log (no
+# search terms, also after a raw quote), a question with sources, the backup, the users file as in
+# the README example and the refused starts (AUTH_DISABLED outside dev, data directory not
+# writable, users file not mounted).
 set -eu
 cd "$(dirname "$0")/.."
 IMAGE="${IMAGE:-projektakte:smoke}"
@@ -15,6 +17,12 @@ fail() { echo "FEHLER: $*" >&2; exit 1; }
 docker build -q -t "$IMAGE" . >/dev/null
 [ "$(docker run --rm --entrypoint sh "$IMAGE" -c 'find /app -name __pycache__ -o -name tests -o -name "*.md" | wc -l')" = 0 ] \
   || fail "Image enthält __pycache__, Tests oder Doku"
+LOCK=$(mktemp)
+grep -v '^#' constraints.txt | tr 'A-Z_' 'a-z-' | sort > "$LOCK"
+DIFF=$(docker run --rm --entrypoint pip "$IMAGE" freeze --exclude pip 2>/dev/null | tr 'A-Z_' 'a-z-' | sort | diff "$LOCK" - || true)
+rm -f "$LOCK"
+[ -z "$DIFF" ] || fail "Pakete im Image weichen von constraints.txt ab: $(echo "$DIFF" | grep '^[<>]' | tr '\n' ' ')"
+echo "Pakete:  wie constraints.txt"
 
 START=$(date +%s)
 CID=$(docker run -d --rm -p "127.0.0.1:$PORT:8000" -e AI_MODE=fake -e DEMO_MODE=1 -e INDEX_INTERVAL=0 \
@@ -35,6 +43,15 @@ curl -sS -D - -o /dev/null "http://127.0.0.1:$PORT/login" | grep -qi '^x-frame-o
 [ "$(curl -sS -o /dev/null -w '%{http_code}' -u "smoke:$PW" -X POST -H 'Sec-Fetch-Site: cross-site' \
      "http://127.0.0.1:$PORT/api/reindex")" = 403 ] || fail "fremde POST-Anfrage nicht abgelehnt"
 echo "Header:  Sicherheits-Header gesetzt, fremde POST-Anfrage abgelehnt"
+COOKIES=$(mktemp)
+curl -sS -o /dev/null -c "$COOKIES" -d "username=smoke&password=$PW" "http://127.0.0.1:$PORT/login"
+NOTFOUND=$(curl -sS -b "$COOKIES" -H 'Accept: text/html' -w '%{http_code} %{content_type}' "http://127.0.0.1:$PORT/gibtsnicht")
+rm -f "$COOKIES"
+echo "$NOTFOUND" | grep -q 'Diese Seite gibt es nicht' && echo "$NOTFOUND" | grep -q '404 text/html' \
+  || fail "unbekannte Adresse ohne deutsche Fehlerseite: $(echo "$NOTFOUND" | tail -c 120)"
+[ "$(curl -sS -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:$PORT/favicon.ico")" = "200 image/png" ] \
+  || fail "favicon fehlt"
+echo "Fehler:  deutsche Seite für unbekannte Adressen, favicon vorhanden"
 for _ in $(seq 1 100); do
   RUNS=$(curl -sS -u "smoke:$PW" "http://127.0.0.1:$PORT/api/status" | python3 -c \
     'import json,sys; d=json.load(sys.stdin)["indexing"]; print(d["runs"] if not d["running"] else 0)')
@@ -45,9 +62,12 @@ curl -sS -u "smoke:$PW" -H 'Content-Type: application/json' "http://127.0.0.1:$P
   -d '{"question": "Was fordert Auflage 7 der Baugenehmigung?", "project": "BS-2024-0137"}' | python3 -c \
   'import json,sys; d=json.load(sys.stdin); print("frage:  ", d["status"], "|", d["answer"][:90], "|", (d["sources"] or d.get("context") or [{}])[0].get("label"))'
 curl -sS -o /dev/null -u "smoke:$PW" "http://127.0.0.1:$PORT/api/search?q=Zebrafink-Suchbegriff"
+curl -sS -o /dev/null --path-as-is -u "smoke:$PW" "http://127.0.0.1:$PORT/api/search?q=abc\"Rohzitat-Suchbegriff"
 sleep 0.5
 docker logs "$CID" 2>&1 | grep -q 'GET /api/search HTTP' || fail "Zugriff fehlt im Log"
-if docker logs "$CID" 2>&1 | grep -q 'Zebrafink'; then fail "Suchbegriff steht im Log"; fi
+if docker logs "$CID" 2>&1 | grep -q 'Zebrafink\|Rohzitat'; then fail "Suchbegriff steht im Log"; fi
+docker logs "$CID" 2>&1 | grep -q "Projektakte $(cat VERSION) – Konfiguration: APP_ENV=production" \
+  || fail "Version/Konfiguration fehlt in der Startzeile"
 echo "Log:     Zugriffe ohne Query-String"
 docker exec "$CID" python -m projektakte.backup /data/sicherungen | sed 's/^/backup:  /'
 
@@ -61,3 +81,23 @@ OUT=$(docker run --rm -v "$HOSTDIR:/data" -e APP_ENV=dev -e AUTH_DISABLED=1 "$IM
 rmdir "$HOSTDIR" 2>/dev/null || true
 echo "$OUT" | grep -q 'ist nicht beschreibbar' || fail "Meldung fehlt: $OUT"
 echo "Abbruch: nicht beschreibbares DATA_DIR erkannt ($(echo "$OUT" | grep -o 'chown -R [0-9:]*' | head -1))"
+OUT=$(docker run --rm -e AUTH_USERS_FILE=/run/secrets/users -e SECRET_KEY="$KEY" "$IMAGE" 2>&1) \
+  && fail "Start in production ohne eingebundene Benutzerdatei"
+echo "$OUT" | grep -q "AUTH_USERS_FILE '/run/secrets/users' ist nicht lesbar" || fail "Meldung fehlt: $OUT"
+echo "Abbruch: Benutzerdatei nicht eingebunden"
+
+# the README example for "docker run" by hand: users file mounted read-only
+USERDIR=$(mktemp -d)
+echo "$USERS" > "$USERDIR/benutzer.txt"
+chmod 644 "$USERDIR/benutzer.txt"  # readable for uid 10001 (in production: chown 10001 + chmod 600)
+CID2=$(docker run -d --rm -p "127.0.0.1:$((PORT + 1)):8000" -e AI_MODE=fake -e INDEX_INTERVAL=0 \
+       -v "$USERDIR/benutzer.txt:/run/secrets/users:ro" -e AUTH_USERS_FILE=/run/secrets/users \
+       -e SECRET_KEY="$KEY" "$IMAGE")
+trap 'docker stop "$CID" "$CID2" >/dev/null 2>&1 || true; rm -rf "$USERDIR"' EXIT
+for _ in $(seq 1 100); do
+  if curl -fsS "http://127.0.0.1:$((PORT + 1))/health" >/dev/null 2>&1; then break; fi
+  sleep 0.1
+done
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -u "smoke:$PW" "http://127.0.0.1:$((PORT + 1))/api/version")" = 200 ] \
+  || fail "Anmeldung mit eingebundener Benutzerdatei nicht möglich: $(docker logs "$CID2" 2>&1 | tail -3)"
+echo "Benutzerdatei: eingebunden wie im README, Anmeldung möglich"

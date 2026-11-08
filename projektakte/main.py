@@ -4,15 +4,21 @@ from __future__ import annotations
 import hmac
 import logging
 import sqlite3
+import struct
+import zlib
 from contextlib import asynccontextmanager, closing
 from datetime import datetime, timezone
+from functools import lru_cache
+from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request
-from fastapi.exceptions import HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException
 
 from . import __version__, db
 from .ai.services import AIServices, resolve_settings
@@ -24,8 +30,17 @@ from .websecurity import UNSAFE_METHODS, SecurityHeadersMiddleware, is_cross_sit
 
 log = logging.getLogger("projektakte.main")
 
-ERROR_TITLES = {401: "Anmeldung nötig", 403: "Kein Zugriff", 404: "Nicht gefunden",
-                429: "Zu viele Versuche", 503: "Vorübergehend nicht verfügbar"}
+ERROR_TITLES = {400: "Ungültige Anfrage", 401: "Anmeldung nötig", 403: "Kein Zugriff", 404: "Nicht gefunden",
+                405: "Nicht möglich", 413: "Zu groß", 422: "Ungültige Angaben", 429: "Zu viele Versuche",
+                503: "Vorübergehend nicht verfügbar"}
+# German text for the browser instead of Starlette's English default detail ("Not Found" …)
+ERROR_MESSAGES = {
+    400: "Die Anfrage konnte nicht verarbeitet werden.",
+    404: "Diese Seite gibt es nicht – vielleicht ist der Link veraltet oder die Adresse vertippt.",
+    405: "Diese Aktion ist unter dieser Adresse nicht möglich.",
+    413: "Die gesendeten Daten sind zu groß.",
+    422: "Die Anfrage enthält ungültige Angaben.",
+}
 READY_DB_TIMEOUT = 2.0  # seconds; the readiness probe must answer quickly
 
 
@@ -55,25 +70,37 @@ def _age_seconds(iso: str | None) -> int | None:
     return max(0, int((datetime.now(timezone.utc) - when).total_seconds()))
 
 
-def _pending_vectors(db_path: Path) -> int:
-    """Sections without an embedding; raises sqlite3.Error if the database is not usable."""
+def _check_database(db_path: Path) -> None:
+    """Raises sqlite3.Error if the database is not usable. Constant cost however large the index:
+    the probe is public and polled every 30 s – no table scans (a COUNT over all sections took
+    seconds with a cold cache on large data sets)."""
     uri = Path(db_path).resolve().as_uri() + "?mode=rw"  # never create a missing database here
     with closing(sqlite3.connect(uri, uri=True, timeout=READY_DB_TIMEOUT)) as conn:
         conn.execute(f"PRAGMA busy_timeout = {int(READY_DB_TIMEOUT * 1000)}")
-        return conn.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL").fetchone()[0]
+        conn.execute("SELECT id FROM chunks LIMIT 1").fetchone()  # schema readable; first row only
+
+
+def _pending_vectors(status: dict) -> int | None:
+    """Sections without a vector after the last indexing run (counted by the indexer itself);
+    None before the first run."""
+    stats = status.get("last_stats")
+    embeddings = stats.get("embeddings") if isinstance(stats, dict) else None
+    pending = embeddings.get("pending") if isinstance(embeddings, dict) else None
+    return pending if isinstance(pending, int) else None
 
 
 def readiness(app: FastAPI, *, indexer_expected: bool = True) -> tuple[dict, bool]:
     """Data-poor readiness for monitoring and the Docker HEALTHCHECK: database usable, indexer
-    thread alive (both required), age of the last successful indexing run and pending vectors
-    (``degraded`` if stale or failed). No content, no paths, no error texts."""
+    thread alive (both required), age of the last successful indexing run and pending vectors as
+    of the last run (``degraded`` if stale or failed). No content, no paths, no error texts."""
     settings = app.state.settings
     try:
-        pending: int | None = _pending_vectors(settings.db_path)
+        _check_database(settings.db_path)
         database = "ok"
     except sqlite3.Error:
-        pending, database = None, "error"
+        database = "error"
     st = app.state.indexer.status()
+    pending = _pending_vectors(st)
     indexer = ("ok" if st.get("alive") else "stopped") if indexer_expected else "off"
     last_error = bool(st.get("last_error"))
     # "last_success" if the indexer records it; otherwise the last run, if it did not fail
@@ -102,9 +129,39 @@ def error_response(request: Request, status: int, detail: str, headers: dict | N
         return JSONResponse({"detail": detail}, status_code=status, headers=headers)
     from .web import templates
 
+    if not detail or not isinstance(detail, str) or detail == _phrase(status):  # e.g. Starlette's "Not Found"
+        detail = ERROR_MESSAGES.get(status, "Die Anfrage konnte nicht ausgeführt werden.")
     return templates.TemplateResponse(request, "error.html",
                                       {"title": ERROR_TITLES.get(status, "Fehler"), "message": detail},
                                       status_code=status, headers=headers)
+
+
+def _phrase(status: int) -> str:
+    try:
+        return HTTPStatus(status).phrase
+    except ValueError:
+        return ""
+
+
+@lru_cache(maxsize=1)
+def favicon_png() -> bytes:
+    """32×32 PNG (a white page on the accent colour), built once – no binary file in the repo.
+    Browsers ask for /favicon.ico on their own; without it every first page view logs a 404."""
+    size, accent, white = 32, b"\xb3\x26\x1e", b"\xff\xff\xff"
+    rows = b""
+    for y in range(size):
+        row = bytearray(b"\x00")  # filter: none
+        for x in range(size):
+            page = 8 <= x <= 23 and 4 <= y <= 27
+            line = page and 11 <= x <= 20 and y in (10, 14, 18, 22)
+            row += white if page and not line else accent
+        rows += bytes(row)
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b""))
 
 
 def create_app(settings: Settings | None = None, *, background: bool = True) -> FastAPI:
@@ -197,6 +254,10 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
     def version() -> dict:
         return {"version": __version__}
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        return Response(favicon_png(), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
     from .api import router as api_router
     from .auth_web import router as auth_router
     from .integration import router as integration_router
@@ -208,9 +269,19 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
     app.include_router(web_router)
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
+    # Starlette's HTTPException (also raised by the router: unknown URL 404, wrong method 405) is
+    # the base class of FastAPI's – one handler covers the routes' own errors and the router's
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
         return error_response(request, exc.status_code, exc.detail, headers=exc.headers)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        if wants_json(request):  # API: FastAPI's usual 422 with the details
+            return await request_validation_exception_handler(request, exc)
+        # browser: a malformed ID in the address (/dokumente/abc) is simply "not found"
+        in_path = all((err.get("loc") or ("",))[0] == "path" for err in exc.errors())
+        return error_response(request, 404 if in_path else 422, "")
 
     return app
 

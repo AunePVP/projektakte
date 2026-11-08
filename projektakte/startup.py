@@ -84,17 +84,20 @@ def trusted_proxies(settings, *, warn: bool = False) -> str:
 
 
 def log_startup(settings, auth) -> None:
-    """One INFO line with the effective configuration – URLs without credentials, no secrets."""
+    """One INFO line with the version and the effective configuration – URLs without credentials,
+    no secrets."""
+    from . import __version__
+
     if auth.disabled:
         access = "AUS (AUTH_DISABLED=1)"
     else:
         access = f"{len(auth.users)} Benutzer, Cookies {'mit' if auth.cookie_secure else 'ohne'} Secure"
-    log.info("Konfiguration: APP_ENV=%s, AI_MODE=%s, DEMO_MODE=%s, DATA_DIR=%s, PROJECTS_DIR=%s, "
-             "MAIL_DIR=%s, LLM=%s (%s, Timeout %gs), Embeddings=%s (%s), Reranker=%s, plMail=%s, "
-             "Zuordnung=%s, Zugangsschutz=%s, Proxy-Vertrauen=%s",
-             settings.app_env, settings.ai_mode, "an" if settings.demo_mode else "aus", settings.data_dir,
-             settings.projects_dir, settings.mail_dir, public_url(settings.llm_url), settings.llm_model,
-             settings.llm_timeout, public_url(settings.embed_url), settings.embed_model,
-             public_url(settings.rerank_url),
+    log.info("Projektakte %s – Konfiguration: APP_ENV=%s, AI_MODE=%s, DEMO_MODE=%s, DATA_DIR=%s, "
+             "PROJECTS_DIR=%s, MAIL_DIR=%s, LLM=%s (%s, Timeout %gs), Embeddings=%s (%s, Timeout %gs), "
+             "Reranker=%s (Timeout %gs), plMail=%s, Zuordnung=%s, Zugangsschutz=%s, Proxy-Vertrauen=%s",
+             __version__, settings.app_env, settings.ai_mode, "an" if settings.demo_mode else "aus",
+             settings.data_dir, settings.projects_dir, settings.mail_dir, public_url(settings.llm_url),
+             settings.llm_model, settings.llm_timeout, public_url(settings.embed_url), settings.embed_model,
+             settings.embed_timeout, public_url(settings.rerank_url), settings.rerank_timeout,
              public_url(settings.plmail_url) if settings.plmail_enabled else "aus",
              settings.assign_mode, access, trusted_proxies(settings))
