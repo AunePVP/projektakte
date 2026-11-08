@@ -5,6 +5,18 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 8 – Mails zuordnen
+- Sichere Zuordnung über bekannte Projektnummern (Betreff → Text → Anhangname); mehrere oder
+  unbekannte Nummern landen mit Begründung im Zuordnungs-Eingang.
+- Vorschlag über inhaltliche Ähnlichkeit: Mail als Suchanfrage (BM25 + Vektor, Reciprocal Rank
+  Fusion) gegen Projektdateien und sicher zugeordnete Mails, Stimmanteil je Projekt mit Schwellwerten
+  `ASSIGN_MIN_SHARE`/`ASSIGN_MIN_LEAD`, Absender-Historie als Zusatzstimme.
+- `GET /api/inbox`, `POST /api/mails/{id}/assign` (bestätigen, zuordnen, verwerfen, kein Projektbezug);
+  Entscheidungen in `assign_decisions`, sie überstehen eine Neuindexierung.
+- Tests mit den Qualitätskriterien aus VISION.md Abschnitt 9 (Demo: alle 61 Mails mit Nummer richtig,
+  0 von 7 Mails ohne Projektbezug zugeordnet oder vorgeschlagen, 8 von 8 inhaltlichen Vorschlägen richtig).
+- Grundbausteine der Suche (`search.py`: FTS-Anfrage, BM25, RRF).
+
 ### Schritt 7 – Mails einlesen
 - Mailquelle „Ordner mit .eml“ (`MAIL_DIR`, rekursiv, nur lesend, inkrementell über Größe/Änderungszeit
   und Inhalts-Hash; verschwundene Dateien werden aus dem Index entfernt).

@@ -64,6 +64,7 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `RERANK_MODEL` | – | nur falls der Server ein `model`-Feld verlangt |
 | `RERANK_TIMEOUT` / `RERANK_TOP_K` | `30` / `30` | Sekunden / Kandidaten für das Reranking |
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
+| `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 
 ## Indexieren
@@ -79,6 +80,16 @@ und Tabellen), EML. Bilder (PNG/JPG/TIFF) und PDF-Seiten ohne Textebene werden n
 werden wie Dokumente indexiert. Quellordner werden nie verändert. Unveränderte Dateien
 (Größe/Änderungszeit, dann SHA-256) werden nicht erneut gelesen.
 
+### Zuordnung der Mails
+
+1. **Sicher**: bekannte Projektnummer im Betreff, sonst im Text, sonst im Anhangnamen.
+2. **Vorschlag**: Sonst dient die Mail als Suchanfrage (Volltext + Vektor) gegen alle Abschnitte der
+   Projekte (Projektdateien und sicher zugeordnete Mails). Die besten Treffer stimmen für ihr Projekt;
+   liegt eines klar vorn und teilt Begriffe mit der Mail, wird es vorgeschlagen. Absender, die bisher
+   nur zu einem Projekt geschrieben haben, zählen zusätzlich.
+3. **Zuordnungs-Eingang**: Vorschläge bestätigt oder verwirft ein Mensch; Entscheidungen bleiben
+   auch nach einem Neuaufbau des Index erhalten.
+
 ## API (Auszug)
 
 | Methode und Pfad | Zweck |
@@ -91,6 +102,8 @@ werden wie Dokumente indexiert. Quellordner werden nie verändert. Unveränderte
 | `GET /api/documents/{id}` | ein Dokument mit seinen Abschnitten (Seite, Überschrift, Text) |
 | `GET /api/mails?project=&status=&q=` | Mails (neueste zuerst), filterbar |
 | `GET /api/mails/{id}` | eine Mail mit Text und Anhängen |
+| `GET /api/inbox` | Zuordnungs-Eingang: Mails ohne sichere Zuordnung, mit Vorschlag und Begründung |
+| `POST /api/mails/{id}/assign` | Entscheidung: `{"action": "confirm"}`, `{"action": "assign", "project": "BS-…"}`, `{"action": "reject"}` (Vorschlag verwerfen), `{"action": "none"}` (kein Projektbezug) |
 
 ## Demo-Datensatz
 

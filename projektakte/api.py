@@ -4,8 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from . import db
+from .assign import INBOX_STATUSES, DecisionError, decide
 from .registry import get_project, list_projects
 
 router = APIRouter(prefix="/api")
@@ -115,3 +117,38 @@ def mail(request: Request, mail_id: int) -> dict:
                             "(SELECT COUNT(*) FROM chunks c WHERE c.doc_id = d.id) AS chunks "
                             "FROM documents d WHERE mail_id = ? ORDER BY id", (mail_id,)).fetchall()
     return {**dict(row), "attachments": [dict(a) for a in atts]}
+
+
+@router.get("/inbox")
+def inbox(request: Request) -> dict:
+    """Assignment inbox: mails without a certain project – with or without a suggestion."""
+    s = _settings(request)
+    with db.session(s.db_path) as conn:
+        rows = conn.execute(
+            f"SELECT {MAIL_COLUMNS} FROM mails WHERE deleted = 0 AND assign_status IN (?, ?) "
+            "ORDER BY (assign_status = 'suggested') DESC, date DESC", INBOX_STATUSES).fetchall()
+        items = [dict(r) for r in rows]
+        names = dict(conn.execute("SELECT number, name FROM projects").fetchall())
+        for m in items:
+            m["suggested_project_name"] = names.get(m["suggested_project"])
+            m["attachments"] = [r[0] for r in conn.execute(
+                "SELECT filename FROM documents WHERE mail_id = ? ORDER BY id", (m["id"],))]
+    return {"count": len(items), "mails": items}
+
+
+class AssignRequest(BaseModel):
+    action: str = "assign"  # confirm | assign | reject | none
+    project: str | None = None
+
+
+@router.post("/mails/{mail_id}/assign")
+def assign(request: Request, mail_id: int, body: AssignRequest) -> dict:
+    s = _settings(request)
+    user = getattr(request.state, "user", None)
+    with db.session(s.db_path) as conn:
+        try:
+            return decide(conn, mail_id, body.action, body.project, user=user)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from None
+        except DecisionError as exc:
+            raise HTTPException(400, str(exc)) from None

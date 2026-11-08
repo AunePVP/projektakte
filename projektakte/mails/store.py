@@ -53,7 +53,8 @@ def store_mail(conn: sqlite3.Connection, rec: MailRecord, *, cache_dir: Path, ll
         conn.execute(
             "UPDATE mails SET source=?, message_id=?, in_reply_to=?, subject=?, sender=?, sender_name=?, "
             "recipients=?, date=?, body=?, preview=?, sha256=?, has_attachments=?, deleted=0, "
-            "indexed_at=datetime('now') WHERE id=?", (*values, mail_id))
+            "assign_status='pending', suggest_done=0, indexed_at=datetime('now') WHERE id=?",
+            (*values, mail_id))
     else:
         status, project = "new", None
         mail_id = conn.execute(

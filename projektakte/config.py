@@ -66,8 +66,8 @@ class Settings:
     health_timeout: float
     # indexing / assignment
     index_interval: float
-    assign_min_score: float
-    assign_min_margin: float
+    assign_min_share: float
+    assign_min_lead: float
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
@@ -132,8 +132,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         rerank_top_k=max(1, _int(e.get("RERANK_TOP_K"), 30)),
         health_timeout=_float(e.get("HEALTH_TIMEOUT"), 3.0),
         index_interval=_float(e.get("INDEX_INTERVAL"), 300.0),
-        assign_min_score=_float(e.get("ASSIGN_MIN_SCORE"), 0.30),
-        assign_min_margin=_float(e.get("ASSIGN_MIN_MARGIN"), 0.04),
+        assign_min_share=_float(e.get("ASSIGN_MIN_SHARE"), 0.5),
+        assign_min_lead=_float(e.get("ASSIGN_MIN_LEAD"), 0.2),
         llm_api_key=e.get("LLM_API_KEY", ""),
         embed_api_key=e.get("EMBED_API_KEY", ""),
         rerank_api_key=e.get("RERANK_API_KEY", ""),

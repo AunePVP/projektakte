@@ -97,6 +97,18 @@ MIGRATIONS: list[str] = [
     CREATE INDEX mails_date ON mails(date);
     ALTER TABLE documents ADD COLUMN cache_path TEXT;
     """,
+    # 4 – assignment: human decisions survive re-indexing (keyed by the mail's source key)
+    """
+    CREATE TABLE assign_decisions (
+        source_key  TEXT PRIMARY KEY,
+        action      TEXT NOT NULL,
+        project     TEXT,
+        rejected    TEXT NOT NULL DEFAULT '',
+        decided_by  TEXT,
+        decided_at  TEXT
+    );
+    ALTER TABLE mails ADD COLUMN suggest_done INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

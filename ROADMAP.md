@@ -26,7 +26,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
   je Abschnitt speichern; Stapelverarbeitung; Fake-Dienst für Tests.
 - [x] **7. Mails einlesen** – Mailquelle „Ordner mit .eml“ (`MAIL_DIR`): Kopf, Text, Anhänge;
   Anhänge wie Dokumente verarbeiten; `GET /api/mails`.
-- [ ] **8. Mails zuordnen** – sichere Zuordnung über Projektnummer; sonst Vorschlag über
+- [x] **8. Mails zuordnen** – sichere Zuordnung über Projektnummer; sonst Vorschlag über
   Embedding-Ähnlichkeit mit Schwellwert; Zuordnungs-Eingang `GET /api/inbox`,
   `POST /api/mails/{id}/assign`. Qualitätskriterien aus VISION.md Abschnitt 9 als Tests.
 - [ ] **9. Hybride Suche mit Reranker** – Volltext (FTS5) + Vektor kombinieren, Reranker-Client

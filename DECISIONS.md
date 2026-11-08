@@ -111,3 +111,29 @@ Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
   Postfach nicht verändert werden darf und die Oberfläche Anhänge zum Öffnen anbieten soll.
 - **Verschwundene eml-Dateien** werden aus dem Index entfernt (die Quelle ist maßgeblich);
   menschliche Zuordnungsentscheidungen werden ab Schritt 8 getrennt gespeichert und bleiben.
+
+## Schritt 8 – Mails zuordnen
+
+- **Vorschlag als „Abstimmung der ähnlichsten Abschnitte“** statt reiner Vektor-Ähnlichkeit: Ein
+  erster Ansatz (Mittel der 3 besten Kosinus-Werte je Projekt) traf mit den Hash-Fakes nur 3 von 8
+  inhaltlichen Mails und schlug eine Rechnung einem Projekt vor – Briefköpfe, Grußformeln und
+  allgemeines Brandschutz-Vokabular dominieren. Jetzt wird die Mail wie eine Suchanfrage behandelt:
+  BM25 (gewichtet seltene Begriffe wie Straßen- und Projektnamen hoch) und Vektorsuche liefern je 15
+  Treffer, per RRF verschmolzen; jeder Treffer stimmt für sein Projekt. Der Stimmanteil ist die
+  Sicherheit. Ergebnis im Demo-Datensatz: 8/8 richtig, Mails ohne Projektbezug höchstens 26 %
+  Stimmanteil (Schwelle 50 %). Mit echten Embeddings trägt der Vektoranteil mehr Semantik bei; die
+  Schwellen sind per Umgebungsvariable einstellbar.
+- **Gemeinsame Begriffe Pflicht**: Ein Vorschlag braucht mindestens einen Volltexttreffer im
+  vorgeschlagenen Projekt – reine Vektornähe reicht nicht (verhindert Zufallstreffer bei Mails wie
+  „Wartung der Kaffeemaschine“).
+- **Absender-Historie**: Hat ein Absender bisher (sicher) nur zu einem Projekt geschrieben, zählt das
+  wie zwei Spitzentreffer. Architekten mit mehreren Projekten bekommen so keinen Bonus.
+- **Belege**: Nur Projektdateien und *sicher* (oder von Menschen) zugeordnete Mails dienen als
+  Vergleich – Vorschläge stützen sich nie auf andere Vorschläge.
+- **Status**: `assigned` (sicher), `suggested`, `unassigned` (Eingang), `confirmed` (von Menschen
+  zugeordnet), `none` (kein Projektbezug). „Verwerfen“ entfernt nur den Vorschlag; die Mail bleibt
+  im Eingang, das verworfene Projekt wird für diese Mail nicht mehr vorgeschlagen.
+- **Entscheidungen getrennt gespeichert** (`assign_decisions`, Schlüssel = `source_key`), damit
+  sie eine Neuindexierung oder einen Neuaufbau der Mail-Tabelle überstehen.
+- Ohne Vektoren (Embedding-Dienst aus) bleiben Mails im Eingang mit dem Hinweis, dass der Vorschlag
+  nachgeholt wird; sichere Zuordnungen funktionieren immer.

@@ -10,6 +10,7 @@ import time
 
 from . import db
 from .ai.services import AIServices
+from .assign import assign_mails
 from .config import Settings
 from .documents import index_all_documents
 from .mails.eml_source import sync_eml_folder
@@ -32,6 +33,10 @@ def run_index(settings: Settings, ai: AIServices | None = None) -> dict:
         stats["mails"] = sync_eml_folder(conn, settings.mail_dir, cache_dir=settings.cache_dir, llm=llm)
         if ai is not None:
             stats["embeddings"] = embed_pending(conn, ai.embed)
+        stats["assignment"] = assign_mails(conn, settings.project_number_pattern,
+                                           min_share=settings.assign_min_share,
+                                           min_lead=settings.assign_min_lead,
+                                           vector_key=str(settings.db_path))
     stats["seconds"] = round(time.time() - started, 2)
     log.info("Indexierung fertig: %s", stats)
     return stats
