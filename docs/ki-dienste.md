@@ -131,5 +131,5 @@ ist ein extraktiver Leser (Sätze nach Themenwörtern, Synonymen und IDF bewerte
 nicht, „letzter Stand“ = neueste Quelle, Tabellen als „Spalte: Wert“, Entscheidungsfragen zitieren
 den Satz mit der Entscheidung). Er lehnt im Zweifel ab: Wert-Fragen (Kosten, Anzahl, Datum, Dauer,
 Maß, Name, Norm …) beantwortet er nur mit einem Wert dieser Art beim gefragten Thema. Er zeigt den
-Ablauf glaubwürdig, versteht frei formulierte Fragen aber nur etwa in 6 von 10 Fällen und sagt nichts
+Ablauf glaubwürdig, versteht frei formulierte Fragen aber nur etwa in 7 von 10 Fällen und sagt nichts
 über die Antwortqualität des echten Modells.

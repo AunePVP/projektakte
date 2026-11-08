@@ -472,4 +472,10 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   erscheint. Mit echten Diensten bleibt `LLM_VISION` eine bewusste Entscheidung.
 - *Evaluation mit Budget*: `python -m projektakte.evaluate` misst mit `ASK_DEADLINE` und den
   Synonymen wie die Anwendung und zählt die Fragen, bei denen das Budget griff.
+- *Gebäudetyp ist schwächer als der Name*: Ein Wort aus dem Projektnamen zählt als Hinweis auf das
+  Projekt halb, wenn es der Gebäudetyp vor dem eigentlichen Namen ist („Tiefgarage“ Marktplatz,
+  „Wohnhochhaus“ Am Stadtpark), voll beim Namen selbst („Hafenkante“). Benennt eine Frage mehrere
+  Projekte gleich stark („die Tiefgarage im Wohnhochhaus“), bleiben die Wörter Themenwörter, die eine
+  Antwort enthalten muss. Vorher fiel „Tiefgarage“ als Projektname aus dem Thema, und die Fake-KI
+  antwortete grün aus dem falschen Projekt.
 

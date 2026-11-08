@@ -349,3 +349,27 @@ def test_more_different_images_than_the_page_limit(monkeypatch):
     assert r.status == "ok" and r.incomplete and not r.retry
     assert len(llm.images) == 1  # the first four strips put together
     assert "2 Bild(er) nicht ausgewertet (mehr als 4 Bilder bzw. 150 Megapixel je Seite)" in r.message
+
+
+# -- a building type is no project name when the question names another project -----------------------
+@pytest.mark.parametrize("question", [
+    "Welche Türöffnungskraft wird in der Tiefgarage der Hafenkante eingehalten?",  # Hafenkante has none
+    "Wie viele Stellplätze hat die Tiefgarage im Wohnhochhaus?",  # the Wohnhochhaus has no garage
+])
+def test_type_word_of_another_project_stays_a_topic_word(demo, question):
+    """Before: "Tiefgarage" counted as the name of Tiefgarage Marktplatz and was dropped from the topic –
+    a green answer from the wrong project or about the wrong place."""
+    s, ai, conn = demo
+    r = ask(conn, ai, str(s.db_path), question)
+    assert r.status == "not_found" and not r.sources
+
+
+@pytest.mark.parametrize("question,fact", [
+    ("Wie viele Stellplätze hat die Tiefgarage Marktplatz?", "240"),
+    ("Wie viele Stellplätze hat die Tiefgarage?", "240"),
+    ("Wie hoch ist das Wohnhochhaus?", "68 m"),
+])
+def test_project_named_by_its_type_or_name_is_still_answered(demo, question, fact):
+    s, ai, conn = demo
+    r = ask(conn, ai, str(s.db_path), question)
+    assert r.status == "answered" and fact in r.answer

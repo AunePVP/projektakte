@@ -1177,8 +1177,8 @@ def relevant_passage(text: str, question: str = "", answer: str = "", max_chars:
             hi += 1
             size += 1 + len(sents[hi][1])
             continue
-        if lo > floor and size + 1 + len(sents[lo - 1][1]) <= max_chars and lead + len(sents[lo - 1][1]) <= PASSAGE_LEAD \
-                and (sents[best][2] or not sents[lo - 1][2]):
+        if lo > floor and size + 1 + len(sents[lo - 1][1]) <= max_chars \
+                and lead + len(sents[lo - 1][1]) <= PASSAGE_LEAD and (sents[best][2] or not sents[lo - 1][2]):
             lo -= 1
             size += 1 + len(sents[lo][1])
             lead += len(sents[lo][1])

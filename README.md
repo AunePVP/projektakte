@@ -196,7 +196,7 @@ docker compose exec app python -m projektakte.evaluate --real      # im Containe
 
 Der Befehl prüft zuerst die Dienste, indexiert den Demo-Datensatz mit den konfigurierten Diensten in
 einen eigenen Index (`$DATA_DIR/eval`, nie die Produktionsdaten; `--data-dir`, `--no-index`,
-`--only ID`, `--category stand` zum Eingrenzen) und lässt den Evaluationssatz (104 Fragen) laufen;
+`--only ID`, `--category stand` zum Eingrenzen) und lässt den Evaluationssatz (103 Fragen) laufen;
 `--set holdout` nimmt den zurückgehaltenen Prüfsatz eines unabhängigen Autors (40 Fragen), mit
 `--summary-only` nur Summen ohne Fragetexte. Exit-Code 0 = Ziele erreicht (≥ 80 % beantwortbare
 Fragen richtig, ≥ 90 % unbeantwortbare abgelehnt; `--min-correct`, `--min-refused`), 1 = verfehlt,
@@ -204,8 +204,8 @@ Fragen richtig, ≥ 90 % unbeantwortbare abgelehnt; `--min-correct`, `--min-refu
 Frage: erwartete Quelle in den Top 5, Fakt und Quelle in der Antwort, Status, Rerank-Scores,
 Laufzeit; zusammengefasst die Score-Verteilung und eine Schwellwerttabelle. Damit
 `ASK_MIN_RERANK`, `SEARCH_MIN_RERANK` und `ASSIGN_MIN_SIMILARITY` für die echten Modelle einstellen.
-Mit den Fakes: eigener Satz 104/104; zurückgehaltener Prüfsatz 18 von 28 beantwortbaren Fragen
-richtig (0,64 – das 80-%-Ziel ist für die Fake-KI nicht erreicht, der Test ist mit Begründung als
+Mit den Fakes: eigener Satz 103/103; zurückgehaltener Prüfsatz 19 von 28 beantwortbaren Fragen
+richtig (0,68 – das 80-%-Ziel ist für die Fake-KI nicht erreicht, der Test ist mit Begründung als
 „xfail“ markiert, nicht abgesenkt), 12 von 12 unbeantwortbaren korrekt abgelehnt, keine erfundene
 Antwort; die erwartete Quelle steht immer unter den ersten 5 Treffern.
 
@@ -234,8 +234,8 @@ mit der neuesten Quelle und zitiert den passenden Satz einmal mit `[n]` („Laut
 Zweifel ab: Fragen nach einem Wert (Kosten, Anzahl, Datum, Hersteller …) beantwortet er nur mit einem
 Wert dieser Art beim gefragten Thema (Maße passend zur gefragten Dimension, „Wann wurde …?“ nur mit
 dem Datum des Ereignisses, nie mit einer Pflicht), antwortet nur aus einem genannten Projekt und
-zitiert nie Floskeln, Signaturen oder Rollenzeilen. Frei formulierte Fragen versteht er etwa in 6–7
-von 10 Fällen –
+zitiert nie Floskeln, Signaturen oder Rollenzeilen. Frei formulierte Fragen versteht er etwa in 7
+von 10 Fällen (zurückgehaltener Prüfsatz 0,68) –
 **für eine Vorführung mit eigenen Fragen aus dem Publikum die echten Dienste anbinden**. Die
 Antwortqualität echter Modelle sagt der Fake nicht voraus – dafür gibt es `python -m projektakte.evaluate`.
 

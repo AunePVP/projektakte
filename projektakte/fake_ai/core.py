@@ -878,28 +878,37 @@ class Question:
     located: set[str] = field(default_factory=set)  # topic nouns named as a place ("im Sicherheitstreppenraum")
 
 
-def _project_names(sources: list[Source]) -> dict[str, set[str]]:
-    """Stems of the project names (without numbers) per project, from the source headers."""
-    out: dict[str, set[str]] = {}
+TYPE_WORD_WEIGHT = 0.5  # the building type in front of a project's own name
+
+
+def _project_names(sources: list[Source]) -> dict[str, dict[str, float]]:
+    """Stems of the project names (without numbers) per project, from the source headers, with their
+    weight as evidence for the project: the building type in front of the name ("Tiefgarage"
+    Marktplatz, "Wohnhochhaus" Am Stadtpark) is an ordinary word of other projects too and counts
+    half; the name itself ("Marktplatz", "Hafenkante") counts fully."""
+    out: dict[str, dict[str, float]] = {}
     for s in sources:
         if s.project:
-            out.setdefault(s.project, set()).update(
-                w for w in content_terms(s.project_name or "") if not w.isdigit())
+            stems = [w for w in content_terms(s.project_name or "") if not w.isdigit()]
+            names = out.setdefault(s.project, {})
+            for i, w in enumerate(stems):
+                weight = TYPE_WORD_WEIGHT if i == 0 and len(stems) > 1 else 1.0
+                names[w] = max(names.get(w, 0.0), weight)
     return out
 
 
-def _names_project(term: QueryTerm, word_set: set[str]) -> bool:
-    """Does a question word name the project ("Halle" → Industriehalle, "Heim" → Pflegeheim,
-    "Hochhauses" → Wohnhochhaus)? Not a word that only shares a stem ("Schüler" ≠ Grundschule)."""
+def _names_project(term: QueryTerm, names: dict[str, float]) -> float:
+    """How strongly a question word names the project ("Halle" → Industriehalle, "Heim" → Pflegeheim,
+    "Hochhauses" → Wohnhochhaus); 0 for a word that only shares a stem ("Schüler" ≠ Grundschule)."""
     if term.term.isdigit():
-        return False
+        return 0.0
     inflected = term.word[len(term.term):] in ("", "e", "es", "s", "n", "en", "ern")
-    for w in word_set:
-        if term.term == w or term.word == w:
-            return True
-        if len(term.term) >= 4 and inflected and (w.endswith(term.term) or w.startswith(term.term)):
-            return True
-    return False
+    best = 0.0
+    for w, weight in names.items():
+        if term.term == w or term.word == w or (
+                len(term.term) >= 4 and inflected and (w.endswith(term.term) or w.startswith(term.term))):
+            best = max(best, weight)
+    return best
 
 
 def _is_role(t: QueryTerm) -> bool:
@@ -917,22 +926,25 @@ def analyse_question(question: str, sources: list[Source], synonyms: Synonyms | 
     folded_q = fold(question)
     named: set[str] = set()
     project_terms: set[str] = set()
-    matches: dict[str, tuple[int, set[str]]] = {}
+    matches: dict[str, tuple[float, set[str]]] = {}
     for project, names in _project_names(sources).items():
         number_words = set(words(project))
-        score, hits = 0, set()
+        score, hits = 0.0, set()
         if fold(project) in folded_q:  # the full project number, e.g. "BS-2024-0137"
             score += 10
             hits.update(t.term for t in all_terms if t.term in number_words or t.word in number_words)
-        found = {t.term for t in all_terms if _names_project(t, names)}
-        score += len(found)
+        weights = {t.term: _names_project(t, names) for t in all_terms}
+        found = {term for term, weight in weights.items() if weight}
+        score += sum(weights.values())
         if score:
             matches[project] = (score, hits | found)
-    if matches:  # "die Tiefgarage des Bürogebäudes Hafenkante": Hafenkante (2 words), not "Tiefgarage Marktplatz"
+    if matches:  # "die Tiefgarage der Hafenkante": Hafenkante (a name), not "Tiefgarage Marktplatz" (a type)
         top = max(score for score, _ in matches.values())
         named = {p for p, (score, _) in matches.items() if score == top}
-        for p in named:
-            project_terms.update(matches[p][1])
+        if len(named) == 1:
+            project_terms.update(matches[next(iter(named))][1])
+        # several projects named equally ("die Tiefgarage im Wohnhochhaus"): which word names the project
+        # and which the thing asked about is open – the words stay topic words, an answer must contain them
     types: set[str] = set()
     prefer = None
     for kinds, rx in _NEED_RULES:

@@ -124,6 +124,25 @@ KI-Dienste ist hier nicht möglich (dafür gibt es jetzt `python -m projektakte.
   („Anhang ausstehend“).
 - Demo: Fluchtwegplan nach DIN ISO 23601/ISO 7010 neu gezeichnet (Version 5).
 
+### Runde 4 (Schlussprüfung: Review und Live-Vorführung)
+- Fragen: Zusammenfassungen ohne Zeit für die Überblickssuche fragen das Sprachmodell mit den
+  eigenen Fundstellen (vorher „nichts gefunden“); aufgebrauchtes Budget mit eigener Meldung statt
+  „KI-Dienst nicht erreichbar“; Hinweise entdoppelt, Sekunden gerundet mit Komma; die
+  Formaterkennung von Reranker und Embeddings bleibt zusammen in einem Timeout; `ASK_DEADLINE`
+  mindestens 10 s, Warnungen beim Start für zu knappe Werte und `LLM_TIMEOUT` ≥ `ASK_DEADLINE`;
+  verneinte zitierte Teilsätze („weder [1] noch [2] nennen ihn“) bleiben Absagen; `evaluate` misst
+  mit `ASK_DEADLINE` und Synonymen.
+- Fake-KI: Verfasser-Fragen („geschrieben“), Bindestrich-Wörter („Funk-Rauchwarnmelder“),
+  Verben mit Vokalwechsel („vertritt“), Zuständigkeit aus der Signatur, genannter Ort mit Beleg im
+  selben Projekt; ein Gebäudetyp eines anderen Projekts („die Tiefgarage im Wohnhochhaus“) ist kein
+  Projektname mehr – vorher zwei falsche grüne Antworten. Prüfsatz 0,68, Absagen 12/12.
+- Daten: Ein mehrfach gezeichnetes Bild einer Scan-Seite wird einmal dekodiert und gesendet (eine
+  16-KB-Datei belegte vorher 1,8 GB); je Seite höchstens 200 Bilder und 150 Megapixel laut PDF vor
+  dem Dekodieren (`EXTRACT_VERSION` 4). Demo mit `AI_MODE=fake` liest Bilder (`LLM_VISION` an).
+- Oberfläche: „BS 2024 0233“ mit Leerzeichen zeigt „Zum Projekt“ und markiert die ganze Nummer;
+  Eingang zählt eine verworfene Karte nach „Weiter“ nicht doppelt; Quellen-Ausschnitte beginnen an
+  der Überschrift ihres Abschnitts.
+
 ### Tests
 - 918 Tests (913 bestanden, 4 Integrationstests übersprungen, 1 xfail), parallel mit pytest-xdist
   (≈ 35 s auf 4 Kernen; `PYTEST_WORKERS=0` für einen Prozess).
