@@ -87,7 +87,7 @@ def test_document_date_priority():
 @pytest.fixture()
 def indexed(tmp_path):
     generate(tmp_path / "demo")
-    s = load_settings({"DATA_DIR": str(tmp_path), "DEMO_MODE": "1"})
+    s = load_settings({"AUTH_DISABLED": "1", "DATA_DIR": str(tmp_path), "DEMO_MODE": "1"})
     run_index(s)
     return s
 
@@ -145,7 +145,7 @@ def test_incremental_indexing(indexed):
 
 def test_vision_fallback_indexes_plan(tmp_path, fake_ai):
     generate(tmp_path / "demo")
-    s = load_settings({"DATA_DIR": str(tmp_path), "DEMO_MODE": "1"})
+    s = load_settings({"AUTH_DISABLED": "1", "DATA_DIR": str(tmp_path), "DEMO_MODE": "1"})
     db.init_db(s.db_path)
     with db.session(s.db_path) as conn:
         sync_projects(conn, scan_projects(s.projects_dir, s.project_number_pattern))

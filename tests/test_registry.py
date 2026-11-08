@@ -49,7 +49,7 @@ def test_sync_marks_removed_projects_inactive(tmp_path):
 
 def test_projects_api_with_demo_data(tmp_path):
     generate(tmp_path / "demo")
-    s = load_settings({"DATA_DIR": str(tmp_path), "DEMO_MODE": "1"})
+    s = load_settings({"AUTH_DISABLED": "1", "DATA_DIR": str(tmp_path), "DEMO_MODE": "1"})
     stats = run_index(s)
     assert stats["projects"]["added"] == 8
     client = TestClient(create_app(s))

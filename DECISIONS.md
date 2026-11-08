@@ -190,3 +190,24 @@ Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
 - **Originaldateien** nur über die Dokument-ID, nie über einen Pfad aus der Anfrage; zusätzlich wird
   geprüft, dass die Datei unter `PROJECTS_DIR` oder dem Anhang-Cache liegt.
 - **Zeitzone der Anzeige**: Europe/Berlin (falls die Zeitzonendatenbank fehlt: UTC).
+
+## Schritt 13 – Zugangsschutz
+
+- **Benutzer in der Konfiguration** (wie in der Roadmap gefordert), keine Benutzerverwaltung in der
+  Oberfläche. Passwörter nur als PBKDF2-SHA256-Hash mit Salz (Standardbibliothek, keine Abhängigkeit
+  wie bcrypt/argon2). Für Docker gibt es zusätzlich `AUTH_USERS_FILE`, weil `$` im Hash in
+  Compose-Dateien sonst maskiert werden muss.
+- **Eigenes signiertes Cookie** (HMAC-SHA256 über Benutzer + Ablaufzeit) statt Server-Sitzungen:
+  zustandslos, übersteht Neustarts, wenn `SECRET_KEY` gesetzt ist. Ein aus der Konfiguration
+  entfernter Benutzer wird bei der nächsten Anfrage abgemeldet.
+- **CSRF**: `SameSite=Lax` verhindert, dass fremde Seiten POST-Anfragen mit dem Cookie auslösen;
+  alle ändernden Aktionen sind POST.
+- **HTTP Basic nur für `/api/*` und `/health/*`** – für `curl`-Prüfungen beim Umschalten auf die
+  echten Dienste; Browserseiten nutzen ausschließlich die Anmeldeseite.
+- **`/health/deps` ist geschützt** („alles außer `/health`“), weil es interne Adressen und Fehler
+  nennt. Monitoring nutzt `/health`.
+- **Kein Standardpasswort**: Ohne konfigurierte Benutzer ist keine Anmeldung möglich; die Anmeldeseite
+  erklärt, wie man Benutzer anlegt. `AUTH_DISABLED=1` gibt es nur für die Entwicklung und wird in
+  `APP_ENV=production` ignoriert.
+- **Gegen Durchprobieren**: 5 Fehlversuche je Benutzer und IP-Adresse führen zu 5 Minuten Sperre;
+  unbekannte Benutzernamen kosten dieselbe Rechenzeit wie bekannte.

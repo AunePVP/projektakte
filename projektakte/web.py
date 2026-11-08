@@ -12,6 +12,7 @@ from markupsafe import Markup, escape
 
 from . import __version__, db
 from .ask import ask as answer_question
+from .auth import COOKIE, safe_next
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .registry import get_project, list_projects
 from .search import hybrid_search
@@ -290,3 +291,36 @@ def deps_partial(request: Request):
 def reindex_now(request: Request):
     request.app.state.indexer.trigger()
     return RedirectResponse("/status", status_code=303)
+
+
+# ------------------------------------------------------------------------------------- login
+@router.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "/"):  # noqa: A002
+    auth = request.app.state.auth
+    if request.state.user or auth.disabled:
+        return RedirectResponse(safe_next(next), status_code=303)
+    return templates.TemplateResponse(request, "login.html", {"next": safe_next(next), "error": None,
+                                                              "no_users": not auth.users})
+
+
+@router.post("/login", response_class=HTMLResponse)
+def login_submit(request: Request, username: str = Form(""), password: str = Form(""),
+                 next: str = Form("/")):  # noqa: A002
+    auth = request.app.state.auth
+    client = request.client.host if request.client else ""
+    if auth.check_credentials(username.strip(), password, client):
+        resp = RedirectResponse(safe_next(next), status_code=303)
+        resp.set_cookie(COOKIE, auth.make_cookie(username.strip()), max_age=auth.session_seconds,
+                        httponly=True, samesite="lax", secure=auth.cookie_secure, path="/")
+        return resp
+    error = ("Zu viele Fehlversuche – bitte einige Minuten warten."
+             if auth.locked(f"{client}|{username.strip().lower()}") else "Benutzername oder Passwort falsch.")
+    return templates.TemplateResponse(request, "login.html", {"next": safe_next(next), "error": error,
+                                                              "no_users": not auth.users}, status_code=401)
+
+
+@router.post("/logout")
+def logout(request: Request):
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie(COOKIE, path="/")
+    return resp

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anmelden – Projektakte</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top"><span class="brand">Projektakte</span></header>
+<main class="login">
+  <form method="post" action="/login" class="card login-card">
+    <h1>Anmelden</h1>
+    {% if no_users %}<p class="pill warn">Es sind keine Benutzer eingerichtet. Ein Administrator legt sie mit
+      <code>python -m projektakte.passwd NAME</code> an und setzt <code>AUTH_USERS</code>.</p>{% endif %}
+    {% if error %}<p class="pill warn" role="alert">{{ error }}</p>{% endif %}
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>Benutzername<input type="text" name="username" autocomplete="username" required autofocus></label>
+    <label>Passwort<input type="password" name="password" autocomplete="current-password" required></label>
+    <button>Anmelden</button>
+  </form>
+</main>
+</body>
+</html>

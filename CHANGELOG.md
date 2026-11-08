@@ -5,6 +5,17 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 13 – Zugangsschutz
+- Anmeldung mit Benutzern aus `AUTH_USERS`/`AUTH_USERS_FILE` (PBKDF2-SHA256, 600 000 Iterationen),
+  `python -m projektakte.passwd NAME` erzeugt Einträge.
+- HMAC-signiertes Sitzungs-Cookie (HttpOnly, SameSite=Lax, optional Secure), Ablauf nach
+  `SESSION_HOURS`; entfernte Benutzer verlieren ihre Sitzung sofort.
+- Alle Seiten und APIs außer `/health` (sowie Anmeldeseite und statische Dateien) geschützt; Seiten
+  leiten zur Anmeldung, APIs antworten 401; HTTP Basic für Skripte (nur API und `/health/deps`).
+- Sperre nach 5 Fehlversuchen (5 Minuten je Benutzer und Adresse), Schutz vor offenen Weiterleitungen.
+- Zuordnungsentscheidungen speichern den Benutzernamen.
+- `scripts/docker-smoke.sh` prüft zusätzlich Zugangsschutz und eine Frage mit Quelle im Container.
+
 ### Schritt 12 – Weboberfläche
 - Deutsche, serverseitig gerenderte Oberfläche (Jinja2) mit HTMX (lokal unter `/static`, 0BSD):
   Projektliste mit Live-Filter, Projektseite (Fragefeld, Zeitachse, Dokumente, Mails), Zuordnungs-

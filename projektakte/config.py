@@ -71,6 +71,13 @@ class Settings:
     index_interval: float
     assign_min_share: float
     assign_min_lead: float
+    # access control
+    auth_users: str = field(default="", repr=False)
+    auth_users_file: str = ""
+    auth_disabled: bool = False
+    secret_key: str = field(default="", repr=False)
+    session_hours: float = 12.0
+    cookie_secure: bool = False
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
@@ -140,6 +147,12 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         index_interval=_float(e.get("INDEX_INTERVAL"), 300.0),
         assign_min_share=_float(e.get("ASSIGN_MIN_SHARE"), 0.5),
         assign_min_lead=_float(e.get("ASSIGN_MIN_LEAD"), 0.2),
+        auth_users=e.get("AUTH_USERS", ""),
+        auth_users_file=e.get("AUTH_USERS_FILE", ""),
+        auth_disabled=_bool(e.get("AUTH_DISABLED")),
+        secret_key=e.get("SECRET_KEY", ""),
+        session_hours=_float(e.get("SESSION_HOURS"), 12.0),
+        cookie_secure=_bool(e.get("COOKIE_SECURE")),
         llm_api_key=e.get("LLM_API_KEY", ""),
         embed_api_key=e.get("EMBED_API_KEY", ""),
         rerank_api_key=e.get("RERANK_API_KEY", ""),

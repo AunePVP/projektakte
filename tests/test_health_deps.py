@@ -33,7 +33,7 @@ def test_health_deps_reports_other_formats(fresh_fake_ai, tmp_path):
 
 def test_health_stays_fast_when_services_are_down(tmp_path):
     dead = "http://127.0.0.1:9"
-    s = load_settings({"DATA_DIR": str(tmp_path), "LLM_URL": dead + "/v1", "EMBED_URL": dead,
+    s = load_settings({"AUTH_DISABLED": "1", "DATA_DIR": str(tmp_path), "LLM_URL": dead + "/v1", "EMBED_URL": dead,
                        "RERANK_URL": dead + "/rerank", "HEALTH_TIMEOUT": "0.5"})
     client = TestClient(create_app(s))
     assert client.get("/health").json()["status"] == "ok"
@@ -45,7 +45,7 @@ def test_health_stays_fast_when_services_are_down(tmp_path):
 
 
 def test_ai_mode_fake_starts_inprocess_services(tmp_path):
-    s = load_settings({"DATA_DIR": str(tmp_path), "AI_MODE": "fake"})
+    s = load_settings({"AUTH_DISABLED": "1", "DATA_DIR": str(tmp_path), "AI_MODE": "fake"})
     app = create_app(s)
     assert app.state.settings.llm_url.startswith("http://127.0.0.1:")
     data = TestClient(app).get("/health/deps").json()

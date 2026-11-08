@@ -12,6 +12,7 @@ from projektakte.fake_ai import start_background
 def _isolated_data_dir(tmp_path, monkeypatch):
     """Never touch ./data of the working copy from tests."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AUTH_DISABLED", "1")
     for var in ("DEMO_MODE", "AI_MODE", "PROJECTS_DIR", "MAIL_DIR"):
         monkeypatch.delenv(var, raising=False)
 
@@ -42,6 +43,7 @@ def fake_env(server, tmp_path, **extra) -> dict:
         "EMBED_URL": base,
         "RERANK_URL": f"{base}/rerank",
         "HEALTH_TIMEOUT": "2",
+        "AUTH_DISABLED": "1",  # access control has its own tests (test_auth.py)
     }
     env.update({k: str(v) for k, v in extra.items()})
     return env

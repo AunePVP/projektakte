@@ -99,3 +99,8 @@ details form { margin-top: .6rem; }
   table.list th:nth-child(n+4), table.list td:nth-child(n+4) { display: none; }
   dl.meta { grid-template-columns: 1fr; }
 }
+main.login { max-width: 420px; }
+.login-card { display: flex; flex-direction: column; gap: .7rem; margin-top: 2rem; }
+.login-card label { display: flex; flex-direction: column; gap: .2rem; font-size: .9rem; }
+.login-card input { font: inherit; padding: .5rem .6rem; border: 1px solid #c3c9d2; border-radius: var(--radius); }
+code { background: #f0f2f5; padding: 0 .25rem; border-radius: 4px; }

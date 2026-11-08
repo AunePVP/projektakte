@@ -64,10 +64,33 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `RERANK_MODEL` | – | nur falls der Server ein `model`-Feld verlangt |
 | `RERANK_TIMEOUT` / `RERANK_TOP_K` | `30` / `30` | Sekunden / Kandidaten für das Reranking |
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
+| `AUTH_USERS` | – | Benutzer `name:pbkdf2_sha256$…`, durch Komma getrennt (Secret) |
+| `AUTH_USERS_FILE` | – | Datei mit einem Eintrag `name:hash` je Zeile |
+| `SECRET_KEY` | zufällig | Schlüssel für das Sitzungs-Cookie (Secret) |
+| `SESSION_HOURS` | `12` | Gültigkeit einer Anmeldung |
+| `COOKIE_SECURE` | `0` | `1` = Cookie nur über HTTPS senden (hinter TLS-Proxy setzen) |
+| `AUTH_DISABLED` | `0` | `1` = kein Zugangsschutz (nur Entwicklung, nicht in `production`) |
 | `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
 | `ASK_TOP_K` / `ASK_CONTEXT_CHARS` / `ASK_MIN_RERANK` | `6` / `8000` / `0.01` | Quellen je Frage / Zeichenbudget im Prompt / Mindest-Score des Rerankers |
 | `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
+
+## Anmeldung
+
+Ohne Anmeldung gibt es keine Daten – öffentlich sind nur `/health`, `/login` und `/static`.
+Benutzer stehen in der Konfiguration, Passwörter nur als PBKDF2-Hash:
+
+```bash
+python -m projektakte.passwd anna        # fragt das Passwort ab, gibt "anna:pbkdf2_sha256$…" aus
+```
+
+Die Ausgabe kommt in `AUTH_USERS` (mehrere Einträge durch Komma getrennt) oder – praktischer für
+Docker, weil `$` in Compose-Dateien maskiert werden muss – zeilenweise in eine Datei, deren Pfad
+`AUTH_USERS_FILE` nennt. `SECRET_KEY` signiert das Sitzungs-Cookie (ohne ihn endet jede Sitzung
+mit dem Neustart). Skripte können die API mit HTTP Basic aufrufen, z. B.
+`curl -u anna http://localhost:8000/health/deps`. Nach 5 Fehlversuchen ist die Anmeldung für diesen
+Benutzer von dieser Adresse 5 Minuten gesperrt. `AUTH_DISABLED=1` schaltet den Schutz für die
+lokale Entwicklung aus (wird mit `APP_ENV=production` ignoriert).
 
 ## Oberfläche
 
@@ -99,8 +122,13 @@ python -m projektakte.index      # ein Durchlauf im Vordergrund (ohne Webserver)
 Schnellster Weg zu einer laufenden Demo (ein Container, keine weiteren Dienste):
 
 ```bash
-docker build -t projektakte . && docker run -p 8000:8000 -e DEMO_MODE=1 -e AI_MODE=fake projektakte
+docker build -t projektakte .
+docker run -p 8000:8000 -e DEMO_MODE=1 -e AI_MODE=fake -e AUTH_DISABLED=1 projektakte
 ```
+
+(`AUTH_DISABLED=1` nur für einen schnellen lokalen Blick; sonst Benutzer einrichten, siehe
+„Anmeldung“.) `scripts/docker-smoke.sh` baut das Image und prüft Start, `/health`, `/health/deps`,
+den Zugangsschutz und eine Frage mit Quellenangabe.
 
 Unterstützte Formate: TXT, Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften
 und Tabellen), EML. Bilder (PNG/JPG/TIFF) und PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1`
