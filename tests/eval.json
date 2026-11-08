@@ -10,7 +10,8 @@
   ],
   "answer_contains": [
    "Außentreppe"
-  ]
+  ],
+  "category": "fact"
  },
  {
   "id": "gs-rauch",
@@ -23,7 +24,39 @@
   ],
   "answer_contains": [
    "1,0 m²"
-  ]
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "gs-rauch-syn",
+  "project": "BS-2024-0137",
+  "question": "Wie groß muss die Entrauchungsöffnung im Treppenhaus sein?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "1,0 m²"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "gs-fluchtweg",
+  "project": "BS-2024-0137",
+  "question": "Was muss laut Genehmigung für den zweiten Fluchtweg aus dem OG gebaut werden?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   }
+  ],
+  "answer_contains": [
+   "Außentreppe"
+  ],
+  "category": "paraphrase"
  },
  {
   "id": "gs-abweichung",
@@ -36,6 +69,12 @@
   ],
   "answer_contains": [
    "stimme ich der Abweichung"
+  ],
+  "category": "fact",
+  "answer_regex": [
+   "stimm\\w*[^.]{0,160}\\bzu\\b",
+   "\\bja\\b",
+   "Zustimmung"
   ]
  },
  {
@@ -49,7 +88,87 @@
   ],
   "answer_contains": [
    "18.06.2025"
-  ]
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "gs-bma-abk",
+  "project": "BS-2024-0137",
+  "question": "Wann wird die BMA abgenommen?",
+  "sources": [
+   {
+    "file": "04 Protokolle/2025-02-20 Besprechungsprotokoll Nr. 4.txt"
+   }
+  ],
+  "answer_contains": [
+   "18.06.2025"
+  ],
+  "category": "abbreviation"
+ },
+ {
+  "id": "gs-treppe-breite",
+  "project": "BS-2024-0137",
+  "question": "Welche Breite braucht die Außentreppe?",
+  "sources": [
+   {
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   }
+  ],
+  "answer_contains": [
+   "1,20 m"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "gs-flur-og",
+  "project": "BS-2024-0137",
+  "question": "wie lang ist der flur im og",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "mail_subject": "BS-2024-0137 Zustimmung zur Abweichung Flurlänge Obergeschoss"
+   }
+  ],
+  "answer_contains": [
+   "38 m"
+  ],
+  "category": "abbreviation"
+ },
+ {
+  "id": "gs-feuerwehr",
+  "project": "BS-2024-0137",
+  "question": "Hat die Feuerwehr Einwände gegen das Bauvorhaben?",
+  "sources": [
+   {
+    "attachment": "Stellungnahme Feuerwehr.pdf"
+   },
+   {
+    "mail_subject": "Stellungnahme Brandschutzdienststelle – BS-2024-0137 Grundschule Am Lindenhof"
+   }
+  ],
+  "answer_contains": [
+   "keine Bedenken"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "gs-stand",
+  "project": "BS-2024-0137",
+  "question": "Was ist der letzte Stand mit dem Bauherrn?",
+  "sources": [
+   {
+    "mail_subject": "BS-2024-0137 – aktueller Stand Grundschule Am Lindenhof"
+   }
+  ],
+  "answer_contains": [
+   "freigegeben"
+  ],
+  "category": "stand"
  },
  {
   "id": "ph-feststell",
@@ -62,7 +181,8 @@
   ],
   "answer_contains": [
    "ohne Abnahmeprüfung"
-  ]
+  ],
+  "category": "fact"
  },
  {
   "id": "ph-uebung",
@@ -75,7 +195,22 @@
   ],
   "answer_contains": [
    "zweimal jährlich"
-  ]
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "ph-uebung-para",
+  "project": "BS-2023-0412",
+  "question": "Wie häufig muss geübt werden, das Heim zu evakuieren?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   }
+  ],
+  "answer_contains": [
+   "zweimal jährlich"
+  ],
+  "category": "paraphrase"
  },
  {
   "id": "ph-bauherr",
@@ -88,7 +223,129 @@
   ],
   "answer_contains": [
    "12.12.2024"
+  ],
+  "category": "stand"
+ },
+ {
+  "id": "ph-stand",
+  "project": "BS-2023-0412",
+  "question": "Was ist der letzte Stand mit dem Bauherrn?",
+  "sources": [
+   {
+    "mail_subject": "BS-2023-0412 – aktueller Stand Pflegeheim Sonnenhang"
+   }
+  ],
+  "answer_contains": [
+   "12.12.2024"
+  ],
+  "category": "stand"
+ },
+ {
+  "id": "ph-neuigkeiten",
+  "project": "BS-2023-0412",
+  "question": "Gibt es Neuigkeiten vom Bauherrn?",
+  "sources": [
+   {
+    "mail_subject": "BS-2023-0412 – aktueller Stand Pflegeheim Sonnenhang"
+   }
+  ],
+  "answer_contains": [
+   "12.12.2024"
+  ],
+  "category": "stand"
+ },
+ {
+  "id": "ph-behoben",
+  "project": "BS-2023-0412",
+  "question": "Ist der Mangel an der Feststellanlage inzwischen behoben?",
+  "sources": [
+   {
+    "attachment": "Abnahmeprotokoll Feststellanlage WB B.pdf"
+   },
+   {
+    "mail_subject": "BS-2023-0412 – aktueller Stand Pflegeheim Sonnenhang"
+   }
+  ],
+  "answer_contains": [
+   "Keine Mängel",
+   "12.12.2024"
+  ],
+  "category": "two_source"
+ },
+ {
+  "id": "ph-abgenommen",
+  "project": "BS-2023-0412",
+  "question": "Wurde die Feststellanlage schon abgenommen?",
+  "sources": [
+   {
+    "mail_subject": "BS-2023-0412 – aktueller Stand Pflegeheim Sonnenhang"
+   },
+   {
+    "attachment": "Abnahmeprotokoll Feststellanlage WB B.pdf"
+   },
+   {
+    "file": "04 Protokolle/2024-12-05 Besprechungsprotokoll Nr. 7.txt"
+   }
+  ],
+  "answer_contains": [
+   "12.12.2024"
+  ],
+  "category": "stand"
+ },
+ {
+  "id": "ph-bma-kat",
+  "project": "BS-2023-0412",
+  "question": "Welche Kategorie hat die BMA im Pflegeheim?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "Kategorie 1"
+  ],
+  "category": "abbreviation",
+  "answer_regex": [
+   "Kategorie\\s*1\\b"
   ]
+ },
+ {
+  "id": "ph-keine-abw",
+  "project": "BS-2023-0412",
+  "question": "Wurden für das Pflegeheim Abweichungen beantragt?",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "Keine Abweichungen"
+  ],
+  "category": "fact",
+  "answer_regex": [
+   "\\bkeine\\b",
+   "\\bnein\\b"
+  ]
+ },
+ {
+  "id": "ph-genehmigung",
+  "project": "BS-2023-0412",
+  "question": "Wann wurde die Baugenehmigung erteilt?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "mail_subject": "Baugenehmigung BA-412/2023 – Pflegeheim Sonnenhang (BS-2023-0412)"
+   }
+  ],
+  "answer_contains": [
+   "28.09.2023"
+  ],
+  "category": "fact"
  },
  {
   "id": "bg-druck",
@@ -101,7 +358,111 @@
   ],
   "answer_contains": [
    "Prüfsachverständigen"
+  ],
+  "category": "fact",
+  "answer_regex": [
+   "Prüfsachverständig"
   ]
+ },
+ {
+  "id": "bg-druck-para",
+  "project": "BS-2024-0058",
+  "question": "Wer nimmt die Überdruckanlage im Treppenhaus ab?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "mail_subject": "Termin Abnahme Druckbelüftung"
+   }
+  ],
+  "answer_contains": [
+   "Prüfsachverständigen"
+  ],
+  "category": "paraphrase",
+  "answer_regex": [
+   "Prüfsachverständig"
+  ]
+ },
+ {
+  "id": "bg-rda-termin",
+  "project": "BS-2024-0058",
+  "question": "Wann soll die RDA abgenommen werden?",
+  "sources": [
+   {
+    "file": "04 Protokolle/2025-01-15 Besprechungsprotokoll Nr. 3.txt"
+   },
+   {
+    "mail_subject": "Termin Abnahme Druckbelüftung"
+   }
+  ],
+  "answer_contains": [
+   "März"
+  ],
+  "category": "abbreviation"
+ },
+ {
+  "id": "bg-ueberdruck",
+  "project": "BS-2024-0058",
+  "question": "Wie hoch ist der Überdruck im Sicherheitstreppenraum?",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "15 bis 50 Pa"
+  ],
+  "category": "paraphrase",
+  "answer_regex": [
+   "15\\s*(bis|–|-)\\s*50\\s*Pa"
+  ]
+ },
+ {
+  "id": "bg-zweiter-rw",
+  "project": "BS-2024-0058",
+  "question": "Braucht das Bürogebäude einen zweiten Rettungsweg?",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "nicht erforderlich"
+  ],
+  "category": "fact",
+  "answer_regex": [
+   "\\bnein\\b",
+   "nicht (nötig|notwendig)"
+  ]
+ },
+ {
+  "id": "bg-mieterausbau",
+  "project": "BS-2024-0058",
+  "question": "Wie wird der Mieterausbau als Großraumbüro im 4. OG bewertet?",
+  "sources": [
+   {
+    "file": "04 Protokolle/2025-01-15 Besprechungsprotokoll Nr. 3.txt"
+   }
+  ],
+  "answer_contains": [
+   "unkritisch"
+  ],
+  "category": "abbreviation"
+ },
+ {
+  "id": "bg-stand",
+  "project": "BS-2024-0058",
+  "question": "Was ist der letzte Stand mit dem Bauherrn?",
+  "sources": [
+   {
+    "mail_subject": "BS-2024-0058 – aktueller Stand Bürogebäude Hafenkante 7"
+   }
+  ],
+  "answer_contains": [
+   "unterschrieben"
+  ],
+  "category": "stand"
  },
  {
   "id": "tg-entrauchung",
@@ -117,7 +478,8 @@
   ],
   "answer_contains": [
    "12-fach"
-  ]
+  ],
+  "category": "fact"
  },
  {
   "id": "tg-rettungsweg",
@@ -133,7 +495,71 @@
   ],
   "answer_contains": [
    "30 m"
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "tg-rauch-auflagen",
+  "project": "BS-2022-0901",
+  "question": "Welche Auflagen zur Rauchableitung stehen in der Baugenehmigung?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   }
+  ],
+  "answer_contains": [
+   "12-fach"
+  ],
+  "category": "paraphrase",
+  "answer_regex": [
+   "Rauch- und Wärmeabzug"
   ]
+ },
+ {
+  "id": "tg-ventilatoren",
+  "project": "BS-2022-0901",
+  "question": "Wie heiß dürfen die Entrauchungsventilatoren werden?",
+  "sources": [
+   {
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   }
+  ],
+  "answer_contains": [
+   "300 °C"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "tg-stand",
+  "project": "BS-2022-0901",
+  "question": "Was ist der letzte Stand mit dem Bauherrn?",
+  "sources": [
+   {
+    "mail_subject": "BS-2022-0901 – aktueller Stand Tiefgarage Marktplatz"
+   }
+  ],
+  "answer_contains": [
+   "September"
+  ],
+  "category": "stand"
+ },
+ {
+  "id": "tg-loeschanlage",
+  "project": "BS-2022-0901",
+  "question": "Welche Löschanlage ist in der Tiefgarage eingebaut?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "trap",
+  "not_found": true
+ },
+ {
+  "id": "tg-raeumung",
+  "project": "BS-2022-0901",
+  "question": "Wann findet die nächste Räumungsübung in der Tiefgarage Marktplatz statt?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "trap",
+  "not_found": true
  },
  {
   "id": "ho-abweichung",
@@ -147,6 +573,10 @@
   "answer_contains": [
    "abgelehnt",
    "nicht zustimmen"
+  ],
+  "category": "fact",
+  "answer_regex": [
+   "\\bnein\\b"
   ]
  },
  {
@@ -163,7 +593,122 @@
   ],
   "answer_contains": [
    "8 Stunden"
+  ],
+  "category": "fact",
+  "answer_regex": [
+   "\\b8\\s*(Stunden|h)\\b"
   ]
+ },
+ {
+  "id": "ho-notlicht",
+  "project": "BS-2024-0233",
+  "question": "Wie lange muss das Notlicht funktionieren?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "8 Stunden"
+  ],
+  "category": "paraphrase",
+  "answer_regex": [
+   "\\b8\\s*(Stunden|h)\\b"
+  ]
+ },
+ {
+  "id": "ho-wendehals",
+  "project": "BS-2024-0233",
+  "question": "Hat Frau Wendehals den Antrag zum Stichflur abgelehnt?",
+  "sources": [
+   {
+    "mail_subject": "Abweichungsantrag Stichflur 3. OG – BS-2024-0233 Hotel Seeblick"
+   }
+  ],
+  "answer_contains": [
+   "nicht zustimmen"
+  ],
+  "category": "paraphrase",
+  "answer_regex": [
+   "\\bja\\b",
+   "kann ich nicht"
+  ]
+ },
+ {
+  "id": "ho-fluchtbalkon",
+  "project": "BS-2024-0233",
+  "question": "Warum wird ein Fluchtbalkon geplant und wie breit wird er?",
+  "sources": [
+   {
+    "attachment": "BS-2024-0233_Fluchtbalkon_Entwurf.docx"
+   },
+   {
+    "file": "04 Protokolle/2024-11-06 Besprechungsprotokoll Nr. 2.txt"
+   },
+   {
+    "mail_subject": "Abweichungsantrag Stichflur 3. OG – BS-2024-0233 Hotel Seeblick"
+   }
+  ],
+  "answer_contains": [
+   "1,0 m"
+  ],
+  "category": "two_source",
+  "answer_all": [
+   "1,0\\s*m",
+   "abgelehnt|Ersatz|empfehle|nicht zustimm"
+  ]
+ },
+ {
+  "id": "ho-sprachen",
+  "project": "BS-2024-0233",
+  "question": "In welchen Sprachen wird im Hotel alarmiert?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "englisch"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "ho-stand",
+  "project": "BS-2024-0233",
+  "question": "Was ist der letzte Stand mit dem Bauherrn?",
+  "sources": [
+   {
+    "mail_subject": "BS-2024-0233 – aktueller Stand Hotel Seeblick"
+   }
+  ],
+  "answer_contains": [
+   "Altbau"
+  ],
+  "category": "stand"
+ },
+ {
+  "id": "ho-fahrrad",
+  "project": "BS-2024-0233",
+  "question": "Wie viele Fahrradstellplätze mit Ladestation sind geplant?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
+ },
+ {
+  "id": "ho-sprinkler",
+  "project": "BS-2024-0233",
+  "question": "Welche Sprinkleranlage ist im Hotel Seeblick vorgesehen?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
  },
  {
   "id": "in-loeschwasser",
@@ -176,7 +721,53 @@
   ],
   "answer_contains": [
    "192 m³/h"
-  ]
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "in-wasser-para",
+  "project": "BS-2023-0777",
+  "question": "Wie viel Wasser zum Löschen wird für die Halle benötigt?",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "192 m³/h"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "in-rwa",
+  "project": "BS-2023-0777",
+  "question": "Wie groß ist die RWA-Fläche im Dach der Halle?",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   }
+  ],
+  "answer_contains": [
+   "72 m²"
+  ],
+  "category": "abbreviation"
+ },
+ {
+  "id": "in-stand",
+  "project": "BS-2023-0777",
+  "question": "Was ist der letzte Stand mit dem Bauherrn?",
+  "sources": [
+   {
+    "mail_subject": "BS-2023-0777 – aktueller Stand Industriehalle Nordring"
+   }
+  ],
+  "answer_contains": [
+   "Aushub"
+  ],
+  "category": "stand"
  },
  {
   "id": "kt-rauchwarnmelder",
@@ -192,7 +783,93 @@
   ],
   "answer_contains": [
    "funkvernetzt"
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "kt-rauchmelder-para",
+  "project": "BS-2025-0019",
+  "question": "Was für Rauchmelder kommen in die Schlafräume?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "funkvernetzt"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "kt-handlauf",
+  "project": "BS-2025-0019",
+  "question": "Wie hoch soll der Handlauf für die Kinder sein?",
+  "sources": [
+   {
+    "file": "04 Protokolle/2025-07-01 Besprechungsprotokoll Nr. 2.txt"
+   },
+   {
+    "mail_subject": "Handlauf Balkontreppe"
+   }
+  ],
+  "answer_contains": [
+   "60 cm"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "kt-zweiter-rw",
+  "project": "BS-2025-0019",
+  "question": "Wie ist der zweite Rettungsweg aus dem OG der Kita gelöst?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "Balkon"
+  ],
+  "category": "abbreviation"
+ },
+ {
+  "id": "kt-evakuierung",
+  "project": "BS-2025-0019",
+  "question": "Wie oft wird mit den Kindern die Evakuierung geübt?",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "mail_subject": "Stellungnahme Brandschutzdienststelle – BS-2025-0019 Kita Regenbogen"
+   }
+  ],
+  "answer_contains": [
+   "je Halbjahr"
+  ],
+  "category": "paraphrase",
+  "answer_regex": [
+   "halbj"
   ]
+ },
+ {
+  "id": "kt-stand",
+  "project": "BS-2025-0019",
+  "question": "Was ist der letzte Stand mit dem Bauherrn?",
+  "sources": [
+   {
+    "mail_subject": "BS-2025-0019 – aktueller Stand Kita Regenbogen"
+   }
+  ],
+  "answer_contains": [
+   "Rahmenvertrag"
+  ],
+  "category": "stand"
  },
  {
   "id": "wh-aufzug",
@@ -204,10 +881,24 @@
    },
    {
     "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   },
+   {
+    "mail_subject": "Stellungnahme Brandschutzdienststelle – BS-2024-0311 Wohnhochhaus Am Stadtpark"
+   },
+   {
+    "attachment": "BS-2024-0311_Feuerwehraufzug_Steuerung.pdf"
    }
   ],
   "answer_contains": [
    "Vorraum"
+  ],
+  "category": "fact",
+  "answer_regex": [
+   "erprob",
+   "Feuerwehrbetrieb"
   ]
  },
  {
@@ -221,13 +912,89 @@
   ],
   "answer_contains": [
    "12 m"
-  ]
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "wh-drehleiter",
+  "project": "BS-2024-0311",
+  "question": "Was sagt die Feuerwehr zur Drehleiterfläche an der Parkallee?",
+  "sources": [
+   {
+    "mail_subject": "Stellungnahme Brandschutzdienststelle – BS-2024-0311 Wohnhochhaus Am Stadtpark"
+   }
+  ],
+  "answer_contains": [
+   "12 m"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "wh-vorraum",
+  "project": "BS-2024-0311",
+  "question": "Wie groß muss der Vorraum des Feuerwehraufzugs mindestens sein?",
+  "sources": [
+   {
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   }
+  ],
+  "answer_contains": [
+   "6 m²"
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "wh-steigleitung",
+  "project": "BS-2024-0311",
+  "question": "Welche Art von Steigleitung bekommt das Hochhaus?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "nass"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "wh-druckerhoehung",
+  "project": "BS-2024-0311",
+  "question": "Was hat der Prüfingenieur zur Druckerhöhungsanlage gefordert?",
+  "sources": [
+   {
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   },
+   {
+    "mail_subject": "Prüfbericht Nr. 1 – BS-2024-0311 Wohnhochhaus Am Stadtpark"
+   }
+  ],
+  "answer_contains": [
+   "redundant"
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "wh-stand",
+  "project": "BS-2024-0311",
+  "question": "Was ist der letzte Stand mit dem Bauherrn?",
+  "sources": [
+   {
+    "mail_subject": "BS-2024-0311 – aktueller Stand Wohnhochhaus Am Stadtpark"
+   }
+  ],
+  "answer_contains": [
+   "Baumreihe"
+  ],
+  "category": "stand"
  },
  {
   "id": "x-druckbelueftung",
   "project": null,
   "question": "In welchem Projekt ist eine Druckbelüftungsanlage für einen Sicherheitstreppenraum gefordert?",
-  "expected_project": "BS-2024-0058",
   "sources": [
    {
     "project": "BS-2024-0058",
@@ -236,40 +1003,357 @@
    {
     "project": "BS-2024-0058",
     "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "project": "BS-2024-0311",
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "project": "BS-2024-0311",
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
    }
   ],
   "answer_contains": [
-   "Druckbelüftung"
+   "BS-2024-0058",
+   "Hafenkante",
+   "BS-2024-0311",
+   "Stadtpark"
+  ],
+  "category": "cross",
+  "expected_projects": [
+   "BS-2024-0058",
+   "BS-2024-0311"
   ]
  },
  {
   "id": "x-loeschwasserteich",
   "project": null,
   "question": "Für welches Bauvorhaben wird ein Löschwasserteich mit Saugstelle gebaut?",
-  "expected_project": "BS-2023-0777",
   "sources": [
    {
-    "project": "BS-2023-0777"
+    "project": "BS-2023-0777",
+    "file": "03 Prüfung/Prüfbericht Nr. 2.md"
+   },
+   {
+    "project": "BS-2023-0777",
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "project": "BS-2023-0777",
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "project": "BS-2023-0777",
+    "mail_subject": "Stellungnahme Brandschutzdienststelle – BS-2023-0777 Industriehalle Nordring"
    }
   ],
   "answer_contains": [
-   "Löschwasserteich"
+   "BS-2023-0777",
+   "Nordring"
+  ],
+  "category": "cross",
+  "expected_projects": [
+   "BS-2023-0777"
   ]
  },
  {
-  "id": "neg-fahrrad",
-  "project": "BS-2024-0233",
-  "question": "Wie viele Fahrradstellplätze mit Ladestation sind geplant?",
-  "sources": [],
-  "not_found": true,
-  "answer_contains": []
+  "id": "x-wo-teich",
+  "project": null,
+  "question": "Wo wird ein Löschwasserteich angelegt?",
+  "sources": [
+   {
+    "project": "BS-2023-0777",
+    "file": "03 Prüfung/Prüfbericht Nr. 2.md"
+   },
+   {
+    "project": "BS-2023-0777",
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "project": "BS-2023-0777",
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "project": "BS-2023-0777",
+    "file": "04 Protokolle/2024-03-07 Besprechungsprotokoll Nr. 6.txt"
+   },
+   {
+    "project": "BS-2023-0777",
+    "mail_subject": "BS-2023-0777 – aktueller Stand Industriehalle Nordring"
+   }
+  ],
+  "answer_contains": [
+   "BS-2023-0777",
+   "Nordring"
+  ],
+  "category": "cross",
+  "expected_projects": [
+   "BS-2023-0777"
+  ]
  },
  {
-  "id": "neg-kantine",
+  "id": "x-sprachalarm",
+  "project": null,
+  "question": "In welchen Projekten ist eine Sprachalarmanlage vorgesehen?",
+  "sources": [
+   {
+    "project": "BS-2024-0137",
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "project": "BS-2024-0233",
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "project": "BS-2024-0137",
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "project": "BS-2024-0233",
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "BS-2024-0137"
+  ],
+  "category": "enumeration",
+  "expected_projects": [
+   "BS-2024-0137",
+   "BS-2024-0233"
+  ],
+  "min_projects": 2,
+  "answer_all": [
+   "BS-2024-0137|Grundschule",
+   "BS-2024-0233|Hotel Seeblick"
+  ]
+ },
+ {
+  "id": "x-wendehals",
+  "project": null,
+  "question": "Welche Projekte hat Frau Wendehals geprüft?",
+  "sources": [
+   {
+    "project": "BS-2024-0137",
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   },
+   {
+    "project": "BS-2023-0412",
+    "file": "03 Prüfung/Prüfbericht Nr. 3.md"
+   },
+   {
+    "project": "BS-2024-0058",
+    "file": "03 Prüfung/Prüfbericht Nr. 2.md"
+   },
+   {
+    "project": "BS-2022-0901",
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   },
+   {
+    "project": "BS-2024-0233",
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   },
+   {
+    "project": "BS-2023-0777",
+    "file": "03 Prüfung/Prüfbericht Nr. 2.md"
+   },
+   {
+    "project": "BS-2025-0019",
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   },
+   {
+    "project": "BS-2024-0311",
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   }
+  ],
+  "answer_contains": [
+   "Prüfbericht"
+  ],
+  "category": "enumeration",
+  "expected_projects": [
+   "BS-2024-0137",
+   "BS-2023-0412",
+   "BS-2024-0058",
+   "BS-2022-0901",
+   "BS-2024-0233",
+   "BS-2023-0777",
+   "BS-2025-0019",
+   "BS-2024-0311"
+  ],
+  "min_projects": 8,
+  "answer_all": [
+   "BS-20\\d\\d-\\d{4}"
+  ]
+ },
+ {
+  "id": "x-nasse-steigleitung",
+  "project": null,
+  "question": "In welchen Projekten sind nasse Steigleitungen gefordert?",
+  "sources": [
+   {
+    "project": "BS-2024-0311",
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   },
+   {
+    "project": "BS-2024-0311",
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "BS-2024-0311",
+   "Stadtpark"
+  ],
+  "category": "trap",
+  "expected_projects": [
+   "BS-2024-0311"
+  ]
+ },
+ {
+  "id": "x-bma-abnahme",
+  "project": null,
+  "question": "Wann ist die Abnahme der Brandmeldeanlage geplant?",
+  "sources": [
+   {
+    "project": "BS-2024-0137",
+    "file": "04 Protokolle/2025-02-20 Besprechungsprotokoll Nr. 4.txt"
+   }
+  ],
+  "answer_contains": [
+   "18.06.2025"
+  ],
+  "category": "cross",
+  "expected_projects": [
+   "BS-2024-0137"
+  ]
+ },
+ {
+  "id": "x-loeschwasser-schule",
+  "project": null,
+  "question": "Wie viel Löschwasser braucht die Grundschule?",
+  "sources": [
+   {
+    "project": "BS-2024-0137",
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "96 m³/h"
+  ],
+  "category": "cross",
+  "expected_projects": [
+   "BS-2024-0137"
+  ]
+ },
+ {
+  "id": "x-pruefing-hotel",
+  "project": null,
+  "question": "Wer ist der Prüfingenieur im Hotel Seeblick?",
+  "sources": [
+   {
+    "project": "BS-2024-0233",
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   },
+   {
+    "project": "BS-2024-0233",
+    "mail_subject": "Prüfbericht Nr. 1 – BS-2024-0233 Hotel Seeblick"
+   }
+  ],
+  "answer_contains": [
+   "Wendehals"
+  ],
+  "category": "cross",
+  "expected_projects": [
+   "BS-2024-0233"
+  ]
+ },
+ {
+  "id": "x-rettungsweg-halle",
+  "project": null,
+  "question": "Wie lang darf der Rettungsweg in der Industriehalle höchstens sein?",
+  "sources": [
+   {
+    "project": "BS-2023-0777",
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "35 m"
+  ],
+  "category": "trap",
+  "expected_projects": [
+   "BS-2023-0777"
+  ]
+ },
+ {
+  "id": "x-feuerwehr-einfahrt",
+  "project": null,
+  "question": "Kann die Feuerwehr mit ihren Fahrzeugen in die Tiefgarage einfahren?",
+  "sources": [
+   {
+    "project": "BS-2022-0901",
+    "mail_subject": "Stellungnahme Brandschutzdienststelle – BS-2022-0901 Tiefgarage Marktplatz"
+   }
+  ],
+  "answer_contains": [
+   "nicht ausreichend",
+   "zu Fuß"
+  ],
+  "category": "cross",
+  "expected_projects": [
+   "BS-2022-0901"
+  ]
+ },
+ {
+  "id": "x-fahrrad-hotel",
+  "project": null,
+  "question": "Wie viele Fahrradstellplätze hat das Hotel Seeblick?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
+ },
+ {
+  "id": "x-sprinkler",
+  "project": null,
+  "question": "Welche Projekte haben eine Sprinkleranlage?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
+ },
+ {
+  "id": "x-kantine",
   "project": null,
   "question": "Welche Kantinenpreise gelten für Mitarbeitende im Sommer?",
   "sources": [],
-  "not_found": true,
-  "answer_contains": []
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
+ },
+ {
+  "id": "x-fussball",
+  "project": null,
+  "question": "Wer hat die Fußball-WM 2014 gewonnen?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
+ },
+ {
+  "id": "x-feuerwiderstand",
+  "project": null,
+  "question": "Welchen Feuerwiderstand müssen die tragenden Wände der Grundschule haben?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "trap",
+  "not_found": true
+ },
+ {
+  "id": "x-honorar",
+  "project": null,
+  "question": "Wie hoch ist das Honorar für das Brandschutzkonzept der Kita Regenbogen?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
  }
 ]

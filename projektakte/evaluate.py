@@ -1,0 +1,314 @@
+"""Measure answer quality: ``python -m projektakte.evaluate [--real|--fake] [--json DATEI]``.
+
+Runs the evaluation set (questions with known answers in the demo data, see
+``projektakte/demo/eval.py``) against the configured AI services and prints per question whether the
+expected source is among the top 5 hits, whether the answer contains the expected fact and cites an
+expected source, whether "nicht gefunden" was right, the reranker scores and the latency. The summary
+shows the score distribution of relevant and irrelevant hits and what a threshold would cut off – the
+basis for calibrating ``ASK_MIN_RERANK`` and ``SEARCH_MIN_RERANK`` with the real models.
+
+The demo data is indexed into a separate data folder (default ``$DATA_DIR/eval``), never into the
+production index. The same checks are used by the tests (tests/test_ask.py, tests/test_search.py).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import re
+import sqlite3
+import statistics
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .ask import AskResult, ask
+from .search import Hit, hybrid_search, load_hits
+
+THRESHOLDS = (0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5)
+
+
+# --------------------------------------------------------------------------- checks (shared with tests)
+def source_matches(conn: sqlite3.Connection, hit: Hit, src: dict, q: dict) -> bool:
+    """Is ``hit`` one of the acceptable sources ``src`` of question ``q``?"""
+    project = src.get("project") or q.get("project")
+    if project and hit.project != project:
+        return False
+    if "file" in src:
+        return hit.kind == "document" and hit.rel_path == src["file"]
+    if "attachment" in src:
+        return hit.kind == "attachment" and hit.title == src["attachment"]
+    if "mail_subject" in src:
+        if not hit.mail_id:
+            return False
+        row = conn.execute("SELECT subject FROM mails WHERE id = ?", (hit.mail_id,)).fetchone()
+        return bool(row) and row[0] == src["mail_subject"]
+    return bool(project)
+
+
+def answer_matches(q: dict, answer: str) -> bool:
+    """Expected fact in the answer: any of ``answer_contains``/``answer_regex``, all of ``answer_all``."""
+    if any(not re.search(p, answer, re.I) for p in q.get("answer_all", [])):
+        return False
+    alternatives = [re.escape(a) for a in q.get("answer_contains", [])] + list(q.get("answer_regex", []))
+    return not alternatives or any(re.search(p, answer, re.I) for p in alternatives)
+
+
+@dataclass
+class Check:
+    passed: bool
+    reasons: list[str] = field(default_factory=list)
+
+
+def check_answer(conn: sqlite3.Connection, q: dict, r: AskResult) -> Check:
+    """Does the answer to ``q`` meet the evaluation criteria? (reasons in German for reports)"""
+    reasons: list[str] = []
+    if q.get("not_found"):
+        if r.status != "not_found":
+            reasons.append(f"„nicht gefunden“ erwartet, Status {r.status}")
+        return Check(not reasons, reasons)
+    if r.status != "answered":
+        reasons.append(f"Status {r.status}" + (" (falsches „nicht gefunden“)" if r.status == "not_found" else ""))
+        return Check(False, reasons)
+    if not answer_matches(q, r.answer):
+        reasons.append("erwarteter Fakt fehlt in der Antwort")
+    hits = load_hits(conn, [s["chunk_id"] for s in r.sources])
+    cited = [hits[s["chunk_id"]] for s in r.sources if s["chunk_id"] in hits]
+    if not any(source_matches(conn, h, src, q) for h in cited for src in q["sources"]):
+        reasons.append("keine erwartete Quelle zitiert")
+    if q.get("expected_projects"):
+        expected = set(q["expected_projects"])
+        projects = {h.project for h in cited}
+        wrong = projects - expected
+        if wrong:
+            reasons.append("falsche Projekte zitiert: " + ", ".join(sorted(p or "–" for p in wrong)))
+        if len(projects & expected) < q.get("min_projects", 1):
+            reasons.append(f"nur {len(projects & expected)} von mindestens {q.get('min_projects', 1)} Projekten")
+    return Check(not reasons, reasons)
+
+
+def expected_rank(conn: sqlite3.Connection, q: dict, hits: list[Hit]) -> int | None:
+    """1-based rank of the first expected source among ``hits`` (None = not found)."""
+    for i, h in enumerate(hits, start=1):
+        if any(source_matches(conn, h, src, q) for src in q["sources"]):
+            return i
+    return None
+
+
+def load_eval(path: Path | None = None) -> list[dict]:
+    if path:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    from .demo.eval import EVAL
+
+    return EVAL
+
+
+# --------------------------------------------------------------------------- running
+@dataclass
+class Record:
+    id: str
+    category: str
+    question: str
+    project: str | None
+    not_found_expected: bool
+    rank: int | None  # of the expected source in the search (top 30), None = missing
+    status: str
+    passed: bool
+    reasons: list[str]
+    answer: str
+    cited: list[str]
+    relevant_rerank: float | None  # best reranker score of an expected source
+    other_rerank: float | None  # best reranker score of any other hit
+    search_ms: float
+    ask_ms: float
+    llm_ms: float | None
+
+    @property
+    def top5(self) -> bool | None:
+        return None if self.not_found_expected else (self.rank is not None and self.rank <= 5)
+
+
+def evaluate_question(conn: sqlite3.Connection, ai, vector_key: str, q: dict, settings) -> Record:
+    t0 = time.perf_counter()
+    res = hybrid_search(conn, ai, vector_key, q["question"], project=q.get("project"), k=settings.rerank_top_k,
+                        rerank_top_k=settings.rerank_top_k)
+    search_ms = (time.perf_counter() - t0) * 1000
+    rel = [h.rerank for h in res.hits if h.rerank is not None and q["sources"]
+           and any(source_matches(conn, h, s, q) for s in q["sources"])]
+    other = [h.rerank for h in res.hits if h.rerank is not None and not (
+        q["sources"] and any(source_matches(conn, h, s, q) for s in q["sources"]))]
+    t0 = time.perf_counter()
+    r = ask(conn, ai, vector_key, q["question"], project=q.get("project"), top_k=settings.ask_top_k,
+            context_chars=settings.ask_context_chars, min_rerank=settings.ask_min_rerank,
+            rerank_top_k=settings.rerank_top_k)
+    ask_ms = (time.perf_counter() - t0) * 1000
+    chk = check_answer(conn, q, r)
+    return Record(
+        id=q["id"], category=q.get("category", ""), question=q["question"], project=q.get("project"),
+        not_found_expected=bool(q.get("not_found")), rank=expected_rank(conn, q, res.hits) if q["sources"] else None,
+        status=r.status, passed=chk.passed, reasons=chk.reasons, answer=r.answer,
+        cited=[f"[{s['n']}] {s['label']}" for s in r.sources],
+        relevant_rerank=max(rel) if rel else None, other_rerank=max(other) if other else None,
+        search_ms=search_ms, ask_ms=ask_ms, llm_ms=r.latency_ms)
+
+
+def _pct(values: list[float], p: float) -> float:
+    values = sorted(values)
+    if not values:
+        return float("nan")
+    i = min(len(values) - 1, max(0, round(p * (len(values) - 1))))
+    return values[i]
+
+
+def summarize(records: list[Record]) -> dict:
+    pos = [r for r in records if not r.not_found_expected]
+    neg = [r for r in records if r.not_found_expected]
+    rel = [r.relevant_rerank for r in pos if r.relevant_rerank is not None]
+    neg_top = [max(x for x in (r.relevant_rerank, r.other_rerank) if x is not None) for r in neg
+               if r.other_rerank is not None or r.relevant_rerank is not None]
+    other = [r.other_rerank for r in pos if r.other_rerank is not None]
+
+    def dist(values: list[float]) -> dict:
+        return {"n": len(values), "min": min(values, default=None), "p10": _pct(values, 0.1) if values else None,
+                "median": statistics.median(values) if values else None,
+                "p90": _pct(values, 0.9) if values else None, "max": max(values, default=None)}
+
+    thresholds = []
+    for t in THRESHOLDS:
+        thresholds.append({
+            "threshold": t,
+            "relevant_cut": sum(1 for v in rel if v < t) / len(rel) if rel else None,
+            "negatives_pass": sum(1 for v in neg_top if v >= t) / len(neg_top) if neg_top else None,
+        })
+    return {
+        "questions": len(records),
+        "retrieval_top5": sum(1 for r in pos if r.top5) / len(pos) if pos else None,
+        "answers_passed": sum(1 for r in pos if r.passed) / len(pos) if pos else None,
+        "false_not_found": sum(1 for r in pos if r.status == "not_found") / len(pos) if pos else None,
+        "not_found_correct": sum(1 for r in neg if r.passed) / len(neg) if neg else None,
+        "passed": sum(1 for r in records if r.passed),
+        "rerank_relevant": dist(rel),
+        "rerank_other_in_positive": dist(other),
+        "rerank_top_in_negative": dist(neg_top),
+        "thresholds": thresholds,
+        "ask_ms_median": statistics.median([r.ask_ms for r in records]) if records else None,
+        "ask_ms_max": max((r.ask_ms for r in records), default=None),
+        "by_category": {c: f"{sum(1 for r in records if r.category == c and r.passed)}/"
+                           f"{sum(1 for r in records if r.category == c)}"
+                        for c in sorted({r.category for r in records})},
+    }
+
+
+def _fmt(v, digits: int = 3) -> str:
+    if v is None or (isinstance(v, float) and v != v):
+        return "–"
+    return f"{v:.{digits}f}" if isinstance(v, float) else str(v)
+
+
+def print_report(records: list[Record], summary: dict, out=None) -> None:
+    w = (out or sys.stdout).write
+    w(f"{'Frage':26} {'Art':12} {'Top5':5} {'Status':15} {'ok':3} {'Rerank rel/and':15} {'ms':>6}\n")
+    w("-" * 88 + "\n")
+    for r in records:
+        top5 = "–" if r.top5 is None else ("ja" if r.top5 else f"nein({r.rank or '-'})")
+        rr = f"{_fmt(r.relevant_rerank, 2)}/{_fmt(r.other_rerank, 2)}"
+        w(f"{r.id[:26]:26} {r.category[:12]:12} {top5:5} {r.status[:15]:15} {'ja' if r.passed else 'NEIN':3} "
+          f"{rr:15} {r.ask_ms:6.0f}\n")
+        if not r.passed:
+            w(f"    → {'; '.join(r.reasons)} | {r.answer[:160]}\n")
+    s = summary
+    w("\nZusammenfassung\n")
+    w(f"  Fragen: {s['questions']}, bestanden: {s['passed']}\n")
+    w(f"  Erwartete Quelle unter den ersten 5: {_fmt(s['retrieval_top5'], 2)}\n")
+    w(f"  Antwort mit Fakt und Quelle: {_fmt(s['answers_passed'], 2)}   falsches „nicht gefunden“: "
+      f"{_fmt(s['false_not_found'], 2)}\n")
+    w(f"  „Nicht gefunden“ richtig (Fragen ohne Antwort): {_fmt(s['not_found_correct'], 2)}\n")
+    w(f"  Nach Art: {', '.join(f'{k} {v}' for k, v in s['by_category'].items())}\n")
+    w(f"  Laufzeit je Frage: Median {_fmt(s['ask_ms_median'], 0)} ms, max {_fmt(s['ask_ms_max'], 0)} ms\n")
+    w("\nReranker-Scores (min / p10 / Median / p90 / max)\n")
+    for key, label in (("rerank_relevant", "erwartete Quelle"), ("rerank_other_in_positive", "andere Treffer"),
+                       ("rerank_top_in_negative", "bester Treffer bei Fragen ohne Antwort")):
+        d = s[key]
+        w(f"  {label:40} n={d['n']:3}  " + " / ".join(_fmt(d[x]) for x in ("min", "p10", "median", "p90", "max"))
+          + "\n")
+    w("\nSchwellwert (ASK_MIN_RERANK / SEARCH_MIN_RERANK): Anteil erwarteter Quellen darunter | Anteil Fragen "
+      "ohne Antwort, deren bester Treffer ihn erreicht\n")
+    for t in s["thresholds"]:
+        w(f"  {t['threshold']:>6}: {_fmt(t['relevant_cut'], 2):>5} | {_fmt(t['negatives_pass'], 2):>5}\n")
+
+
+def build_index(settings, ai) -> None:
+    """Demo data into the evaluation folder, indexed with the configured services."""
+    from .demo import ensure
+    from .indexer import run_index
+
+    ensure(settings.demo_dir)
+    run_index(settings, ai)
+
+
+def eval_settings(data_dir: Path, mode: str | None):
+    """Settings for the evaluation run: demo data in ``data_dir``, assignment by project number."""
+    from .config import load_settings
+
+    env = dict(os.environ)
+    env.update({"DATA_DIR": str(data_dir), "DEMO_MODE": "1", "PROJECTS_DIR": "", "MAIL_DIR": "",
+                "PLMAIL_URL": "", "PLMAIL_TOKEN": "", "ASSIGN_MODE": "auto"})
+    if mode:
+        env["AI_MODE"] = mode
+    return load_settings(env)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="python -m projektakte.evaluate",
+                                 description="Evaluationssatz gegen die konfigurierten KI-Dienste laufen lassen")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--real", action="store_true", help="echte Dienste (LLM_URL, EMBED_URL, RERANK_URL)")
+    mode.add_argument("--fake", action="store_true", help="Fake-KI-Dienste im Prozess")
+    ap.add_argument("--json", type=Path, metavar="DATEI", help="Ergebnisse zusätzlich als JSON schreiben")
+    ap.add_argument("--eval", type=Path, metavar="DATEI", help="anderer Evaluationssatz (JSON wie tests/eval.json)")
+    ap.add_argument("--data-dir", type=Path, help="Ordner für Demo-Daten und Index (Standard: $DATA_DIR/eval)")
+    ap.add_argument("--only", action="append", metavar="ID", help="nur diese Frage(n)")
+    ap.add_argument("--category", action="append", help="nur Fragen dieser Art (z. B. stand, negative)")
+    ap.add_argument("--no-index", action="store_true", help="vorhandenen Index ohne Abgleich verwenden")
+    a = ap.parse_args(argv)
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+
+    from .ai.services import AIServices, resolve_settings
+    from .config import load_settings
+
+    base = load_settings()
+    data_dir = a.data_dir or (base.data_dir / "eval")
+    s = resolve_settings(eval_settings(data_dir, "real" if a.real else "fake" if a.fake else None))
+    ai = AIServices.from_settings(s)
+    print(f"KI-Dienste: {'Fake (im Prozess)' if s.ai_mode == 'fake' else 'echt'} – LLM {s.llm_url} ({s.llm_model}), "
+          f"Embeddings {s.embed_url}, Reranker {s.rerank_url}")
+    print(f"ASK_MIN_RERANK={s.ask_min_rerank}  ASK_TOP_K={s.ask_top_k}  RERANK_TOP_K={s.rerank_top_k}  "
+          f"Daten: {data_dir}")
+    if not a.no_index:
+        t0 = time.perf_counter()
+        build_index(s, ai)
+        print(f"Index aktuell ({time.perf_counter() - t0:.1f} s)")
+    questions = load_eval(a.eval)
+    if a.only:
+        questions = [q for q in questions if q["id"] in set(a.only)]
+    if a.category:
+        questions = [q for q in questions if q.get("category") in set(a.category)]
+    conn = sqlite3.connect(s.db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    records = [evaluate_question(conn, ai, str(s.db_path), q, s) for q in questions]
+    summary = summarize(records)
+    print()
+    print_report(records, summary)
+    if a.json:
+        a.json.write_text(json.dumps({"settings": {"ai_mode": s.ai_mode, "llm_model": s.llm_model,
+                                                   "ask_min_rerank": s.ask_min_rerank},
+                                      "summary": summary, "records": [r.__dict__ for r in records]},
+                                     ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        print(f"\nJSON geschrieben: {a.json}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

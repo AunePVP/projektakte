@@ -20,7 +20,20 @@ from . import data
 from .documents import de
 from .writers import docx_bytes, pdf_bytes
 
-TZ = timezone(timedelta(hours=1))
+CET, CEST = timezone(timedelta(hours=1)), timezone(timedelta(hours=2))
+
+
+def _last_sunday(year: int, month: int) -> int:
+    d = datetime(year, month + 1, 1) - timedelta(days=1) if month < 12 else datetime(year, 12, 31)
+    return d.day - (d.weekday() + 1) % 7
+
+
+def berlin(d: datetime) -> datetime:
+    """Attach the German offset (CET/CEST, EU rule) to a naive local time – deterministic without a
+    time zone database, so the demo files are identical on every system."""
+    start = datetime(d.year, 3, _last_sunday(d.year, 3), 2)
+    end = datetime(d.year, 10, _last_sunday(d.year, 10), 3)
+    return d.replace(tzinfo=CEST if start <= d < end else CET)
 
 # Per-project mail facts. FACT markers are referenced by the evaluation set.
 MAILFACTS: dict[str, dict] = {
@@ -80,7 +93,7 @@ MAILFACTS: dict[str, dict] = {
                          "Matthias Kortmann, Sonnenhang Seniorenresidenz gGmbH"),
     },
     "BS-2024-0058": {
-        "feuerwehr": "Der Feuerwehrschlüsseldepot ist am Haupteingang zur Hafenkante vorzusehen. Die "
+        "feuerwehr": "Das Feuerwehrschlüsseldepot ist am Haupteingang zur Hafenkante vorzusehen. Die "
                      "Druckbelüftungsanlage muss von der Feuerwehr manuell abgeschaltet werden können.",
         "architekt": "Der Mieter im 4. OG wünscht ein Großraumbüro ohne Flurtrennwände. Passt das zum "
                      "Konzept?",
@@ -100,20 +113,20 @@ MAILFACTS: dict[str, dict] = {
         "architekt": "Wir planen die Ventilatoren der Entrauchung auf der Ebene -1. Reicht die "
                      "Zuluftnachströmung über die Rampe?",
         "bauherr": "Der Probebetrieb der Entrauchung ist gut gelaufen, die Eröffnung der Tiefgarage ist "
-                   "für den 1. Juli geplant.",
+                   "für den 1. September geplant.",
         "body_only": ("Frage zur CO-Warnanlage",
                       "zur Tiefgarage (unser Zeichen BS-2022-0901): In welcher Höhe sollen die "
                       "CO-Sensoren montiert werden?"),
         "content_only": ("bauherr", "Marktplatz-Garage: Eröffnung und Feuerwehrpläne",
-                         "die Garage unter dem Marktplatz in Beispielstadt soll im Juli eröffnen. "
+                         "die Garage unter dem Marktplatz in Beispielstadt soll im September eröffnen. "
                          "Fehlen aus Ihrer Sicht noch Unterlagen für die Entrauchungsanlage? "
                          "Ingrid Vogt, Parkhausgesellschaft"),
     },
     "BS-2024-0233": {
         "feuerwehr": "Die Saugstelle am See ist ganzjährig zugänglich zu halten und zu beschildern. Die "
                      "Sprachalarmanlage soll auch im Restaurant zu hören sein.",
-        "architekt": "Wir prüfen einen Fluchtbalkon am Ende des Stichflurs im 3. OG. Welche Breite "
-                     "braucht der Balkon?",
+        "architekt": "Für den Stichflur im 3. OG (17 m) bereiten wir den Abweichungsantrag vor. Welche "
+                     "Kompensation halten Sie für tragfähig?",
         "bauherr": "Der Hotelbetrieb im Altbau läuft weiter. Bitte die Bauabschnitte so planen, dass die "
                    "Rettungswege der Gäste immer frei bleiben.",
         "special": [
@@ -202,35 +215,37 @@ MAILFACTS: dict[str, dict] = {
     },
 }
 
+# (organisation, address, subject, body, html, local send time) – dates fit the texts
 UNRELATED = [
     ("Fachverband Brandschutz e. V.", "newsletter@fachverband-brandschutz.example",
      "Newsletter November: neue Muster-Richtlinien und Termine",
      "Liebe Mitglieder,\n\nin dieser Ausgabe: Überarbeitung der Muster-Richtlinien, Erfahrungen mit "
      "Rauchableitung in Treppenräumen, Termine der Regionalgruppen und unsere Jahrestagung im März. "
-     "Außerdem berichten wir über Rettungswege in Bestandsgebäuden.\n\nIhr Fachverband", True),
+     "Außerdem berichten wir über Rettungswege in Bestandsgebäuden.\n\nIhr Fachverband", True,
+     "2024-11-05 09:12"),
     ("Papeterie Kugelschreiber GmbH", "rechnung@papeterie-kugel.example",
      "Rechnung Nr. 2024-1187 Bürobedarf",
      "Sehr geehrte Damen und Herren,\n\nanbei unsere Rechnung über Druckerpapier, Toner und "
      "Aktenordner. Zahlbar innerhalb von 14 Tagen ohne Abzug.\n\nMit freundlichen Grüßen\nIhre "
-     "Papeterie", False),
+     "Papeterie", False, "2024-12-03 10:21"),
     ("Lea Funke", "l.funke@ib-feuerfest.example", "Einladung Sommerfest",
      "Hallo zusammen,\n\nunser Sommerfest findet am Freitag ab 16 Uhr im Hof statt. Bitte tragt euch "
-     "bis Mittwoch in die Liste ein, ob ihr Salat oder Kuchen mitbringt.\n\nLea", False),
+     "bis Mittwoch in die Liste ein, ob ihr Salat oder Kuchen mitbringt.\n\nLea", False, "2025-06-16 08:47"),
     ("Hausverwaltung Bürohaus", "service@hv-buero.example", "Wartung der Kaffeemaschine am Freitag",
      "Die Kaffeemaschine in der Küche im zweiten Stock wird am Freitag zwischen 9 und 11 Uhr entkalkt "
-     "und gewartet.", False),
+     "und gewartet.", False, "2025-01-13 07:58"),
     ("CAD-Software Vertrieb", "lizenz@cad-vertrieb.example", "Ihr Software-Update: neue Lizenzdatei",
      "Ihre Wartungsverlängerung ist eingegangen. Die neue Lizenzdatei finden Sie im Kundenportal. "
-     "Bitte installieren Sie das Update vor dem 31. des Monats.", False),
+     "Bitte installieren Sie das Update vor dem 31. des Monats.", False, "2025-03-11 14:03"),
     ("Akademie für Sicherheitstechnik", "seminare@akademie-sicherheit.example",
      "Seminarangebot: Fortbildung Brandschutzbeauftragte 2025",
      "Unsere Fortbildung für Brandschutzbeauftragte umfasst 16 Unterrichtseinheiten zu "
      "Brandschutzordnung, Feuerlöschern und Räumungsübungen. Jetzt anmelden und Frühbucherrabatt "
-     "sichern.", False),
+     "sichern.", False, "2024-11-18 11:34"),
     ("Löschtechnik Sonderangebot", "angebot@loeschtechnik-billig.example",
      "Feuerlöscher-Wartung zum Sonderpreis",
      "Nur diesen Monat: Prüfung Ihrer Feuerlöscher nach ASR A2.2 für 4,90 Euro je Gerät. "
-     "Antworten Sie einfach auf diese Nachricht.", False),
+     "Antworten Sie einfach auf diese Nachricht.", False, "2025-04-08 16:12"),
 ]
 
 
@@ -275,8 +290,7 @@ def build_mails(rng: random.Random) -> list[dict]:
 
     def when(base: str, lo: int, hi: int) -> datetime:
         d = datetime.fromisoformat(base) + timedelta(days=rng.randint(lo, hi))
-        return d.replace(hour=rng.randint(7, 17), minute=rng.choice([3, 12, 21, 34, 47, 58]),
-                         tzinfo=TZ)
+        return berlin(d.replace(hour=rng.randint(7, 17), minute=rng.choice([3, 12, 21, 34, 47, 58])))
 
     def add(category, project, sender, to, subject, body, date, attachments=(), html=False,
             charset="utf-8", reply_to=None):
@@ -341,7 +355,7 @@ def build_mails(rng: random.Random) -> list[dict]:
 
         for sp in f.get("special", []):
             org, person, addr = _contact(p, sp["role"])
-            d = datetime.fromisoformat(sp["date"]).replace(hour=10, minute=15, tzinfo=TZ)
+            d = berlin(datetime.fromisoformat(sp["date"]).replace(hour=10, minute=15))
             add("subject", nr, (person, addr), lead, sp["subject"].format(**fmt),
                 sp["body"] + f"\n\n{_greeting(person)}", d)
 
@@ -367,9 +381,9 @@ def build_mails(rng: random.Random) -> list[dict]:
             when(p["protokoll"]["date"], 15, 45), charset="iso-8859-1" if pi == 3 else "utf-8")
 
     # --- unrelated -----------------------------------------------------------------------------
-    for i, (org, addr, subj, body, html) in enumerate(UNRELATED):
+    for i, (org, addr, subj, body, html, sent) in enumerate(UNRELATED):
         add("unrelated", None, (org, addr), staff_addr(i), subj, body,
-            when("2024-11-04", 0, 300), html=html,
+            berlin(datetime.fromisoformat(sent)), html=html,
             attachments=[_attachment("Rechnung_2024-1187.pdf", [
                 "# Rechnung Nr. 2024-1187", "Druckerpapier A4, 10 Pakete", "Toner schwarz, 2 Stück",
                 "Aktenordner breit, 20 Stück", "Gesamtbetrag 312,40 Euro"])] if "Rechnung" in subj

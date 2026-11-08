@@ -2,7 +2,8 @@
 
 Routes (same shapes as the real services, see docs/ki-dienste.md):
 
-* ``GET  /v1/models``, ``POST /v1/chat/completions``  – OpenAI-compatible LLM
+* ``GET  /v1/models``, ``POST /v1/chat/completions``  – OpenAI-compatible LLM (optionally with the
+  quirks of real servers: cut-off answers, reasoning-only output, no model list)
 * ``POST /v1/embeddings`` (OpenAI) and ``POST /embed`` (TEI)  – embeddings
 * ``POST /rerank``  – ``texts`` → TEI list, ``documents`` → Cohere/Jina ``results``
 * ``GET  /health``
@@ -26,6 +27,11 @@ DEFAULT_OPTIONS = {
     "think": True,  # wrap answers in <think>…</think> like Qwen3 does
     "delay": 0.0,  # seconds to sleep before answering (timeout tests)
     "fail": [],  # endpoints answering 500: "chat", "embed", "rerank", "models"
+    # behave like real servers in edge cases (see core.CHAT_QUIRKS): "length" (answer cut off at
+    # max_tokens), "reasoning_only" (vLLM reasoning parser: content null, reasoning_content set),
+    # "unterminated_think" (cut off inside <think>)
+    "chat_quirk": None,
+    "models_404": False,  # no GET /v1/models (some llama.cpp/proxy setups)
 }
 
 
@@ -73,6 +79,8 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/v1/models":
             if not self._prelude("models"):
                 return
+            if self.server.options.get("models_404"):
+                return self._send(404, {"detail": "Not Found"})
             models = self.server.options.get("models") or ["fake-llm"]
             return self._send(200, {"object": "list", "data": [
                 {"id": m, "object": "model", "owned_by": "projektakte-fake"} for m in models]})
@@ -89,7 +97,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if not isinstance(payload, dict) or not payload.get("messages"):
                 return self._send(400, {"error": "messages required"})
-            return self._send(200, core.chat_completion(payload, think=bool(opts.get("think"))))
+            return self._send(200, core.chat_completion(payload, think=bool(opts.get("think")),
+                                                        quirk=opts.get("chat_quirk")))
         if path == "/v1/embeddings" and "openai" in opts["embed_formats"]:
             if not self._prelude("embed"):
                 return

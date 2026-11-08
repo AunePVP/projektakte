@@ -64,3 +64,17 @@ def test_file_dates_follow_document_dates(tmp_path):
     f = tmp_path / "projekte/BS-2024-0137 Grundschule Am Lindenhof/01 Genehmigung/Baugenehmigung.pdf"
     import datetime as dt
     assert dt.datetime.fromtimestamp(f.stat().st_mtime, dt.timezone.utc).date() == dt.date(2024, 3, 12)
+
+
+def test_escape_plan_is_a_recognisable_image(tmp_path):
+    """DEMO-12: the plan is a real (small) drawing, not a grey placeholder."""
+    import struct
+    generate(tmp_path)
+    png = (tmp_path / "projekte/BS-2024-0137 Grundschule Am Lindenhof/05 Pläne/Fluchtwegplan EG.png").read_bytes()
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    width, height, depth, color = struct.unpack(">IIBB", png[16:26])
+    assert width >= 600 and height >= 400 and depth == 8 and color == 2  # RGB
+    import zlib
+    raw = zlib.decompress(png[png.index(b"IDAT") + 4:png.index(b"IEND") - 8])
+    green = sum(1 for i in range(1, len(raw) - 2, 3) if raw[i:i + 3] == bytes((0, 150, 70)))
+    assert green > 500  # escape arrows, exit sign and assembly point

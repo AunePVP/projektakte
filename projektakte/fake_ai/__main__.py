@@ -15,6 +15,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--rerank-format", choices=["both", "tei", "cohere"], default="both")
     ap.add_argument("--no-think", action="store_true", help="keine <think>-Blöcke senden")
     ap.add_argument("--delay", type=float, default=0.0, help="künstliche Verzögerung in s")
+    ap.add_argument("--chat-quirk", choices=["length", "reasoning_only", "unterminated_think"],
+                    help="Verhalten echter Server nachstellen (abgeschnittene Antwort, nur Denkschritte)")
+    ap.add_argument("--no-models", action="store_true", help="GET /v1/models antwortet mit 404")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args(argv)
     opts = {
@@ -23,6 +26,8 @@ def main(argv: list[str] | None = None) -> None:
         "think": not a.no_think,
         "delay": a.delay,
         "verbose": a.verbose,
+        "chat_quirk": a.chat_quirk,
+        "models_404": a.no_models,
     }
     if a.model:
         opts["models"] = a.model

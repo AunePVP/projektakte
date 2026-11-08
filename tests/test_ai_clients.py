@@ -111,3 +111,35 @@ def test_server_error_is_reported(fresh_fake_ai):
     fresh_fake_ai.options["fail"] = ["rerank"]
     with pytest.raises(AIServiceError, match="500"):
         RerankClient(fresh_fake_ai.base_url + "/rerank").rerank("q", ["a"])
+
+
+def test_llm_reports_finish_reason_and_reasoning(fresh_fake_ai):
+    c = LLMClient(f"{fresh_fake_ai.base_url}/v1", "m")
+    res = c.chat([{"role": "user", "content": "Sag OK."}])
+    assert res.finish_reason == "stop" and not res.truncated
+    fresh_fake_ai.options["chat_quirk"] = "reasoning_only"  # vLLM reasoning parser, budget used up
+    res = c.chat([{"role": "user", "content": "Sag OK."}])
+    assert res.text == "" and res.finish_reason == "length" and res.reasoning and res.truncated
+    fresh_fake_ai.options["chat_quirk"] = "unterminated_think"
+    res = c.chat([{"role": "user", "content": "Sag OK."}])
+    assert res.text == "" and res.truncated and "<think>" in res.raw_text
+
+
+def test_chat_result_stays_constructible_positionally():
+    from projektakte.ai.llm import ChatResult
+    r = ChatResult("Antwort [1]", "Antwort [1]", {}, "m", 1.0)
+    assert r.finish_reason is None and r.reasoning == "" and not r.truncated
+
+
+def test_llm_probe_without_model_list_is_ok(fresh_fake_ai):
+    """ops-08: llama.cpp/proxies without GET /models – the mini chat decides, the list is a hint."""
+    fresh_fake_ai.options["models_404"] = True
+    info = LLMClient(f"{fresh_fake_ai.base_url}/v1", "qwen3.8-flash-next").probe(2.0)
+    assert info["ok"] is True and info["format"] == "openai-chat" and info["sample"] == "OK"
+    assert "404" in info["models_error"] and "Modellliste" in info["hint"]
+    fresh_fake_ai.options["models_404"] = False
+    info = LLMClient(f"{fresh_fake_ai.base_url}/v1", "anderes-modell").probe(2.0)
+    assert info["ok"] is True and info["model_listed"] is False and "anderes-modell" in info["hint"]
+    fresh_fake_ai.options["fail"] = ["chat"]
+    info = LLMClient(f"{fresh_fake_ai.base_url}/v1", "qwen3.8-flash-next").probe(2.0)
+    assert info["ok"] is False and "500" in info["error"]

@@ -69,21 +69,92 @@ def test_typical_senders(demo):
         assert who in senders
 
 
+def test_category_counts_are_stable(demo):
+    """Other tests (assignment quality) rely on these numbers."""
+    _, manifest = demo
+    cats = [m["category"] for m in manifest["mails"]]
+    numbered = sum(cats.count(c) for c in ("subject", "body", "attachment"))
+    assert (numbered, cats.count("content"), cats.count("unrelated")) == (61, 8, 7)
+
+
+def _date(root, meta):
+    from email.utils import parsedate_to_datetime
+    return parsedate_to_datetime(str(_parse(root / meta["file"])[0]["Date"]))
+
+
+def test_dates_fit_the_texts(demo):
+    """DEMO-12: no 'Newsletter November' in March, no summer party in January, local summer time."""
+    root, manifest = demo
+    by_subject = {m["subject"]: m for m in manifest["mails"]}
+    assert _date(root, by_subject["Newsletter November: neue Muster-Richtlinien und Termine"]).month == 11
+    assert _date(root, by_subject["Einladung Sommerfest"]).month in (5, 6, 7, 8)
+    try:
+        from zoneinfo import ZoneInfo
+        berlin = ZoneInfo("Europe/Berlin")
+    except Exception:  # noqa: BLE001 – no tz database on this system
+        berlin = None
+    for meta in manifest["mails"]:
+        d = _date(root, meta)
+        if berlin is not None:  # offsets follow German summer/winter time
+            assert d.utcoffset() == d.replace(tzinfo=None).replace(tzinfo=berlin).utcoffset(), meta["subject"]
+        _, text, _ = _parse(root / meta["file"])
+        if "eröffnen" in text or "Eröffnung" in text:  # opening of the car park lies ahead
+            assert "September" in text and d.month <= 8, meta["subject"]
+        if "31. des Monats" in text:
+            assert d.month in (1, 3, 5, 7, 8, 10, 12)
+
+
 def test_eval_json_is_in_sync_with_generator():
     data = json.loads((Path(__file__).parent / "eval.json").read_text(encoding="utf-8"))
     assert data == eval_set()
-    assert len(data) >= 15
+    assert len(data) >= 45
+    cats = {q["category"] for q in data}
+    assert {"fact", "paraphrase", "abbreviation", "stand", "two_source", "enumeration", "cross", "negative",
+            "trap"} <= cats
+    assert len({q["id"] for q in data}) == len(data)
     for q in data:
         assert q["question"] and isinstance(q["sources"], list)
-        assert q.get("not_found") or q["sources"]
+        assert q.get("not_found") or (q["sources"] and (q["answer_contains"] or q.get("answer_regex")))
+
+
+def test_eval_answers_are_not_in_the_question():
+    import re
+    for q in eval_set():
+        question = q["question"].lower()
+        assert not any(a.lower() in question for a in q["answer_contains"]), q["id"]
+        assert not any(re.search(p, q["question"], re.I) for p in q.get("answer_regex", [])), q["id"]
+        assert not all(re.search(p, q["question"], re.I) for p in q.get("answer_all", []) or ["(?!)"]), q["id"]
+
+
+def test_eval_has_the_vision_question_for_every_project():
+    projects = {q["project"] for q in eval_set() if q["question"] == "Was ist der letzte Stand mit dem Bauherrn?"}
+    assert len(projects) == 8
+
+
+def _attachment_text(root, meta, filename) -> str:
+    msg = email.message_from_bytes((root / meta["file"]).read_bytes(), policy=policy.default)
+    for att in msg.iter_attachments():
+        if att.get_filename() == filename:
+            from projektakte.extract import extract
+            return extract(Path(filename), att.get_payload(decode=True)).text
+    return ""
 
 
 def test_eval_mail_facts_exist(demo):
+    """The first source of every question contains one of the expected answer strings."""
     root, manifest = demo
     by_subject = {m["subject"]: m for m in manifest["mails"]}
     for q in eval_set():
-        for src in q["sources"]:
-            if "mail_subject" in src:
-                meta = by_subject[src["mail_subject"]]
-                _, text, _ = _parse(root / meta["file"])
-                assert any(a.lower() in text.lower() for a in q["answer_contains"]), q["id"]
+        if not q["sources"] or not q["answer_contains"]:
+            continue
+        src = q["sources"][0]
+        project = src.get("project") or q["project"]
+        if "mail_subject" in src:
+            _, text, _ = _parse(root / by_subject[src["mail_subject"]]["file"])
+        elif "attachment" in src:
+            meta = next(m for m in manifest["mails"]
+                        if src["attachment"] in m["attachments"] and m["project"] == project)
+            text = _attachment_text(root, meta, src["attachment"])
+        else:
+            continue  # files: tests/test_extract_chunks.py
+        assert any(a.lower() in text.lower() for a in q["answer_contains"]), q["id"]

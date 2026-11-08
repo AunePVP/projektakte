@@ -200,3 +200,105 @@ def png_bytes(width: int = 96, height: int = 64, seed: int = 0) -> bytes:
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)  # 8-bit greyscale
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", raw) + chunk(b"IEND", b"")
+
+
+# ----------------------------------------------------------------------------- escape plan (RGB PNG)
+_FONT = {  # 5×7 bitmap font, enough for the plan labels
+    "A": "01110 10001 10001 11111 10001 10001 10001", "B": "11110 10001 10001 11110 10001 10001 11110",
+    "C": "01110 10001 10000 10000 10000 10001 01110", "D": "11110 10001 10001 10001 10001 10001 11110",
+    "E": "11111 10000 10000 11110 10000 10000 11111", "F": "11111 10000 10000 11110 10000 10000 10000",
+    "G": "01110 10001 10000 10111 10001 10001 01111", "H": "10001 10001 10001 11111 10001 10001 10001",
+    "I": "01110 00100 00100 00100 00100 00100 01110", "K": "10001 10010 10100 11000 10100 10010 10001",
+    "L": "10000 10000 10000 10000 10000 10000 11111", "M": "10001 11011 10101 10101 10001 10001 10001",
+    "N": "10001 11001 10101 10011 10001 10001 10001", "O": "01110 10001 10001 10001 10001 10001 01110",
+    "P": "11110 10001 10001 11110 10000 10000 10000", "R": "11110 10001 10001 11110 10100 10010 10001",
+    "S": "01111 10000 10000 01110 00001 00001 11110", "T": "11111 00100 00100 00100 00100 00100 00100",
+    "U": "10001 10001 10001 10001 10001 10001 01110", "W": "10001 10001 10001 10101 10101 10101 01010",
+    "X": "10001 10001 01010 00100 01010 10001 10001", "Z": "11111 00001 00010 00100 01000 10000 11111", "1": "00100 01100 00100 00100 00100 00100 01110",
+    "2": "01110 10001 00001 00010 00100 01000 11111", ":": "00000 00100 00000 00000 00000 00100 00000",
+    "-": "00000 00000 00000 11111 00000 00000 00000", " ": "00000 00000 00000 00000 00000 00000 00000",
+}
+_BLACK, _WHITE, _GREEN, _RED, _GREY = (30, 30, 30), (255, 255, 255), (0, 150, 70), (210, 30, 30), (200, 200, 200)
+
+
+class _Canvas:
+    def __init__(self, w: int, h: int):
+        self.w, self.h = w, h
+        self.px = [bytearray(_WHITE * w) for _ in range(h)]
+
+    def rect(self, x0: int, y0: int, x1: int, y1: int, color) -> None:
+        for y in range(max(0, y0), min(self.h, y1)):
+            row = self.px[y]
+            for x in range(max(0, x0), min(self.w, x1)):
+                row[3 * x: 3 * x + 3] = bytes(color)
+
+    def text(self, x: int, y: int, s: str, color=_BLACK, scale: int = 1) -> None:
+        for ch in s.upper():
+            rows = _FONT.get(ch, _FONT[" "]).split()
+            for ry, bits in enumerate(rows):
+                for rx, bit in enumerate(bits):
+                    if bit == "1":
+                        self.rect(x + rx * scale, y + ry * scale, x + (rx + 1) * scale, y + (ry + 1) * scale, color)
+            x += 6 * scale
+
+    def arrow_east(self, x: int, y: int, color=_GREEN) -> None:
+        self.rect(x, y - 3, x + 22, y + 3, color)
+        for i in range(10):
+            self.rect(x + 22 + i, y - 10 + i, x + 23 + i, y + 10 - i, color)
+
+    def png(self) -> bytes:
+        raw = zlib.compress(b"".join(b"\x00" + bytes(r) for r in self.px), 9)
+
+        def chunk(tag: bytes, data: bytes) -> bytes:
+            return struct.pack(">I", len(data)) + tag + data + struct.pack(
+                ">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+        ihdr = struct.pack(">IIBBBBB", self.w, self.h, 8, 2, 0, 0, 0)  # 8-bit RGB
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", raw) + chunk(b"IEND", b"")
+
+
+def plan_png(title: str = "FLUCHTWEGPLAN ERDGESCHOSS") -> bytes:
+    """A recognisable escape plan of a ground floor: rooms along a corridor, staircase 1 in the west,
+    green escape arrows to the emergency exit east, fire extinguisher next to staircase 1, assembly
+    point at the northern car park (matches the fake vision transcription)."""
+    c = _Canvas(680, 420)
+    c.text(40, 20, title, scale=3)
+    wall = 4
+    x0, y0, x1, y1 = 40, 80, 560, 360  # building
+    cy0, cy1 = 195, 245  # corridor
+    for (a, b, d, e) in ((x0, y0, x1, y0 + wall), (x0, y1 - wall, x1, y1), (x0, y0, x0 + wall, y1),
+                         (x1 - wall, y0, x1, cy0 + 5), (x1 - wall, cy1 - 5, x1, y1)):
+        c.rect(a, b, d, e, _BLACK)  # outer walls, gap in the east wall = emergency exit
+    for x in (140, 245, 350, 455):  # room partitions above and below the corridor, doors left open
+        c.rect(x, y0, x + wall, cy0, _BLACK)
+        c.rect(x, cy1, x + wall, y1, _BLACK)
+    for xa in range(x0, x1, 105):  # corridor walls with doors
+        c.rect(xa + 35, cy0, xa + 105, cy0 + wall, _BLACK)
+        c.rect(xa + 35, cy1 - wall, xa + 105, cy1, _BLACK)
+    for i in range(8):  # staircase 1 (west): steps
+        c.rect(52, 96 + i * 11, 132, 98 + i * 11, _GREY)
+    c.text(62, 186 - 20, "TR 1", scale=2)
+    c.rect(150, 205, 166, 228, _RED)  # fire extinguisher next to staircase 1
+    c.text(154, 210, "F", color=_WHITE, scale=2)
+    for x in (190, 290, 390, 480):  # escape route east
+        c.arrow_east(x, 220)
+    c.rect(566, 200, 626, 240, _GREEN)  # emergency exit sign
+    c.text(574, 213, "EXIT", color=_WHITE, scale=2)
+    c.text(566, 250, "NOTAUSGANG", scale=1)
+    c.text(566, 260, "OST", scale=1)
+    c.rect(575, 90, 625, 140, _GREEN)  # assembly point
+    c.rect(597, 100, 603, 130, _WHITE)
+    c.rect(585, 112, 615, 118, _WHITE)
+    c.text(560, 146, "SAMMELPLATZ", scale=1)
+    c.text(560, 156, "PARKPLATZ NORD", scale=1)
+    c.rect(300, 230, 310, 240, _RED)  # you are here
+    c.text(280, 262, "SIE SIND HIER", color=_RED, scale=1)
+    c.text(40, 392, "N", scale=2)  # north arrow
+    c.rect(56, 380, 60, 408, _BLACK)
+    for i in range(7):
+        c.rect(58 - i, 378 + i, 59 + i, 379 + i, _BLACK)
+    c.arrow_east(200, 395)
+    c.text(240, 392, "FLUCHTWEG", scale=1)
+    c.rect(330, 388, 342, 402, _RED)
+    c.text(350, 392, "FEUERLOESCHER", scale=1)
+    return c.png()

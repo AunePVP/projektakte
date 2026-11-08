@@ -156,6 +156,9 @@ PROJECTS = [
             2: ("Rauchabschnitte",
                 "Die Flure der Wohnbereiche sind durch Rauchschutztüren in Rauchabschnitte von höchstens "
                 "30 m Länge zu unterteilen."),
+            4: ("Rauchableitung",
+                "Die Treppenräume erhalten an oberster Stelle Öffnungen zur Rauchableitung mit mindestens "
+                "1,0 m² freiem Querschnitt, die von der Brandmeldeanlage angesteuert werden."),
             5: ("Brandmeldeanlage",
                 "Es ist eine flächendeckende Brandmeldeanlage der Kategorie 1 zu errichten. Die Rauchmelder "
                 "in den Bewohnerzimmern sind auf die Brandmeldeanlage aufzuschalten; das Personal wird "
@@ -320,6 +323,9 @@ PROJECTS = [
             4: ("Sicherheitsbeleuchtung",
                 "In allen Fluren, Treppenräumen und im Restaurant ist eine Sicherheitsbeleuchtung mit einer "
                 "Betriebsdauer von mindestens 8 Stunden vorzusehen."),
+            5: ("Rauchableitung",
+                "Beide Treppenräume erhalten an oberster Stelle eine Öffnung zur Rauchableitung mit mindestens "
+                "1,0 m² freiem Querschnitt, auslösbar über Rauchmelder und Handtaster im Erdgeschoss."),
             6: ("Brandmeldeanlage",
                 "Die Gästezimmer erhalten Rauchmelder mit Aufschaltung auf die Brandmeldeanlage. Die "
                 "Alarmierung erfolgt über eine Sprachalarmanlage in deutscher und englischer Sprache."),
@@ -332,7 +338,7 @@ PROJECTS = [
                          "erweitert.",
             "rettungswege": "Zwei Treppenräume; der Stichflur im 3. Obergeschoss ist 17 m lang.",
             "anlagen": "Brandmeldeanlage mit Zimmerrauchmeldern, Sprachalarmanlage zweisprachig, "
-                       "Sicherheitsbeleuchtung mit 8 Stunden Betriebsdauer.",
+                       "Sicherheitsbeleuchtung mit 8 Stunden Betriebsdauer, Rauchableitung der Treppenräume.",
             "loeschwasser": "Löschwasserbedarf 96 m³/h, zusätzlich Saugstelle am See.",
             "abweichungen": "Für den Stichflur im 3. OG (17 m) wird eine Abweichung beantragt.",
             "organisation": "Nachtportier als Brandschutzhelfer; Fluchtpläne in jedem Gästezimmer.",
@@ -369,6 +375,9 @@ PROJECTS = [
             2: ("Brandabschnitte",
                 "Die Halle ist durch eine Brandwand in zwei Brandabschnitte von je höchstens 3.600 m² zu "
                 "unterteilen."),
+            4: ("Rauchableitung",
+                "Die Halle erhält natürliche Rauchabzugsgeräte mit einer aerodynamisch wirksamen Fläche von "
+                "mindestens 72 m² im Dach, gleichmäßig auf beide Brandabschnitte verteilt."),
             5: ("Löschwasserversorgung",
                 "Der Löschwasserbedarf ist durch die öffentliche Versorgung und einen Löschwasserteich "
                 "nachzuweisen."),
@@ -417,6 +426,9 @@ PROJECTS = [
             3: ("Rettungswege",
                 "Jeder Gruppenraum im Obergeschoss erhält einen direkten Ausgang auf einen umlaufenden Balkon "
                 "mit Treppe ins Freie als zweiten Rettungsweg."),
+            4: ("Rauchableitung",
+                "Der Treppenraum erhält an oberster Stelle eine Öffnung zur Rauchableitung mit mindestens "
+                "1,0 m² freiem Querschnitt."),
             # FACT kt-rauchwarnmelder
             5: ("Rauchwarnmelder",
                 "In den Schlafräumen und Gruppenräumen sind funkvernetzte Rauchwarnmelder nach DIN 14676 zu "
@@ -426,7 +438,7 @@ PROJECTS = [
             "allgemein": "Die Kita Regenbogen bietet Platz für fünf Gruppen mit insgesamt 95 Kindern.",
             "rettungswege": "Zweiter Rettungsweg aus dem Obergeschoss über den umlaufenden Balkon mit Treppe.",
             "anlagen": "Die Rauchwarnmelder in den Schlafräumen werden funkvernetzt ausgeführt und lösen "
-                       "auch im Leitungsbüro Alarm aus.",
+                       "auch im Leitungsbüro Alarm aus. Der Treppenraum erhält eine Öffnung zur Rauchableitung.",
             "loeschwasser": "Grundschutz 48 m³/h aus dem öffentlichen Netz.",
             "abweichungen": "Keine.",
             "organisation": "Brandschutzerziehung und eine Evakuierungsübung mit den Kindern je Halbjahr.",
@@ -488,7 +500,7 @@ PROJECTS = [
             "date": "2025-02-12", "nr": 1,
             "findings": [
                 "Die Druckerhöhungsanlage der nassen Steigleitungen ist redundant auszuführen.",
-                "Der Vorraum des Feuerwehraufzugs ist in allen Geschossen mindestens 6 m² groß.",
+                "Der Vorraum des Feuerwehraufzugs muss in allen Geschossen mindestens 6 m² groß sein.",
             ],
         },
         "protokoll": {
