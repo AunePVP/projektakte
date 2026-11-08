@@ -22,7 +22,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
 - [x] **5. Textextraktion und Abschnitte** – TXT/MD/PDF (pypdf)/DOCX (python-docx) lesen, in
   überlappende Abschnitte mit Seitenangabe zerlegen, in SQLite + FTS5 speichern; inkrementell über
   Datei-Hash.
-- [ ] **6. Embeddings** – Client für den Embedding-Dienst (Format siehe docs/ki-dienste.md), Vektoren
+- [x] **6. Embeddings** – Client für den Embedding-Dienst (Format siehe docs/ki-dienste.md), Vektoren
   je Abschnitt speichern; Stapelverarbeitung; Fake-Dienst für Tests.
 - [ ] **7. Mails einlesen** – Mailquelle „Ordner mit .eml“ (`MAIL_DIR`): Kopf, Text, Anhänge;
   Anhänge wie Dokumente verarbeiten; `GET /api/mails`.

@@ -55,6 +55,8 @@ class _Handler(BaseHTTPRequestHandler):
             return None
 
     def _prelude(self, name: str) -> bool:
+        with self.server.calls_lock:
+            self.server.calls[name] = self.server.calls.get(name, 0) + 1
         opts = self.server.options
         if opts.get("delay"):
             time.sleep(float(opts["delay"]))
@@ -142,6 +144,8 @@ class FakeAIServer(ThreadingHTTPServer):
     def __init__(self, addr, options: dict | None = None):
         super().__init__(addr, _Handler)
         self.options = {**DEFAULT_OPTIONS, **(options or {})}
+        self.calls: dict[str, int] = {}  # requests per endpoint (tests check batching)
+        self.calls_lock = threading.Lock()
 
     @property
     def base_url(self) -> str:

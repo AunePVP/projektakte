@@ -13,6 +13,7 @@ from .ai.services import AIServices
 from .config import Settings
 from .documents import index_all_documents
 from .registry import scan_projects, sync_projects
+from .vectors import embed_pending
 
 log = logging.getLogger("projektakte.indexer")
 
@@ -26,6 +27,8 @@ def run_index(settings: Settings, ai: AIServices | None = None) -> dict:
         stats["projects"] = sync_projects(conn, folders)
         conn.commit()
         stats["documents"] = index_all_documents(conn, llm=ai.llm if ai else None)
+        if ai is not None:
+            stats["embeddings"] = embed_pending(conn, ai.embed)
     stats["seconds"] = round(time.time() - started, 2)
     log.info("Indexierung fertig: %s", stats)
     return stats

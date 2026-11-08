@@ -5,6 +5,17 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 6 – Embeddings
+- Vektoren je Abschnitt als float32-BLOB in SQLite, berechnet in Stapeln (`EMBED_BATCH`), Commit je Stapel.
+- Abschnitte werden mit Kontext (Datei, Projekt, Überschrift) eingebettet, Suchanfragen mit der
+  Qwen3-Instruktion.
+- Fingerabdruck des Embedding-Dienstes (Modell, Dimension, Referenzvektor): wechselt der Dienst
+  (z. B. Fake → echtes Qwen3), werden alle Vektoren automatisch neu berechnet.
+- Fällt der Dienst aus, bleibt der Volltext nutzbar; fehlende Vektoren werden beim nächsten Lauf
+  nachgeholt.
+- Vektorsuche über eine zwischengespeicherte NumPy-Matrix (neu geladen nur nach Änderungen).
+- Neue Abhängigkeit: `numpy==2.5.4`.
+
 ### Schritt 5 – Textextraktion und Abschnitte
 - Extraktion für TXT/MD/CSV, PDF (pypdf, seitenweise), DOCX (python-docx, Überschriften und Tabellen),
   EML; Bilder und PDF-Scans nur mit `LLM_VISION=1` über das multimodale Modell, sonst „übersprungen“.
