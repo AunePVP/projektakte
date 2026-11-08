@@ -7,7 +7,21 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 
 from .ai import AIServiceError
-from .textutil import QUESTION_WORDS, Synonyms, content_terms, de_date, load_synonyms, local_date, query_terms
+import re
+
+from .textutil import (
+    QUESTION_WORDS,
+    Synonyms,
+    content_terms,
+    de_date,
+    find_identifiers,
+    fold,
+    identifier_in,
+    load_synonyms,
+    local_date,
+    query_terms,
+    strip_identifiers,
+)
 from .vectors import VECTOR_INDEX
 
 log = logging.getLogger("projektakte.search")
@@ -93,6 +107,36 @@ def fts_search(conn: sqlite3.Connection, text: str, *, project: str | None = Non
         return []
 
 
+def identifier_search(conn: sqlite3.Connection, identifiers: list[str], *, project: str | None = None,
+                      k: int = 50) -> list[tuple[int, float]]:
+    """Chunks that contain a reference code literally ("BS-2024-0233", "63-0137/24"): an FTS phrase of
+    its parts, so the separators may be written differently."""
+    phrases = []
+    for ident in identifiers:
+        parts = re.findall(r"[^\W_]+", fold(ident))
+        if parts:
+            phrases.append('"' + " ".join(parts) + '"')
+    if not phrases:
+        return []
+    sql = ("SELECT c.id, bm25(chunks_fts, 2.0, 1.0) AS rank FROM chunks_fts "
+           "JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ?")
+    params: list = [" OR ".join(phrases)]
+    if project:
+        sql += " AND c.project = ?"
+        params.append(project)
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(k)
+    try:
+        return [(r[0], -float(r[1])) for r in conn.execute(sql, params)]
+    except sqlite3.OperationalError:
+        return []
+
+
+def has_identifier(h: "Hit", identifiers: list[str]) -> bool:
+    """Does the hit (text, file name or mail subject) contain one of the reference codes literally?"""
+    return any(identifier_in(i, f"{h.title}\n{h.rel_path or ''}\n{h.text}") for i in identifiers)
+
+
 def rrf(*rankings: list[tuple[int, float]], k: int = RRF_K) -> list[tuple[int, float]]:
     """Reciprocal Rank Fusion of several rankings of chunk ids."""
     scores: dict[int, float] = {}
@@ -104,7 +148,8 @@ def rrf(*rankings: list[tuple[int, float]], k: int = RRF_K) -> list[tuple[int, f
 
 # --------------------------------------------------------------------------- hybrid search
 CANDIDATES = 50
-MAX_PER_SOURCE = 3
+MAX_PER_SOURCE = 3  # chunks of one document page or mail among the results
+MAX_PER_SOURCE_RERANK = 6  # … among the reranker candidates (the fused order is only a rough guess)
 
 
 @dataclass
@@ -211,9 +256,14 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
     no embeddings → full text only; reranker down → order of the hybrid search.
 
     The full-text part expands abbreviations and synonyms (built-in list plus ``synonyms_file``,
-    default: setting SYNONYMS_FILE)."""
+    default: setting SYNONYMS_FILE). Reference codes in the query (project number, file number,
+    invoice number) are also searched literally; those hits always reach the reranker, and for a query
+    of reference codes alone they come first (a cross-encoder judges topics, not codes)."""
     result = SearchResult(query=query, project=project)
     synonyms = load_synonyms(default_synonyms_file() if synonyms_file is None else synonyms_file)
+    identifiers = find_identifiers(query)
+    literal = identifier_search(conn, identifiers, project=project, k=CANDIDATES) if identifiers else []
+    codes_only = bool(identifiers) and not query_terms(strip_identifiers(query))
     fts = fts_search(conn, query, project=project, k=CANDIDATES, expand=True, synonyms=synonyms)
     vec: list[tuple[int, float]] = []
     if ai is not None:
@@ -221,8 +271,12 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
             qvec = ai.embed.embed_query(query)
             vec = VECTOR_INDEX.search(conn, vector_key, qvec, project=project, k=CANDIDATES)
         except AIServiceError as exc:
-            result.notes.append(f"Vektorsuche nicht verfügbar ({exc}); nur Volltext")
-    fused = rrf(fts, vec)
+            log.warning("Vektorsuche nicht verfügbar, nur Volltext: %s", exc)
+            result.notes.append("Vektorsuche nicht verfügbar – nur Volltextsuche")
+    fused = rrf(literal, fts, vec)
+    if literal:  # literal hits of a reference code first, so they always reach the reranker
+        first = {cid for cid, _ in literal}
+        fused = [x for x in fused if x[0] in first] + [x for x in fused if x[0] not in first]
     hits_by_id = load_hits(conn, [cid for cid, _ in fused[: max(rerank_top_k, k) * 2]])
     candidates: list[Hit] = []
     per_source: dict[tuple, int] = {}
@@ -231,7 +285,7 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
         if h is None:
             continue
         key = (h.doc_id, h.mail_id if not h.doc_id else None)
-        if per_source.get(key, 0) >= MAX_PER_SOURCE:
+        if per_source.get(key, 0) >= (MAX_PER_SOURCE_RERANK if use_reranker and ai is not None else MAX_PER_SOURCE):
             continue
         per_source[key] = per_source.get(key, 0) + 1
         h.fused = score
@@ -249,8 +303,20 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
         except AIServiceError as exc:
             log.warning("Reranker nicht verfügbar, Reihenfolge der hybriden Suche: %s", exc)
             result.notes.append("Reranker nicht erreichbar – Reihenfolge der hybriden Suche")
-    result.hits = candidates[:k]
+    if codes_only:  # "BS-2024-0233", "63-0137/24": the documents that contain the code first
+        candidates.sort(key=lambda h: not has_identifier(h, identifiers))
+    result.hits = _cap_per_source(candidates, MAX_PER_SOURCE)[:k]
     return result
+
+
+def _cap_per_source(hits: list[Hit], cap: int) -> list[Hit]:
+    out, seen = [], {}
+    for h in hits:
+        key = (h.doc_id, h.mail_id if not h.doc_id else None)
+        if seen.get(key, 0) < cap:
+            seen[key] = seen.get(key, 0) + 1
+            out.append(h)
+    return out
 
 
 # --------------------------------------------------------------------------- overlapping chunks

@@ -32,7 +32,8 @@ STOPWORDS = frozenset(
 # Words that only shape a question and carry no content (used by the fake LLM and "not found").
 QUESTION_WORDS = frozenset(
     "welche welcher welches welchen wer wie was wann wo warum wieso weshalb gibt es ist sind hat "
-    "haben wurde wurden werden kann muss mussen soll sollen darf durfen".split()
+    "haben wurde wurden werden kann muss mussen soll sollen darf durfen "
+    "worum wofur wozu woraus womit wodurch wonach worauf woruber wovon wohin woher wieviel wieviele".split()
 )
 
 # Filler words of typed questions ("In welchen Projekten ist … vorgesehen?"): light verbs, generic
@@ -48,18 +49,26 @@ QUERY_FILLER = frozenset(
     gebaut errichtet errichten
     geht gehen sagt sagen gesagt wissen weiss gilt gelten funktionieren funktioniert durchhalten
     beachten beachtet beachtung tun macht machen gemacht lassen worden wird werden sein seien hatte
+    passiert passieren geschehen getan gelaufen verfugung
+    anforderung anforderungen vorgabe vorgaben regelung regelungen bestimmung bestimmungen massnahme massnahmen
+    gelost geregelt gestaltet bewertet bewerten beurteilt beurteilen eingeschatzt einschatzen
+    nummer
+    festlegung festgehalten festgelegt vereinbart beschlossen besprochen notiert dokumentiert protokolliert
+    festlegungen angabe angaben thema themen punkt punkte details detail infos info sache situation
     art sorte typ frau herr herrn dr dipl ing jemand irgendwas irgendwelche
     ihren ihrem ihrer ihres seinen seinem seiner seines unsere unseren unserem unserer unseres meinen
     meinem meiner meines eure euren eurem
     """.split()
 )
 
-# Words asking for the latest state ("Was ist der letzte Stand …?", "Wurde … schon …?").
+# Words asking for the latest state ("Was ist der letzte Stand …?", "Wurde … schon …?", "Was gibt es
+# Neues …?", "Was hat … zuletzt geschrieben?").
 TEMPORAL_WORDS = frozenset(
     """
-    letzt letzte letzter letzten letztes zuletzt aktuell aktuelle aktueller aktuellen aktuelles
-    neueste neuester neuesten neuestes neuste neusten neuigkeit neuigkeiten stand stande inzwischen
-    mittlerweile schon bereits derzeit momentan gerade jetzt update
+    letzt letzte letzter letzten letztes zuletzt letztens aktuell aktuelle aktueller aktuellen aktuelles
+    neueste neuester neuesten neuestes neuste neusten neues neuigkeit neuigkeiten neuerdings neulich
+    kurzlich jungst jungste jungsten stand stande sachstand zwischenstand inzwischen mittlerweile schon
+    bereits derzeit momentan gerade jetzt update
     """.split()
 )
 
@@ -80,6 +89,13 @@ _SUFFIXES = ("ungen", "ern", "em", "en", "er", "es", "e", "n", "s")
 _ZU_INFIX = re.compile(r"^(ab|an|auf|aus|bei|ein|fest|frei|her|hin|mit|nach|vor|weg|zuruck|zusammen)zu(\w{3,}n)$")
 
 
+# feminine forms of persons: Prüfingenieurin → Prüfingenieur, Ansprechpartnerinnen → Ansprechpartner
+def _keeps_final_s(word: str) -> bool:
+    return word.endswith(("haus", "ss", "os")) or (word.endswith("us") and not word.endswith("aus"))
+_FEMININE = re.compile(r"^(\w{4,}(?:er|eur|rat|ent|ant|ist|or|ar|at))in(?:nen)?$")
+
+
+@lru_cache(maxsize=131072)
 def stem(word: str) -> str:
     """Very light German stemmer: enough to match Rettungsweg/Rettungswege/Rettungswegs."""
     if word.isdigit():
@@ -87,7 +103,12 @@ def stem(word: str) -> str:
     m = _ZU_INFIX.match(word)
     if m:
         word = m.group(1) + m.group(2)
+    m = _FEMININE.match(word)
+    if m:
+        word = m.group(1)
     for suf in _SUFFIXES:
+        if suf == "s" and _keeps_final_s(word):  # Hochhaus, Status – no genitive -s (but Umbaus → Umbau)
+            continue
         if len(word) - len(suf) >= 4 and word.endswith(suf):
             if suf == "ungen":
                 return word[: -len(suf)] + "ung"
@@ -108,14 +129,16 @@ def content_terms(text: str, extra_stop: frozenset[str] = frozenset()) -> list[s
 def term_in(term: str, doc_terms: set[str], doc_text_folded: str | None = None) -> bool:
     """Does a (stemmed) query term occur in a document?
 
-    Accepts exact stems, prefixes (Rauchableitung → Rauchableitungsöffnung) and, for longer words,
-    the reverse direction (Abweichungsantrag ↔ Abweichung) – German compounds are common.
+    Accepts exact stems, compounds that start with the term (Rauchableitung → Rauchableitungsöffnung)
+    and, for longer words, the head of a compound term (Baubesprechung → Besprechung). German
+    compounds carry their meaning in the last part: a Löschwasserteich is a Teich, so "Löschwasser"
+    alone does not match it, and "Projektbezug" does not match "Projekt".
     """
     if term in doc_terms:
         return True
     if len(term) >= 5:
         for t in doc_terms:
-            if t.startswith(term) or (len(t) >= 6 and term.startswith(t)):
+            if t.startswith(term) or (len(t) >= 6 and len(term) - len(t) >= 3 and term.endswith(t)):
                 return True
     return False
 
@@ -177,15 +200,16 @@ def de_date(value: str | None, default: str = "?") -> str:
 
 # --------------------------------------------------------------------------- word variants
 # Separable verb prefixes: "abgenommen" → "ab" + "genommen", "einzubauen" → "ein" + "zu" + "bauen".
-_SEP_PREFIX = ("zuruck", "zusammen", "durch", "fest", "frei", "nach", "uber", "auf", "aus", "bei", "ein",
-               "her", "hin", "mit", "vor", "weg", "ab", "an", "um", "zu")
+_SEP_PREFIX = ("zuruck", "zusammen", "statt", "durch", "fest", "frei", "nach", "teil", "uber", "auf", "aus", "bei",
+               "ein", "her", "hin", "mit", "vor", "weg", "ab", "an", "um", "zu")
 _PARTICIPLE = re.compile(r"^(%s)?ge(\w{2,}?)(t|et|en)$" % "|".join(_SEP_PREFIX))
 _ZU_ANY = re.compile(r"^(%s)zu(\w{3,}en)$" % "|".join(_SEP_PREFIX))
+_DENOMINAL = re.compile(r"^(?:be|ver)(\w{5,})$")
 _WEAK_PARTICIPLE = re.compile(r"^((be|ge|er|ver|zer|ent|emp)\w{3,}t|\w{3,}(iert|igt))$")
 # Ablaut series of strong verbs common in project files (Abnahme/abnehmen/abgenommen …).
 _ABLAUT = (("nehm", "nahm", "nomm", "nimm"), ("schliess", "schloss"), ("zieh", "zog", "zug"),
            ("find", "fand", "fund"), ("steh", "stand"), ("halt", "hielt"), ("geb", "gab"),
-           ("schreib", "schrieb"), ("treff", "traf", "troff"))
+           ("schreib", "schrieb"), ("treff", "traf", "troff"), ("fehl", "fiehl", "fahl", "fohl"))
 
 
 @lru_cache(maxsize=65536)
@@ -209,8 +233,13 @@ def verb_bases(word: str) -> tuple[str, ...]:
     m = _ZU_ANY.match(word)
     if m:
         bases.add(stem(m.group(1) + m.group(2)))
+    if word.endswith("ern") and len(word) >= 6 and not word.endswith("tern"):  # sichern → sicher (stem: sich)
+        bases.add(word[:-1])
     if _WEAK_PARTICIPLE.match(word):  # genehmigt → genehmig, beantragt → beantrag, installiert → installier
         bases.add(word[:-1])
+        m = _DENOMINAL.match(word[:-1])  # bemängelt → mangel, beantragt → antrag
+        if m:
+            bases.add(m.group(1))
     plain = {stem(word)} | ({word[:-1]} if word.endswith("t") and len(word) >= 5 else set())  # nimmt → nimm
     for b in list(bases or plain):
         for series in _ABLAUT:  # only as the last morpheme: Abnahme, abgenommen – not Gebäude
@@ -238,17 +267,29 @@ def verbal_noun(word: str) -> str | None:
     return base + "ung"
 
 
+def verbal_nouns(word: str) -> list[str]:
+    """All nominalisations of a verb form: 'prüfen' → [prufung], 'kompensieren' → [kompensierung,
+    kompensation] (-ieren verbs also form nouns on -ation: installieren → Installation)."""
+    vn = verbal_noun(word)
+    if not vn:
+        return []
+    out = [vn]
+    if vn.endswith("ierung") and len(vn) > 9:
+        out.append(vn[: -len("ierung")] + "ation")
+    return out
+
+
 # --------------------------------------------------------------------------- synonyms
 BUILTIN_SYNONYMS = """
-# Abkürzungen und Fachsynonyme aus dem Brandschutz. Eine Gruppe je Zeile:
+# Abkürzungen und Fachsynonyme aus dem Brandschutz und dem Bauwesen. Eine Gruppe je Zeile:
 #   "A = B = C"  gleichbedeutend (in beide Richtungen)
-#   "A -> B"     A wird zu B erweitert, aber nicht umgekehrt (für mehrdeutige Kürzel)
+#   "A -> B"     A wird zu B erweitert, aber nicht umgekehrt (für mehrdeutige Kürzel und Wörter)
 BMA = Brandmeldeanlage
 BMZ = Brandmelderzentrale
 RWA = Rauch- und Wärmeabzugsanlage = Rauch- und Wärmeabzug = Rauchabzugsanlage = Rauchabzug = Rauchableitung = Entrauchung = Entrauchungsanlage
 SAA = Sprachalarmanlage = ELA
 SiBe = Sicherheitsbeleuchtung = Notbeleuchtung = Notlicht
-RDA = Druckbelüftungsanlage = Druckbelüftung = Überdruckanlage = Überdruckbelüftung = Rauchschutzdruckanlage
+RDA = DBA = Druckbelüftungsanlage = Druckbelüftung = Überdruckanlage = Überdruckbelüftung = Rauchschutzdruckanlage
 FSA = Feststellanlage
 BSK = Brandschutzklappe
 RWM = Rauchwarnmelder = Rauchmelder
@@ -259,7 +300,7 @@ Treppenraum = Treppenhaus
 Rettungsweg = Fluchtweg
 OG = Obergeschoss
 DG = Dachgeschoss
-TG = Tiefgarage
+TG = Tiefgarage = Garage
 GK = Gebäudeklasse
 EG -> Erdgeschoss
 UG -> Untergeschoss
@@ -274,7 +315,83 @@ Bedenken = Einwände = Einwand = Einwendungen
 Räumung = Evakuierung
 Material = Baustoff
 Löschwasserbedarf = Löschwassermenge
-Neuigkeiten = Sachstand = aktueller Stand
+Neuigkeiten = Neues = Neuigkeit = Sachstand = aktueller Stand
+FW = Feuerwehr
+BSD = Brandschutzdienststelle
+FwA = FWA = Feuerwehraufzug
+FIZ = Feuerwehrinformationszentrale
+ÜE = Übertragungseinrichtung
+DEA = Druckerhöhungsanlage
+WH = Wandhydrant
+TSL = trockene Steigleitung
+NSL = nasse Steigleitung
+STR = Sicherheitstreppenraum
+TRH -> Treppenraum
+NRA = NRWG = natürliche Rauchabzugsanlage = Rauchabzugsgeräte
+MRA = maschinelle Rauchabzugsanlage
+RST = Rauchschutztür
+BSH = Brandschutzhelfer
+BSO = Brandschutzordnung
+BSN = Brandschutznachweis
+BSK -> Brandschutzkonzept, Brandschutzklappe
+BG -> Baugenehmigung
+PB -> Prüfbericht
+LV = Leistungsverzeichnis
+SV -> Sachverständiger
+DLK = Drehleiter
+Kat = Kategorie
+Az = Aktenzeichen
+KW = Kalenderwoche
+MHHR = Muster-Hochhaus-Richtlinie
+IndBauRL = Industriebaurichtlinie
+MBO = Musterbauordnung
+LBO = BauO = Landesbauordnung = Bauordnung
+GarVO = GaVO = Garagenverordnung
+BeVO = BStättV = Beherbergungsstättenverordnung
+SchulbauR = SchulbauRL = MSchulbauR = Schulbaurichtlinie
+PrüfVO = PrüfVV = Prüfverordnung
+FwP = FWP = Feuerwehrplan
+PrüfIng = Prüfingenieur
+HM = Handmelder = Handfeuermelder = Handtaster
+ÜH = Überflurhydrant
+UH -> Unterflurhydrant
+TH -> Treppenhaus
+BH -> Bauherr
+BL -> Bauleitung
+AG -> Auftraggeber
+AN -> Auftragnehmer
+WE -> Wohneinheit, Wohnung
+NE -> Nutzungseinheit
+SB -> Sicherheitsbeleuchtung
+NB -> Notbeleuchtung
+RM -> Rauchmelder
+LW -> Löschwasser
+EP -> Einstellplatz
+Stpl = Stellplatz
+TGA = technische Gebäudeausrüstung
+Std -> Stunde
+Stk -> Stück
+Kita = Kindertagesstätte = Kindergarten
+BS -> Brandschutz
+BV -> Bauvorhaben
+Abn -> Abnahme
+Abw -> Abweichung
+Genehm -> Genehmigung
+Notausgang = Ausgang ins Freie
+Adresse = Anschrift
+unterschreiben = unterzeichnen = Unterschrift
+Adresse -> Grundstück
+# allgemeine Bau- und Alltagswörter
+Geschoss = Stockwerk = Etage
+Stock -> Obergeschoss = Geschoss
+Fassade = Außenwand = Außenwandbekleidung
+Lüfter = Ventilator = Gebläse
+Stellplatz = Einstellplatz = Parkplatz
+Ansprechpartner = Ansprechperson = Kontaktperson = Vertreter = vertreten
+Feueralarm = Brandalarm = Alarm
+benachrichtigen = alarmieren = verständigen
+Inbetriebnahme = Nutzungsaufnahme
+Mitarbeiter = Beschäftigte = Personal
 """
 
 
@@ -286,6 +403,14 @@ class Synonyms:
     one_way: tuple[tuple[tuple[str, ...], tuple[tuple[str, ...], ...]], ...] = ()
 
     def alternatives(self, term: str) -> list[tuple[str, ...]]:
+        """Other phrasings of a stemmed term as tuples of stems (a phrase has several).
+
+        A term matches a group word exactly or as the first part of a compound; then the rest of the
+        compound is kept: ``entrauchungsoffnung`` → (``rauchableitung``, ``offnung``), …
+        """
+        return list(_alternatives(self, term))
+
+    def _alternatives(self, term: str) -> list[tuple[str, ...]]:
         """Other phrasings of a stemmed term as tuples of stems (a phrase has several).
 
         A term matches a group word exactly or as the first part of a compound; then the rest of the
@@ -324,6 +449,21 @@ class Synonyms:
             if rest is not None:
                 out.extend(stems(t) + ((rest,) if rest else ()) for t in targets)
         return [k for k in dict.fromkeys(out) if k != (term,)]
+
+    def expanded(self, term: str) -> list[tuple[str, ...]]:  # noqa: D401
+        """:meth:`alternatives` plus the alternatives of single-word alternatives (one more step:
+        Stock → Obergeschoss → OG)."""
+        first = self.alternatives(term)
+        out = list(first)
+        for alt in first:
+            if len(alt) == 1:
+                out.extend(a for a in self.alternatives(alt[0]) if a != (term,))
+        return list(dict.fromkeys(out))
+
+
+@lru_cache(maxsize=65536)
+def _alternatives(syn: Synonyms, term: str) -> tuple[tuple[str, ...], ...]:
+    return tuple(syn._alternatives(term))
 
 
 def _phrase_key(phrase: str) -> tuple[str, ...]:
@@ -396,6 +536,9 @@ class QueryTerm:
     forms: tuple[str, ...] = ()  # other word forms (participle bases, ablaut, verbal noun)
     attributive: bool = False  # lower-case word right before a noun ("nasse Steigleitung")
     weak: bool = False  # set by callers for words that mainly shape the question ("wie lange")
+    attr: str | None = None  # value type asked for by the compound head ("Löschwassermenge" → quantity)
+    heads: tuple[str, ...] = ()  # nouns that match as a word or compound head ("hoch" → Höhe, Gebäudehöhe)
+    umlaut: bool = False  # typed with ä/ö/ü ("Lüfter" is no plural of "Luft": no compounds by its stem)
 
     @property
     def weight(self) -> float:
@@ -409,7 +552,44 @@ class QueryTerm:
 
     @property
     def alts(self) -> tuple[tuple[str, ...], ...]:
-        return self.syns + tuple((f,) for f in self.forms)
+        return self.syns + tuple((f,) for f in self.forms) + tuple((h,) for h in self.heads)
+
+
+# Compound heads that ask for a value of the thing named before them: "Löschwassermenge" asks for the
+# amount of Löschwasser, "Abnahmetermin" for the date of the Abnahme, "Baukosten" for money.
+ATTRIBUTE_HEADS = {
+    "menge": "quantity", "bedarf": "quantity", "anzahl": "count", "zahl": "count", "dauer": "duration",
+    "hohe": "measure", "breite": "measure", "lange": "measure", "tiefe": "measure", "grosse": "measure",
+    "kosten": "money", "preis": "money", "preise": "money", "miete": "money", "honorar": "money",
+    "gebuhr": "money", "gebuhren": "money", "datum": "date", "termin": "date", "zeitpunkt": "date",
+    "temperatur": "temperature", "gewicht": "weight", "farbe": "color", "hersteller": "name",
+}
+
+
+def attribute_head(word: str) -> tuple[str, str] | None:
+    """(stem of the thing or "", value type) of a folded attribute noun ("kosten" → ("", "money"),
+    "loschwassermenge" → ("loschwass", "quantity"), "baukosten" → ("", "money")), else None."""
+    for head in sorted(ATTRIBUTE_HEADS, key=len, reverse=True):
+        if word == head or word == head + "n" or word == head + "en":
+            return "", ATTRIBUTE_HEADS[head]
+        if word.endswith(head) and len(word) - len(head) >= 2:
+            modifier = word[: -len(head)]
+            if modifier.endswith("s") and len(modifier) > 5:  # Fugen-s: Betriebsdauer
+                modifier = modifier[:-1]
+            return (stem(modifier) if len(modifier) >= 4 else ""), ATTRIBUTE_HEADS[head]
+    return None
+
+
+_ADJ_ENDINGS = ("e", "en", "er", "es", "em")
+_COMPARATIVE = re.compile(r"^(\w{4,}?)er(e|en|es|em|er)?$")
+# what a measuring adjective is called as a noun: "wie hoch" ↔ "Höhe: 68 m", "Gebäudehöhe 21,5 m"
+ADJECTIVE_NOUNS = {
+    "hoch": ("hohe",), "hoh": ("hohe",), "lang": ("lange",), "lange": ("lange", "dauer"), "breit": ("breite",),
+    "tief": ("tiefe",), "gross": ("grosse", "flache"), "weit": ("weite", "abstand", "entfernung"),
+    "schwer": ("gewicht",), "alt": ("alter",), "dick": ("dicke",), "heiss": ("temperatur",),
+    "warm": ("temperatur",), "kalt": ("temperatur",), "teuer": ("kost", "preis"), "stark": ("starke",),
+    "klein": ("grosse",), "niedrig": ("hohe",), "schmal": ("breite",),
+}
 
 
 def query_terms(text: str, synonyms: Synonyms | None = None, *,
@@ -428,6 +608,8 @@ def query_terms(text: str, synonyms: Synonyms | None = None, *,
         f = fold(w)
         if i == verb_at:  # "Wer nimmt die Anlage ab?" → abnimmt (matches Abnahme, abnehmen)
             f = particle + f
+        elif verb_at is not None and i == len(raw) - 1:
+            continue  # the particle itself ("… teil?", "… statt?") is part of the verb
         if (len(f) < 2 and not f.isdigit()) or f in STOPWORDS or f in QUESTION_WORDS or f in QUERY_FILLER \
                 or f in drop:
             continue
@@ -436,17 +618,37 @@ def query_terms(text: str, synonyms: Synonyms | None = None, *,
             continue
         noun = (w[:1].isupper() and (i > 0 or w.isupper())) or not any_upper or f.isdigit() \
             or (len(w) >= 2 and w.isupper())
-        attributive = not noun and i + 1 < len(raw) and raw[i + 1][:1].isupper()
+        attributive = not noun and i + 1 < len(raw) and raw[i + 1][:1].isupper() and f.endswith(_ADJ_ENDINGS)
         forms = list(verb_bases(f))
-        vn = None if noun else verbal_noun(f)  # verbs only: "geprüft" also finds "Prüfung"
-        if vn and vn not in forms:
-            forms.append(vn)
+        if not noun and len(f) >= 5 and f.endswith("t") and not f.endswith(("ung", "ist")):
+            base = f[:-2] if f.endswith("et") else f[:-1]  # "bittet" → bitt, "prüft" → prüf
+            if len(base) >= 4 and base not in forms and base != t:
+                forms.append(base)
+        for vn in ([] if noun else verbal_nouns(f)):  # verbs only: "geprüft" also finds "Prüfung"
+            if vn not in forms:
+                forms.append(vn)
+        m = None if noun else _COMPARATIVE.match(f)  # "längeren" → "lang", "breiteren" → "breit"
+        if m and m.group(1) not in forms:
+            forms.append(m.group(1))
         syns: dict[tuple[str, ...], None] = {}
-        for base in [t, *forms]:
-            for a in syn.alternatives(base):
+        bases = [t, *forms]
+        if len(w) >= 3 and w[:-1].isupper() and w.endswith("s"):  # plural of an abbreviation: "BMAs"
+            bases.append(f[:-1])
+        for base in bases:
+            for a in syn.expanded(base):
                 if a != (t,) and not (len(a) == 1 and a[0] in forms):
                     syns.setdefault(a, None)
-        out[t] = QueryTerm(t, f, noun, tuple(syns), tuple(x for x in forms if x != t), attributive)
+        attr = None
+        head = attribute_head(f) if noun else None
+        if head:  # "Löschwassermenge": the text may name only "Löschwasser" next to the value
+            attr = head[1]
+            if len(head[0]) >= 4:
+                syns.setdefault((head[0],), None)
+                for a in syn.expanded(head[0]):
+                    syns.setdefault(a, None)
+        heads = () if noun else ADJECTIVE_NOUNS.get(f, ADJECTIVE_NOUNS.get(t, ()))
+        out[t] = QueryTerm(t, f, noun, tuple(syns), tuple(x for x in forms if x != t), attributive, attr=attr,
+                           heads=heads, umlaut=any(c in w.lower() for c in "äöü"))
     return list(out.values())
 
 
@@ -464,6 +666,8 @@ def _separable_verb(raw: list[str]) -> tuple[int | None, str]:
     verb = raw[at]
     if not verb[:1].islower() and at == 1:
         return None, ""
+    if fold(verb) in STOPWORDS or fold(verb) in QUESTION_WORDS:  # modal/auxiliary: "Wo soll … hin?"
+        return None, ""
     return at, particle
 
 
@@ -478,21 +682,51 @@ def text_terms(text: str) -> frozenset[str]:
     return frozenset(terms)
 
 
-def _alt_in(a: str, doc: frozenset[str] | set[str], reverse: bool = True) -> bool:
+# Endings that keep a short stem the same word ("Flur" → "Flurs", "Alarm" → "alarmiert"); a stem of
+# 4–5 letters does not match longer compounds ("Lüfter" → "luft" must not match "Luftwechsel").
+_SAME_WORD_ENDINGS = frozenset("e en er es n s ern ens nen em ier iert ieren".split())
+SHORT_STEM = 6  # stems shorter than this match compounds only by their head, not by their beginning
+_INFLECTED = frozenset("e en er es ern ens".split())  # … unless the question word was clearly inflected
+# endings that derive another word (offen → öffentlich, Brand → brandig): no compound
+_DERIVATION = ("lich", "tlich", "ig", "isch", "bar", "keit", "heit", "ung", "schaft", "los", "sam", "haft", "tum")
+PARTIAL_CREDIT = 0.5  # only the first part of a compound question word is named ("Löschwasser" for
+#                       "Löschwasserteich", "Abweichung" for "Abweichungsantrag")
+
+
+def word_credit(a: str, doc: frozenset[str] | set[str], *, reverse: bool = True, word: str | None = None) -> float:
+    """How well a (stemmed) question word ``a`` occurs in a text's term set: 1.0, PARTIAL_CREDIT, 0.
+
+    Full: the same stem; a compound starting with the word (Rauchableitung → Rauchableitungsöffnung,
+    only for stems of SHORT_STEM letters or more); a compound ending with it (Genehmigung →
+    Baugenehmigung); the word inside a longer one (Wasser → Löschwasserbedarf); with ``reverse`` the
+    text naming the head of a compound question word (Baubesprechung → Besprechung). Partial: the text
+    names only the first part of the question word (Löschwasserteich → Löschwasser). A short stem
+    starts compounds only when the question word was inflected (``word``): "Löschen" → Löschwasser,
+    "Kinder" → kindgerecht – but not "offen" → Offenhalten."""
     if a in doc:
-        return True
-    if a.isdigit():
-        return False
+        return 1.0
+    if a.isdigit() or len(a) < 2:
+        return 0.0
+    best = 0.0
+    compound_prefix = len(a) >= SHORT_STEM or (word is not None and word != a and word.startswith(a)
+                                                and word[len(a):] in _INFLECTED)
     for d in doc:
-        if len(a) >= 4 and d.startswith(a):  # Rauchableitung → Rauchableitungsöffnung
-            return True
-        if reverse and len(a) >= 6 and len(d) >= 6 and a.startswith(d):  # Abweichungsantrag → Abweichung
-            return True
-        if len(a) >= 5 and d.endswith(a):  # Genehmigung → Baugenehmigung (compound head)
-            return True
-        if len(a) >= 6 and a in d:  # Wasser → Löschwasserbedarf
-            return True
-    return False
+        if d.startswith(a) and len(a) >= 4 and (d[len(a):] in _SAME_WORD_ENDINGS or (
+                compound_prefix and not d[len(a):].startswith(_DERIVATION))):
+            return 1.0
+        if len(a) >= 5 and len(d) - len(a) >= 2 and d.endswith(a):
+            return 1.0
+        if len(a) >= 6 and a in d:
+            return 1.0
+        if reverse and len(d) >= 6 and len(a) - len(d) >= 3 and a.endswith(d):
+            return 1.0
+        if reverse and len(d) >= 5 and len(a) - len(d) >= 3 and a.startswith(d):
+            best = PARTIAL_CREDIT
+    return best
+
+
+def _alt_in(a: str, doc: frozenset[str] | set[str], reverse: bool = True) -> bool:
+    return word_credit(a, doc, reverse=reverse) >= 1.0
 
 
 def _phrase_in(phrase: tuple[str, ...], doc: frozenset[str] | set[str]) -> bool:
@@ -501,31 +735,91 @@ def _phrase_in(phrase: tuple[str, ...], doc: frozenset[str] | set[str]) -> bool:
     return all(_alt_in(p, doc, reverse=False) for p in phrase)
 
 
-def _decompound(t: str, doc: frozenset[str] | set[str], synonyms: Synonyms) -> bool:
-    """Compound written together in the question, apart in the text:
-    'Entrauchungsventilatoren' ↔ 'Ventilatoren der Entrauchung', 'Drehleiterfläche' ↔
-    'Aufstellfläche für das Hubrettungsfahrzeug'."""
-    if len(t) < 9:
-        return False
+def _whole_word(part: str, doc: frozenset[str] | set[str], *, head: bool) -> str | None:
+    """A text word that *is* ``part`` (same stem or word form; with ``head`` also a compound ending
+    with it). Returns the matching text word."""
+    for d in doc:
+        if d == part or (d.startswith(part) and d[len(part):] in _SAME_WORD_ENDINGS):
+            return d
+        if head and len(part) >= 4 and d.endswith(part) and len(d) - len(part) >= 3:
+            return d
+    return None
+
+
+@lru_cache(maxsize=16384)
+def _splits(t: str, synonyms: Synonyms) -> tuple[tuple[str, tuple[str, ...], tuple, tuple], ...]:
+    """Ways to split a compound question word: (right part, left parts, their synonyms)."""
+    out = []
     for i in range(4, len(t) - 3):
         left, right = t[:i], t[i:]
-        lefts = {left, left[:-1]} if left.endswith("s") and len(left) > 5 else {left}
-        if not _alt_in(right, doc) and not any(_phrase_in(a, doc) for a in synonyms.alternatives(right)):
+        lefts = (left[:-1], left) if left.endswith("s") and len(left) > 5 else (left,)
+        out.append((right, lefts, tuple(synonyms.alternatives(right)),
+                    tuple(tuple(synonyms.alternatives(lf)) for lf in lefts)))
+    return tuple(out)
+
+
+def _decompound(t: str, doc: frozenset[str] | set[str], synonyms: Synonyms) -> bool:
+    """Compound written together in the question, apart in the text: 'Entrauchungsventilatoren' ↔
+    'Ventilatoren der Entrauchung', 'Drehleiterfläche' ↔ 'Aufstellfläche für das Hubrettungsfahrzeug',
+    'Flurlänge' ↔ 'Länge des Flurs'. Both parts must be words of their own in the text (not just the
+    beginning of another word: 'Stellplatz' is not 'Stellung' + 'Marktplatz')."""
+    if len(t) < 8:
+        return False
+    for right, lefts, right_alts, left_alts in _splits(t, synonyms):
+        r_word = _whole_word(right, doc, head=True) or _whole_word(stem(right), doc, head=True)
+        if r_word is None and not any(_phrase_in(a, doc) for a in right_alts):
             continue
-        for lf in lefts:
-            if len(lf) >= 4 and (_alt_in(lf, doc) or any(_phrase_in(a, doc) for a in synonyms.alternatives(lf))):
+        for lf, alts in zip(lefts, left_alts):
+            l_word = _whole_word(lf, doc, head=False) or (_whole_word(stem(lf), doc, head=False)
+                                                           if len(stem(lf)) >= 4 else None)
+            if l_word is not None and l_word != r_word:
+                return True
+            if l_word is None and any(_phrase_in(a, doc) for a in alts):
                 return True
     return False
 
 
+_SEPARABLE_FORM = re.compile(r"^(%s)(\w{4,})$" % "|".join(sorted(_SEP_PREFIX, key=len, reverse=True)))
+
+
+def _separated_verb(form: str, doc: frozenset[str] | set[str]) -> bool:
+    """A separable verb of the question written apart in the text: 'zustimm' (zugestimmt) ↔
+    'stimme ich … zu', 'abnehm' ↔ 'nimmt … ab'."""
+    m = _SEPARABLE_FORM.match(form)
+    return bool(m) and m.group(1) in doc and _alt_in(m.group(2), doc, reverse=False)
+
+
 @lru_cache(maxsize=65536)
+def query_term_credit(q: QueryTerm, doc: frozenset[str], synonyms: Synonyms | None = None) -> float:
+    """Credit of a question word in a text's term set: 1.0 (the word, a word form, a synonym or the
+    compound written apart), PARTIAL_CREDIT (only the first part of a compound) or 0."""
+    # "Kinder" → kindgerecht, but "Lüfter" (an agent noun, not the plural of Luft) ↛ Luftwechsel
+    # only nouns start compounds by a short stem: "offenen Punkte" ↛ Offenhalten
+    agent_noun = q.umlaut and q.word.endswith("er") and len(q.term) < SHORT_STEM
+    credit = word_credit(q.term, doc, word=q.word if q.noun and not agent_noun else None)
+    if credit >= 1.0 or any(_phrase_in(a, doc) for a in q.syns):
+        return 1.0
+    if any(word_credit(f, doc, reverse=False, word=f + "en") >= 1.0 for f in q.forms):
+        return 1.0  # verb stems start compounds: "prüft" → Prüfsachverständiger, "löschen" → Löschwasser
+    if q.noun and 3 <= len(q.term) < 5 and not q.term.isdigit():
+        short = {q.term, q.term[:-1] if q.term.endswith("e") and len(q.term) == 4 else q.term}
+        if any(d.endswith(x) and len(d) - len(x) >= 4 for x in short for d in doc):
+            return 1.0  # short noun as compound head: "Weg" → Rettungsweg, "Betten" → Gastbetten
+    if q.word != q.term and len(q.word) >= 6 and _alt_in(q.word, doc):  # stem too short: wass(er)
+        return 1.0
+    if any(_separated_verb(f, doc) for f in (q.term, *q.forms)):
+        return 1.0
+    heads = {*q.heads, *(stem(x) for x in q.heads), *(x[:-1] for x in q.heads if x.endswith("e") and len(x) > 3)}
+    if heads and any(d == h or (d.endswith(h) and len(d) - len(h) >= 3) for h in heads for d in doc):
+        return 1.0
+    if _decompound(q.term, doc, synonyms if synonyms is not None else builtin_synonyms()):
+        return 1.0
+    return credit
+
+
 def query_term_in(q: QueryTerm, doc: frozenset[str], synonyms: Synonyms | None = None) -> bool:
     """Does a question word (or one of its variants/synonyms) occur in a text's term set?"""
-    if _alt_in(q.term, doc) or any(_phrase_in(a, doc) for a in q.alts):
-        return True
-    if q.word != q.term and len(q.word) >= 6 and _alt_in(q.word, doc):  # stem too short: wass(er)
-        return True
-    return _decompound(q.term, doc, synonyms if synonyms is not None else builtin_synonyms())
+    return query_term_credit(q, doc, synonyms) >= 1.0
 
 
 # --------------------------------------------------------------------------- question intent
@@ -549,14 +843,223 @@ def is_project_question(question: str) -> bool:
 
 
 def is_temporal_question(question: str) -> bool:
-    """Asks for the latest state ('letzter Stand', 'inzwischen', 'schon', 'aktuell')."""
+    """Asks for the latest state ('letzter Stand', 'inzwischen', 'schon', 'aktuell', 'Neues')."""
     return any(w in TEMPORAL_WORDS for w in words(question))
 
 
-# Reference codes such as project numbers ("BS-2024-0137"), file numbers ("63-0137/24"): they pick a
-# project or file but say nothing about the topic of a question.
-_IDENTIFIER = re.compile(r"\b(?:[A-Za-zÄÖÜäöü]{1,6}[-/ ]?)?\d{2,6}(?:[-/]\d{1,6}){1,3}\b")
+# Parties of a project ("Bauherr", "Prüfingenieurin", "Feuerwehr"): who wrote or decided something.
+ROLE_WORDS = ("bauherr", "architekt", "prufingenieur", "fachplaner", "bauleitung", "errichter", "betreiber",
+              "brandschutzplanung", "sachverstandig", "feuerwehr", "brandschutzdienststell", "bauaufsicht",
+              "bauamt", "bauordnungsamt", "baubehord", "mieter", "planer")
+_ROLE_ENDINGS = ("", "e", "en", "n", "s", "es", "in", "innen", "ern")
+
+
+def role_key(t: QueryTerm) -> str | None:
+    """The party a question word names ("Bauherrn" → bauherr, "PI" → prufingenieur, "FW" → feuerwehr)
+    – not a thing whose name merely starts with one ("Feuerwehrschlüsseldepot", "Feuerwehrzufahrt")."""
+    keys = [t.term, t.word] + [a[0] for a in t.syns if len(a) == 1]
+    for k in keys:
+        for r in ROLE_WORDS:
+            if k.startswith(r) and k[len(r):] in _ROLE_ENDINGS:
+                return "feuerwehr" if r == "brandschutzdienststell" else r
+    return None
+
+
+def named_roles(question: str) -> list[QueryTerm]:
+    """Question words that name a party of the project."""
+    return [t for t in query_terms(question) if role_key(t)]
+
+
+_SUMMARY_QUESTION = re.compile(r"\bfass\w*\b.*\bzusammen\b|\b(zusammenfass\w*|überblick|übersicht|worum\s+geht|"
+                               r"beschreib\w*|kurzbeschreibung)\b", re.I)
+SUMMARY_WORDS = re.compile(r"^(fass\w*|zusammen\w*|uberblick|ubersicht|worum|beschreib\w*|kurzbeschreibung|geht)$")
+
+
+def is_summary_question(question: str) -> bool:
+    """'Fasse das Projekt … zusammen.', 'Worum geht es bei …?', 'Gib mir einen Überblick über …'."""
+    return bool(_SUMMARY_QUESTION.search(question))
+
+
+# Reference codes such as project numbers ("BS-2024-0137"), file numbers ("63-0137/24", "BA-019/2025"),
+# invoice numbers ("2024-1187"): they pick a project or file but say nothing about the topic of a
+# question. ISO dates are no reference codes.
+_IDENTIFIER = re.compile(r"\b(?:[A-ZÄÖÜ]{1,6}[-/ ]?|[a-zäöü]{1,6}[-/])?\d{2,6}(?:[-/]\d{1,6}){1,3}\b")
+_ISO_DAY = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
 
 
 def strip_identifiers(text: str) -> str:
     return _IDENTIFIER.sub(" ", text)
+
+
+def find_identifiers(text: str) -> list[str]:
+    """Reference codes in a text, as written ('BS-2024-0233', '63-0137/24'), without ISO dates."""
+    out: dict[str, None] = {}
+    for m in _IDENTIFIER.finditer(text or ""):
+        ident = m.group(0).strip()
+        if not _ISO_DAY.match(ident):
+            out.setdefault(ident, None)
+    return list(out)
+
+
+@lru_cache(maxsize=1024)
+def identifier_pattern(ident: str) -> re.Pattern:
+    """Regex for a reference code in any spelling of its separators ('BS 2024-0233', 'bs-2024-0233'),
+    never as part of a longer number ('2024-0233' does not match '2024-02331')."""
+    parts = re.findall(r"[^\W_]+", fold(ident))
+    return re.compile(r"(?<![^\W_])" + r"[-/\s.]?".join(re.escape(p) for p in parts) + r"(?![^\W_])")
+
+
+def identifier_in(ident: str, text: str | None) -> bool:
+    return bool(text) and bool(identifier_pattern(ident).search(fold(text)))
+
+
+# --------------------------------------------------------------------------- clean passages
+_MD_HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
+_MD_SEPARATOR_CELL = re.compile(r"^:?-{2,}:?$")
+_MD_BULLET = re.compile(r"^\s*(?:[-*+•]|\d{1,2}[.)])\s+")
+_MD_EMPHASIS = re.compile(r"(\*\*|__|\*|_|`)(?=\S)(.+?)(?<=\S)\1")
+_MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+
+
+def _table_cells(line: str) -> list[str] | None:
+    s = line.strip()
+    if not (s.startswith("|") or " | " in s):
+        return None
+    cells = [c.strip() for c in s.strip("|").split("|")]
+    return cells if len(cells) >= 2 else None
+
+
+def _header_like(cells: list[str]) -> bool:
+    return all(c and len(c) <= 30 and not any(ch.isdigit() for ch in c) for c in cells)
+
+
+def plain_lines(text: str) -> list[str]:
+    """Lines of an indexed text without markdown syntax: headings without '#', table rows as
+    'Spalte: Wert' (header rows and separator rows dropped), list marks and emphasis removed."""
+    out: list[str] = []
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+        if not line:
+            continue
+        cells = _table_cells(line)
+        if cells is not None:
+            rows = [cells]
+            while i < len(lines) and (c := _table_cells(lines[i])) is not None:
+                rows.append(c)
+                i += 1
+            data = [r for r in rows if not all(_MD_SEPARATOR_CELL.match(c.replace(" ", "")) for c in r if c)]
+            separator = len(data) < len(rows)
+            if data and (separator or (len(data) >= 2 and out)) and _header_like(data[0]):
+                data = data[1:]  # header row ("| Angabe | Inhalt |", "Kennwert | Wert")
+            for r in data:
+                r = [c for c in r if c]
+                if len(r) >= 2:
+                    out.append(f"{r[0]}: {', '.join(r[1:])}")
+                elif r:
+                    out.append(r[0])
+            continue
+        m = _MD_HEADING.match(line)
+        if m:
+            line = m.group(1)
+        line = _MD_BULLET.sub("", line)
+        line = _MD_LINK.sub(r"\1", line)
+        line = _MD_EMPHASIS.sub(r"\2", line)
+        line = line.lstrip("> ").strip()
+        if line:
+            out.append(line)
+    return out
+
+
+def plain_text(text: str) -> str:
+    """Clean text of :func:`plain_lines`, one line per paragraph, heading or table row."""
+    return "\n".join(plain_lines(text))
+
+
+_PASSAGE_ABBREV = re.compile(r"(\b(Nr|Abs|ca|bzw|ggf|inkl|vgl|Dipl|Ing|Str|Tel|Dr|Prof|gem|max|min|mind|S|u|z|d|e)"
+                             r"|\b\d{1,2}|\b[A-ZÄÖÜ])\.$")
+
+
+def split_sentences(line: str) -> list[str]:
+    """Sentences of a line (abbreviations, ordinals and dates do not end a sentence)."""
+    out: list[str] = []
+    buf = ""
+    for piece in re.split(r"(?<=[.!?])\s+", line):
+        buf = f"{buf} {piece}".strip()
+        if not _PASSAGE_ABBREV.search(buf):
+            out.append(buf)
+            buf = ""
+    if buf:
+        out.append(buf)
+    return out
+
+
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+_PASSAGE_NOISE = re.compile(r"^(Betreff|Von|An|Cc|Datum|Gesendet):\s|^(sehr\s+geehrte|hallo|guten\s+tag|liebe[rs]?\s)"
+                            r"[^.!?]{0,60}[,!]?$|^(mit\s+freundlichen|viele|beste|freundliche)\s+grüße", re.I)
+PASSAGE_LEAD = 150  # at most this much text before the matching sentence
+
+
+def relevant_passage(text: str, question: str = "", answer: str = "", max_chars: int = 400) -> str:
+    """The passage of ``text`` that matters for a question/answer, as clean text (no markdown).
+
+    Sentences are scored by the words and numbers they share with the answer (the statement quoted
+    from this source) and by the question words they cover; the best sentence is taken with the
+    following sentences (and a little of what precedes it) as long as they fit into ``max_chars``.
+    Mail header lines and greetings are left out. A passage that does not start the text begins with
+    "… "."""
+    lines = [ln for ln in plain_lines(text) if not _PASSAGE_NOISE.match(ln)] or plain_lines(text)
+    sents: list[tuple[int, str]] = [(li, s) for li, line in enumerate(lines) for s in split_sentences(line)]
+    if not sents:
+        return ""
+    q_terms = query_terms(question) if question.strip() else []
+    q_total = sum(t.weight for t in q_terms)
+    a_terms = set(content_terms(answer, QUESTION_WORDS)) if answer.strip() else set()
+    a_numbers = set(_NUMBER.findall(answer)) if answer else set()
+
+    def score(sent: str) -> float:
+        terms = text_terms(sent)
+        val = 0.0
+        if q_total:
+            val += sum(t.weight * query_term_credit(t, terms) for t in q_terms) / q_total
+        if a_terms:
+            own = set(content_terms(sent, QUESTION_WORDS))
+            if own:
+                val += 2.0 * len(own & a_terms) / len(own)
+            val += 0.5 * len(a_numbers & set(_NUMBER.findall(sent)))
+        return val
+
+    scores = [score(s) for _, s in sents]
+    best = max(range(len(sents)), key=lambda i: (scores[i], -i))
+    if scores[best] <= 0:
+        best = 0
+    lo = hi = best
+    size = len(sents[best][1])
+    lead = 0
+    while True:  # following sentences first (they continue the statement), then a little before
+        if hi + 1 < len(sents) and size + 1 + len(sents[hi + 1][1]) <= max_chars:
+            hi += 1
+            size += 1 + len(sents[hi][1])
+            continue
+        if lo > 0 and size + 1 + len(sents[lo - 1][1]) <= max_chars and lead + len(sents[lo - 1][1]) <= PASSAGE_LEAD:
+            lo -= 1
+            size += 1 + len(sents[lo][1])
+            lead += len(sents[lo][1])
+            continue
+        break
+    parts: list[str] = []
+    for i in range(lo, hi + 1):
+        li, sent = sents[i]
+        if parts:
+            parts.append("\n" if sents[i - 1][0] != li else " ")
+        parts.append(sent)
+    passage = "".join(parts).strip()
+    if len(passage) > max_chars:  # one very long sentence: cut at a word boundary
+        passage = passage[:max_chars].rsplit(" ", 1)[0] + " …"
+    if lo > 0 or lines[0] != plain_lines(text)[0]:
+        passage = "… " + passage
+    return passage

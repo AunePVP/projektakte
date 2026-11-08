@@ -1355,5 +1355,202 @@
   "answer_contains": [],
   "category": "negative",
   "not_found": true
+ },
+ {
+  "id": "r2-stellplaetze",
+  "project": "BS-2022-0901",
+  "question": "Wie viele Stellplätze hat die Tiefgarage?",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   }
+  ],
+  "answer_contains": [
+   "240"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "r2-luefter",
+  "project": "BS-2022-0901",
+  "question": "Wie lange müssen die Lüfter der Entrauchung durchhalten?",
+  "sources": [
+   {
+    "file": "03 Prüfung/Prüfbericht Nr. 1.md"
+   }
+  ],
+  "answer_contains": [
+   "60 Minuten"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "r2-neues-bauherr",
+  "project": "BS-2023-0412",
+  "question": "Was gibt es Neues vom Bauherrn?",
+  "sources": [
+   {
+    "mail_subject": "BS-2023-0412 – aktueller Stand Pflegeheim Sonnenhang"
+   }
+  ],
+  "answer_contains": [
+   "12.12.2024"
+  ],
+  "category": "stand"
+ },
+ {
+  "id": "r2-zusammenfassung",
+  "project": "BS-2025-0019",
+  "question": "Fasse das Projekt Kita Regenbogen zusammen.",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   }
+  ],
+  "answer_contains": [
+   "Kindertagesstätte"
+  ],
+  "category": "summary"
+ },
+ {
+  "id": "r2-tabelle",
+  "project": "BS-2025-0019",
+  "question": "Wie hoch ist die Löschwassermenge der Kita?",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "48 m³/h"
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "r2-stockwerke",
+  "project": "BS-2024-0311",
+  "question": "Wie viele Stockwerke hat das Wohnhochhaus?",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   },
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   }
+  ],
+  "answer_contains": [
+   "22"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "r2-fassade",
+  "project": "BS-2024-0311",
+  "question": "Muss die Fassade des Wohnhochhauses nichtbrennbar sein?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   }
+  ],
+  "answer_contains": [
+   "Außenwandbekleidung"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "r2-ansprechpartnerin",
+  "project": "BS-2025-0019",
+  "question": "Wer ist unsere Ansprechpartnerin beim Bauherrn?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   }
+  ],
+  "answer_contains": [
+   "Lindqvist"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "r2-norm",
+  "project": "BS-2023-0412",
+  "question": "Nach welcher Norm muss der Blitzschutz ausgeführt werden?",
+  "sources": [
+   {
+    "file": "01 Genehmigung/Baugenehmigung.pdf"
+   }
+  ],
+  "answer_contains": [
+   "62305"
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "r2-entschieden",
+  "project": "BS-2024-0233",
+  "question": "Wie hat die Prüfingenieurin über den Abweichungsantrag entschieden?",
+  "sources": [
+   {
+    "mail_subject": "Abweichungsantrag Stichflur 3. OG – BS-2024-0233 Hotel Seeblick"
+   }
+  ],
+  "answer_contains": [
+   "abgelehnt"
+  ],
+  "category": "decision",
+  "answer_regex": [
+   "nicht zustimm"
+  ]
+ },
+ {
+  "id": "r2-kosten",
+  "project": null,
+  "question": "Was kostet die Sprachalarmanlage im Hotel Seeblick?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
+ },
+ {
+  "id": "r2-anzahl",
+  "project": null,
+  "question": "Wie viele Rauchmelder hat das Hotel Seeblick?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
+ },
+ {
+  "id": "r2-abnahmedatum",
+  "project": null,
+  "question": "Wann wurde der Feuerwehraufzug im Wohnhochhaus Am Stadtpark abgenommen?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
+ },
+ {
+  "id": "r2-hersteller",
+  "project": null,
+  "question": "Welcher Hersteller liefert die Feststellanlage im Pflegeheim Sonnenhang?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "negative",
+  "not_found": true
+ },
+ {
+  "id": "r2-treppe-abnahme",
+  "project": "BS-2024-0137",
+  "question": "Wann wird die Außentreppe abgenommen?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "trap",
+  "not_found": true
  }
 ]

@@ -42,3 +42,77 @@ def test_summary_threshold_table():
     row = {t["threshold"]: t for t in s["thresholds"]}
     assert row[0.05]["relevant_cut"] == 0.5 and row[0.02]["negatives_pass"] == 1.0
     assert row[0.05]["negatives_pass"] == 0.0 and s["answers_passed"] == 1.0
+
+
+# --------------------------------------------------------------------------- round 2
+def _write_set(path, questions):
+    path.write_text(json.dumps(questions, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+QUESTIONS = [
+    {"id": "geheim-1", "project": "BS-2024-0233", "question": "Welche Betriebsdauer muss die Sicherheitsbeleuchtung "
+     "haben?", "sources": [{"file": "01 Genehmigung/Baugenehmigung.pdf"}], "answer_contains": ["8 Stunden"],
+     "category": "fact"},
+    {"id": "geheim-2", "project": "BS-2024-0233", "question": "Welche Sprinkleranlage ist vorgesehen?",
+     "sources": [], "answer_contains": [], "category": "negative", "not_found": True},
+]
+
+
+def test_summary_only_prints_no_questions_and_exit_code_follows_targets(tmp_path, capsys, monkeypatch):
+    """--summary-only shows only totals (the held-back set stays unseen); exit code 1 = targets missed."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    ok = _write_set(tmp_path / "ok.json", QUESTIONS)
+    assert main(["--fake", "--eval", str(ok), "--summary-only"]) == 0
+    out = capsys.readouterr().out
+    assert "Zusammenfassung" in out and "Ziele erreicht" in out and "Dienste-Vorprüfung: Sprachmodell ok" in out
+    assert "geheim" not in out and "Sicherheitsbeleuchtung" not in out and "Sprinkler" not in out
+    impossible = dict(QUESTIONS[0], id="geheim-3", answer_contains=["17 Kilometer"])
+    bad = _write_set(tmp_path / "bad.json", [impossible, QUESTIONS[1]])
+    assert main(["--fake", "--eval", str(bad), "--summary-only", "--no-index"]) == 1
+    out = capsys.readouterr().out
+    assert "Ziele VERFEHLT" in out and "geheim" not in out and "17 Kilometer" not in out
+
+
+def test_holdout_set_is_loaded_from_tests(tmp_path, capsys, monkeypatch):
+    from projektakte import evaluate
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    held = _write_set(tmp_path / "eval_holdout.json", QUESTIONS)
+    monkeypatch.setattr(evaluate, "holdout_path", lambda: held)
+    assert evaluate.load_eval(name="holdout") == QUESTIONS
+    out = tmp_path / "s.json"
+    assert main(["--fake", "--set", "holdout", "--summary-only", "--json", str(out)]) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert "records" not in data and data["summary"]["correct"] == 1.0 and data["summary"]["refused"] == 1.0
+    assert data["settings"]["set"] == "holdout" and data["services_ok"] is True
+    assert "geheim" not in capsys.readouterr().out
+
+
+def test_unreachable_services_give_exit_code_2(tmp_path, capsys, monkeypatch):
+    """Preflight: a run against services that are down says so and does not exit with 0."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]  # closed again below: nothing listens there
+    for var, url in (("LLM_URL", f"http://127.0.0.1:{port}/v1"), ("EMBED_URL", f"http://127.0.0.1:{port}"),
+                     ("RERANK_URL", f"http://127.0.0.1:{port}/rerank")):
+        monkeypatch.setenv(var, url)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("HEALTH_TIMEOUT", "1")
+    sset = _write_set(tmp_path / "q.json", QUESTIONS[1:])
+    assert main(["--real", "--eval", str(sset), "--summary-only"]) == 2
+    out = capsys.readouterr().out
+    assert "NICHT ERREICHBAR" in out and "WARNUNG" in out
+
+
+def test_summary_counts_answerable_and_refused():
+    from projektakte.evaluate import Record
+
+    def rec(nf, status, top=1, fact=True):
+        return Record("i", "c", "?", "P", nf, top, status, True, [], "", [], None, None, 1.0, 1.0, 1.0, fact=fact)
+    s = summarize([rec(False, "answered"), rec(False, "answered", top=7), rec(False, "not_found", fact=False),
+                   rec(True, "not_found"), rec(True, "no_citation"), rec(True, "answered")])
+    assert s["correct"] == 1 / 3 and s["refused"] == 2 / 3 and s["answered_wrongly"] == 1
+    assert s["targets_met"] is False and s["by_scope"]["mit Projektfilter"] == {"n": 6, "correct": 3}

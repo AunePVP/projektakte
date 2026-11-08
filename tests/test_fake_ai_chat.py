@@ -96,4 +96,11 @@ def test_reranker_ignores_filler_words_and_knows_synonyms():
     assert rerank_score(q, topic) > 0.9 > 0.1 > rerank_score(q, filler)
     assert rerank_score("Wann wird die BMA abgenommen?",
                         "Die Abnahme der Brandmeldeanlage ist für den 18.06.2025 geplant.") > 0.9
-    assert rerank_score("Was fordert Auflage 7 für BS-2024-0137?", "Projekt BS-2024-0137 Grundschule") == 0.0
+    # a reference code is no topic: with topic words it only breaks ties …
+    assert rerank_score("Was fordert Auflage 7 für BS-2024-0137?", "Projekt BS-2024-0137 Grundschule") <= 0.1
+    assert rerank_score("Was fordert Auflage 7 für BS-2024-0137?", "Projekt BS-2024-0137: Auflage 7 (Rettungswege)") > \
+        rerank_score("Was fordert Auflage 7 für BS-2024-0137?", "Projekt BS-2023-0412: Auflage 7 (Brandschutz)")
+    # … a query of codes alone is judged by whether the document contains them literally
+    assert rerank_score("BS-2024-0233", "Mail zu BS-2024-0233 Hotel Seeblick") == 1.0
+    assert rerank_score("63-0137/24", "Aktenzeichen: 63-0137/24    Ihr Zeichen: BS-2024-0137") == 1.0
+    assert rerank_score("BS-2024-0233", "Projekt BS-2024-0137 Grundschule") == 0.0

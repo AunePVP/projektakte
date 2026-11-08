@@ -46,6 +46,9 @@ def test_normalize_citations():
     "Dazu liegen keine Informationen vor.", "Die Frage lässt sich anhand der Quellen nicht beantworten.",
     "In den Quellen ist keine Sprinkleranlage erwähnt.", "Hierzu enthalten die Quellen keine Aussage [2].",
     "Das geht aus den Unterlagen nicht hervor.", "Das ist in den Quellen nicht genannt.",
+    # round 2: further common refusals of real models
+    "Ich konnte in den Quellen nichts dazu finden.", "Es gibt in den Quellen keinen Hinweis auf eine Sprinkleranlage.",
+    "Darüber geben die Quellen keine Auskunft.", "Das kann ich anhand der vorliegenden Quellen nicht sagen.",
 ])
 def test_refusals_of_real_models_are_not_found(answer):
     assert is_not_found(answer, 6)
@@ -56,6 +59,14 @@ def test_refusals_of_real_models_are_not_found(answer):
     "Die Kosten sind in der Baugenehmigung nicht enthalten [2].",
     "Zu Fahrradstellplätzen gibt es keine Angaben. Die Sicherheitsbeleuchtung muss 8 Stunden halten [1].",
     "Die Betriebsdauer beträgt 8 Stunden [1].",
+    # round 2: cited negative facts are answers, not refusals (in fire safety they are the news)
+    "Es liegen keine Abweichungen vor [1].", "Es liegen keine Mängel mehr vor [1].",
+    "Laut Abnahmeprotokoll vom 12.12.2024 liegen keine Mängel mehr vor [1].",
+    "Seitens der Feuerwehr liegen keine Bedenken vor [3].",
+    "Der Prüfbericht enthält keine Hinweise auf Mängel an der Feststellanlage [2].",
+    "Die Quellen nennen keinen Termin, die Abnahme ist aber für März vorgesehen [2].",
+    "Laut Prüfbericht Nr. 3 liegen keine offenen Mängel mehr vor [3].",
+    "Laut Mail vom 03.04.2024 gibt es keine Antwort des Bauherrn auf die Mängelliste [5].",
 ])
 def test_answers_are_not_mistaken_for_refusals(answer):
     assert not is_not_found(answer, 6)
@@ -116,6 +127,8 @@ def test_llm_outage_returns_passages(tmp_path, fresh_fake_ai):
     assert data["status"] == "llm_unavailable" and "KI-Dienst nicht erreichbar" in data["answer"]
     assert data["found"] is None and data["sources"] == [] and data["context"]
     assert all("n" in c for c in data["context"])
+    # the user sees what happened, not the service URL or the raw error (that goes to the log)
+    assert not any("http" in n or "127.0.0.1" in n for n in data["notes"]), data["notes"]
 
 
 @pytest.mark.parametrize("quirk", ["reasoning_only", "unterminated_think"])
@@ -167,7 +180,8 @@ def test_nothing_relevant_gives_not_found_with_best_hits(env):
     r = ask(conn, ai, str(s.db_path), "Welche Betriebsdauer muss die Sicherheitsbeleuchtung haben?",
             project="BS-2024-0233", min_rerank=5.0)
     assert r.status == "not_found" and r.answer == NOT_FOUND_TEXT and r.usage == {}
-    assert 1 <= len(r.context) <= 3 and r.notes and "ASK_MIN_RERANK" in r.notes[-1]
+    assert 1 <= len(r.context) <= 3 and r.notes and "passt gut genug" in r.notes[-1]
+    assert "ASK_MIN_RERANK" not in r.notes[-1]  # no setting names in user-visible text
 
 
 def test_overlapping_chunks_are_merged_in_the_prompt(env):

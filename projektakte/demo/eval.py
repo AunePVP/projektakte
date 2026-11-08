@@ -13,9 +13,12 @@ Fields of a question:
 * ``expected_projects`` – questions over all projects: every cited source must belong to one of these
   projects, and at least ``min_projects`` (default 1) of them must be cited.
 * ``category`` – fact, paraphrase, abbreviation, stand (latest state), two_source, enumeration,
-  cross (no project filter), negative, trap (near miss).
+  cross (no project filter), negative, trap (near miss), decision, summary.
 
-No answer string may appear in the question itself.
+No answer string may appear in the question itself. The block "Gegenprüfung" holds the questions an
+independent review found answered wrongly (round 2) – kept as regressions. How well the system does
+on questions nobody tuned it for is measured with the held-back set tests/eval_holdout.json
+(``python -m projektakte.evaluate --set holdout --summary-only``).
 """
 from __future__ import annotations
 
@@ -245,4 +248,31 @@ EVAL = [
     _neg("x-feuerwiderstand", None, "Welchen Feuerwiderstand müssen die tragenden Wände der Grundschule haben?",
          "trap"),
     _neg("x-honorar", None, "Wie hoch ist das Honorar für das Brandschutzkonzept der Kita Regenbogen?"),
+    # --- Gegenprüfung (round 2): wrong or missing answers found by an independent review ------------
+    _q("r2-stellplaetze", "BS-2022-0901", "Wie viele Stellplätze hat die Tiefgarage?",
+       [{"file": BK}, {"file": BG}], ["240"], "paraphrase"),
+    _q("r2-luefter", "BS-2022-0901", "Wie lange müssen die Lüfter der Entrauchung durchhalten?",
+       [{"file": "03 Prüfung/Prüfbericht Nr. 1.md"}], ["60 Minuten"], "paraphrase"),
+    _q("r2-neues-bauherr", "BS-2023-0412", "Was gibt es Neues vom Bauherrn?",
+       [{"mail_subject": STAND.format(number="BS-2023-0412", name="Pflegeheim Sonnenhang")}], ["12.12.2024"], "stand"),
+    _q("r2-zusammenfassung", "BS-2025-0019", "Fasse das Projekt Kita Regenbogen zusammen.",
+       [{"file": BK}, {"file": BG}], ["Kindertagesstätte"], "summary"),
+    _q("r2-tabelle", "BS-2025-0019", "Wie hoch ist die Löschwassermenge der Kita?", [{"file": BK}], ["48 m³/h"],
+       "fact"),
+    _q("r2-stockwerke", "BS-2024-0311", "Wie viele Stockwerke hat das Wohnhochhaus?", [{"file": BK}, {"file": BG}],
+       ["22"], "paraphrase"),
+    _q("r2-fassade", "BS-2024-0311", "Muss die Fassade des Wohnhochhauses nichtbrennbar sein?", [{"file": BG}],
+       ["Außenwandbekleidung"], "paraphrase"),
+    _q("r2-ansprechpartnerin", "BS-2025-0019", "Wer ist unsere Ansprechpartnerin beim Bauherrn?", [{"file": BG}],
+       ["Lindqvist"], "paraphrase"),
+    _q("r2-norm", "BS-2023-0412", "Nach welcher Norm muss der Blitzschutz ausgeführt werden?", [{"file": BG}],
+       ["62305"], "fact"),
+    _q("r2-entschieden", "BS-2024-0233", "Wie hat die Prüfingenieurin über den Abweichungsantrag entschieden?",
+       [{"mail_subject": "Abweichungsantrag Stichflur 3. OG – BS-2024-0233 Hotel Seeblick"}], ["abgelehnt"],
+       "decision", answer_regex=[r"nicht zustimm"]),
+    _neg("r2-kosten", None, "Was kostet die Sprachalarmanlage im Hotel Seeblick?"),
+    _neg("r2-anzahl", None, "Wie viele Rauchmelder hat das Hotel Seeblick?"),
+    _neg("r2-abnahmedatum", None, "Wann wurde der Feuerwehraufzug im Wohnhochhaus Am Stadtpark abgenommen?"),
+    _neg("r2-hersteller", None, "Welcher Hersteller liefert die Feststellanlage im Pflegeheim Sonnenhang?"),
+    _neg("r2-treppe-abnahme", "BS-2024-0137", "Wann wird die Außentreppe abgenommen?", "trap"),
 ]
