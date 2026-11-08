@@ -15,8 +15,12 @@ models, not like a lookup table for an evaluation set:
   (headings, greetings, courtesy phrases, signatures, role lines, participant lists, questions and
   the premise of a question are never quoted as facts, table rows are read as "Spalte: Wert") and
   scores them by the question's topic words (IDF-weighted over the given sources; project names and
-  numbers do not count); it answers with the best sentence(s) as "Laut <Quelle>: … [n]" (a sentence
-  starting with a pronoun takes the one before it). A question that asks for a value (date, amount,
+  numbers do not count; contractions such as "fürs" are no topic, "Funk-Rauchwarnmelder" matches
+  "funkvernetzte Rauchwarnmelder", "vertritt" matches "vertreten"); a place the sentence does not name
+  ("im Sicherheitstreppenraum") counts half when another sentence of the project puts the sentence's
+  subject there ("Die Druckbelüftungsanlage hält im Sicherheitstreppenraum …"). It answers with the
+  best sentence(s) as "Laut <Quelle>: … [n]" (a sentence starting with a pronoun takes the one before
+  it); a signature says who signed and who someone is ("Wer ist bei der Feuerwehr … zuständig?"). A question that asks for a value (date, amount,
   number, cost, duration, name, norm, class, colour, …) is only answered by a sentence that contains
   such a value for the asked topic – a length must be the asked dimension of the asked thing ("Wie
   breit …?" is not answered by "in 60 cm Höhe"), "Wann wurde … abgenommen?" needs the date of the
@@ -37,6 +41,8 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 
 from ..textutil import (
+    QUERY_FILLER,
+    STOPWORDS,
     TEMPORAL_WORDS,
     ROLE_WORDS,
     QueryTerm,
@@ -106,6 +112,39 @@ def active_synonyms(path: str | None = None) -> Synonyms:
     return load_synonyms(path if path is not None else (os.environ.get("SYNONYMS_FILE") or None))
 
 
+# --------------------------------------------------------------------------- question words
+# a preposition fused with "das" ("fürs Pflegeheim", "aufs Dach", "ans Netz") is a function word, no topic
+_CONTRACTIONS = frozenset("furs ans aufs ums ubers durchs vors hinters unters".split())
+# the first part of a compound written with a hyphen ("Funk-Rauchwarnmelder", "Brandschutz-Konzept")
+_HYPHEN_PART = re.compile(r"(?<![\w-])([^\W\d_]{3,})-(?=[^\W\d_])")
+# strong verbs change their vowel in the present tense: "vertritt" ↔ vertreten/Vertreter, "hilft" ↔ helfen
+_STRONG_PRESENT = (("tritt", "tret"), ("gibt", "geb"), ("hilft", "helf"), ("spricht", "sprech"), ("sieht", "seh"),
+                   ("liest", "les"), ("wirft", "werf"), ("misst", "mess"), ("bricht", "brech"), ("trifft", "treff"),
+                   ("empfiehlt", "empfehl"), ("befiehlt", "befehl"), ("stirbt", "sterb"), ("wirbt", "werb"),
+                   ("vergisst", "vergess"), ("erlischt", "erlosch"), ("schmilzt", "schmelz"))
+
+
+def question_terms(text: str, synonyms: Synonyms, *, drop: frozenset[str] = frozenset()) -> list[QueryTerm]:
+    """:func:`query_terms` plus what typed questions need on top: a contraction ("fürs") is no topic,
+    the first part of a hyphenated compound starts compounds as a whole word does ("Funk-Rauchwarnmelder"
+    ↔ "funkvernetzte Rauchwarnmelder"), and a strong verb in the present matches its other forms
+    ("vertritt" ↔ "vertreten durch")."""
+    modifiers = {fold(m.group(1)) for m in _HYPHEN_PART.finditer(text)}
+    out = []
+    for t in query_terms(text, synonyms, drop=drop | _CONTRACTIONS):
+        extra = [t.term] if t.word in modifiers and len(t.term) >= 4 else []
+        extra += [t.word[: -len(present)] + base for present, base in _STRONG_PRESENT if t.word.endswith(present)]
+        extra = [f for f in dict.fromkeys(extra) if f not in t.forms]
+        if extra:
+            syns = dict.fromkeys(t.syns)
+            for f in extra:
+                if f != t.term:
+                    syns.update(dict.fromkeys(a for a in synonyms.expanded(f) if a != (t.term,)))
+            t = replace(t, forms=t.forms + tuple(extra), syns=tuple(syns))
+        out.append(t)
+    return out
+
+
 # --------------------------------------------------------------------------- reranker
 IDENTIFIER_BONUS = 0.1  # a question with topic words: the named project/file number only breaks ties
 _MARKUP = re.compile(r"<[^<>]{0,200}>|\bjavascript:", re.I)
@@ -122,7 +161,7 @@ def rerank_score(query: str, doc: str, synonyms: Synonyms | None = None) -> floa
     idents = find_identifiers(query)
     ident_share = sum(1 for i in idents if identifier_in(i, doc)) / len(idents) if idents else 0.0
     syn = synonyms if synonyms is not None else active_synonyms()
-    q = query_terms(strip_identifiers(_MARKUP.sub(" ", query)), syn, drop=TEMPORAL_WORDS)  # "letzter Stand" shapes
+    q = question_terms(strip_identifiers(_MARKUP.sub(" ", query)), syn, drop=TEMPORAL_WORDS)  # "letzter Stand" shapes
     # a short number only counts next to real topic words ("Auflage 7"), never on its own ("1")
     if all(t.word.isdigit() and len(t.word) <= 2 for t in q):
         q = []
@@ -836,6 +875,7 @@ class Question:
     dimension: str | None = None  # asked dimension of a length ("breite", "hohe", "lange", "tiefe")
     signer: bool = False  # "Wer hat … unterschrieben?"
     project_words: list[QueryTerm] = field(default_factory=list)  # words naming the project ("Tiefgarage")
+    located: set[str] = field(default_factory=set)  # topic nouns named as a place ("im Sicherheitstreppenraum")
 
 
 def _project_names(sources: list[Source]) -> dict[str, set[str]]:
@@ -868,8 +908,8 @@ def _is_role(t: QueryTerm) -> bool:
 
 def analyse_question(question: str, sources: list[Source], synonyms: Synonyms | None = None) -> Question:
     shaping = {stem(fold(m.group(1))) for m in _WIE_ADJ.finditer(question)}  # "wie lange", "wie hoch"
-    all_terms = query_terms(question, synonyms if synonyms is not None else active_synonyms(),
-                            drop=frozenset(TEMPORAL_WORDS))
+    all_terms = question_terms(question, synonyms if synonyms is not None else active_synonyms(),
+                               drop=frozenset(TEMPORAL_WORDS))
     # "bei einem Brand", "im Brandfall": the circumstance, not the topic, of a fire-safety question
     circumstance = {stem(fold(m.group(3))) for m in _CIRCUMSTANCE.finditer(question)}
     all_terms = [replace(t, weak=True) if t.term in circumstance else t for t in all_terms]
@@ -968,7 +1008,28 @@ def analyse_question(question: str, sources: list[Source], synonyms: Synonyms | 
                     yesno=yesno, past_event=past_event,
                     completion=yesno and bool(_COMPLETION.search(question)) and not _FUTURE_Q.search(question),
                     dimension=dimension, signer=bool(_SIGNER_Q.search(question)),
-                    project_words=[t for t in all_terms if t.term in project_terms and not t.term.isdigit()])
+                    project_words=[t for t in all_terms if t.term in project_terms and not t.term.isdigit()],
+                    located=_located(question, terms))
+
+
+_PLACE_PREP = frozenset("im in ins am an beim bei auf aus vom von zum zur unter uber neben hinter".split())
+_ARTICLES = frozenset("der die das den dem des ein eine einen einem einer eines".split())
+
+
+def _located(question: str, terms: list[QueryTerm]) -> set[str]:
+    """Topic nouns the question names as the place or owner of the asked thing: "im
+    Sicherheitstreppenraum", "in der obersten Etage", "beim Feuerwehraufzug"."""
+    toks = words(question)
+    out: set[str] = set()
+    for i, w in enumerate(toks):
+        j = i - 1
+        while j >= 0 and i - j <= 3 and (toks[j] in _ARTICLES or toks[j].endswith(("e", "en", "er", "es", "em"))) \
+                and toks[j] not in _PLACE_PREP:
+            j -= 1  # article and adjectives between preposition and noun
+        if j < 0 or toks[j] not in _PLACE_PREP:
+            continue
+        out.update(t.term for t in terms if t.noun and not t.term.isdigit() and (w == t.word or stem(w) == t.term))
+    return out
 
 
 def _past_event_question(question: str) -> bool:
@@ -1092,6 +1153,43 @@ class Scored:
     answerable: bool = False
 
 
+BRIDGE_CREDIT = 0.5  # a place the sentence does not name, but another sentence ties its subject to
+BRIDGE_GAP = 3  # at most this many words between the thing and the place ("Druckbelüftungsanlage hält im STR")
+
+
+def _unmatched_place(q: Question, credit: dict[str, float]) -> QueryTerm | None:
+    """The one topic noun a sentence misses when it is a place of the question ("im
+    Sicherheitstreppenraum") and every other topic noun is in the sentence itself."""
+    nouns = [t for t in q.terms if t.noun and not t.weak and not t.term.isdigit()]
+    missing = [t for t in nouns if t.term not in credit]
+    if len(missing) != 1 or len(nouns) < 2 or missing[0].term not in q.located:
+        return None
+    return missing[0] if all(credit[t.term] >= 1.0 for t in nouns if t is not missing[0]) else None
+
+
+def _bridged(place: QueryTerm, u: Unit, q: Question, pool: list[Unit]) -> bool:
+    """Does another sentence of the same project put a thing named in ``u`` at the asked place? "Die
+    Auslegung der Druckbelüftungsanlage ist nachvollziehbar; die Türöffnungskraft von 100 N wird
+    eingehalten." is about the Sicherheitstreppenraum when the concept says "Die Druckbelüftungsanlage
+    hält im Sicherheitstreppenraum …" or a permit "Sicherheitstreppenraum mit Druckbelüftungsanlage"."""
+    nouns = words(" ".join(re.findall(r"\b[A-ZÄÖÜ][^\W\d_]{5,}", u.text)))  # "Druckbelüftungsanlage", not "N"
+    things = {stem(w) for w in nouns if w not in STOPWORDS and w not in QUERY_FILLER
+              and not any(query_term_in(t, text_terms(w)) for t in q.terms)}  # not the asked thing itself
+    if not things:
+        return False
+    for v in pool:
+        if v is u or v.kind not in ("fact", "role") or _key(v.text) == _key(u.text):
+            continue
+        toks = words(v.text)
+        at_place = [i for i, w in enumerate(toks) if query_term_in(place, text_terms(w))]
+        if not at_place:
+            continue
+        at_thing = [i for i, w in enumerate(toks) if stem(w) in things]
+        if any(abs(i - j) <= BRIDGE_GAP + 1 for i in at_place for j in at_thing):
+            return True
+    return False
+
+
 def _idf(q: Question, sources: list[Source], units: dict[int, list[Unit]]) -> dict[str, float]:
     n = len(sources)
     out = {}
@@ -1123,8 +1221,8 @@ def _quotable(q: Question, u: Unit) -> bool:
         return q.open_points
     if u.kind == "courtesy":
         return False  # "Danke für die Nachfrage." answers nothing
-    if u.kind == "signature":
-        return q.signer
+    if u.kind == "signature":  # "Brandoberinspektor Uwe Kessler, Feuerwehr Musterstadt, Vorbeugender Brandschutz"
+        return q.signer or bool(q.types & {"name", "agent"})  # says who signed – and who someone is
     if u.kind == "role":  # "Bauherr: …, vertreten durch …" – who someone is
         return bool(q.types & {"name", "agent"}) or q.participants or q.signer
     if u.kind == "premise":  # "… nur 5,5 m² groß. Reicht das?" – what was asked, not a fact
@@ -1160,6 +1258,10 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
     year_terms = {t.term: int(t.term) for t in q.terms if re.fullmatch(r"(19|20)\d\d", t.term)}
     section_q = bool(q.terms) and all(t.noun for t in q.terms) and not q.types and bool(
         re.match(r"\s*(welche[nrs]?|was\s+steht|was\s+sagt|was\s+ist|wie\s+(ist|lautet|war))\b", q.text, re.I))
+    project_units: dict[str, list[Unit]] = {}
+    for s in sources:
+        if s.project:
+            project_units.setdefault(s.project, []).extend(units[s.n])
     out: list[Scored] = []
     for s in sources:
         if q.projects and s.project not in q.projects:
@@ -1194,6 +1296,9 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
                     credit[t.term] = 1.0  # "zugestimmt?" is answered by "abgelehnt" as well
                 elif query_term_in(t, u.ctx_terms):
                     credit[t.term] = CONTEXT_CREDIT
+            place = _unmatched_place(q, credit) if inline else None
+            if place is not None and _bridged(place, u, q, project_units.get(s.project, [])):
+                credit[place.term] = BRIDGE_CREDIT  # the sentence is about a thing the sources put there
             coverage = sum(weights[k] * c for k, c in credit.items()) / total if total else 0.0
             if section_q and not inline and u.context and all(query_term_in(t, u.ctx_terms) for t in q.terms) \
                     and any(query_term_in(t, text_terms(u.context)) for t in q.terms):

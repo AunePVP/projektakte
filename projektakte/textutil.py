@@ -383,6 +383,10 @@ Genehm -> Genehmigung
 Notausgang = Ausgang ins Freie
 Adresse = Anschrift
 unterschreiben = unterzeichnen = Unterschrift
+# wer ein Konzept, einen Bericht oder ein Protokoll geschrieben hat, steht als "Verfasser: …" darüber
+schreiben -> verfassen
+erstellen -> verfassen
+aufstellen -> verfassen
 Adresse -> Grundstück
 # allgemeine Bau- und Alltagswörter
 Geschoss = Stockwerk = Etage
@@ -1076,7 +1080,18 @@ _ANSWER_LEAD = re.compile(r"(?:\b[A-Z]{1,4}-\d{4}-\d{3,4}\b[^–\n]{0,80}?–\s*
 
 _PASSAGE_NOISE = re.compile(r"^(Betreff|Von|An|Cc|Datum|Gesendet):\s|^(sehr\s+geehrte|hallo|guten\s+tag|liebe[rs]?\s)"
                             r"[^.!?]{0,60}[,!]?$|^(mit\s+freundlichen|viele|beste|freundliche)\s+grüße", re.I)
-PASSAGE_LEAD = 150  # at most this much text before the matching sentence
+PASSAGE_LEAD = 150  # at most this much text before the matching sentence (besides its section heading)
+# a section heading in plain text: a numbered section ("7 Organisatorischer Brandschutz", "3.2 Rettungswege")
+# or an agenda item ("TOP 2 – Rauchwarnmelder"); markdown headings ("# 7 …") are known from the text itself
+_PASSAGE_SECTION = re.compile(r"^(?:\d{1,2}(?:\.\d{1,2})*\.?\s+[A-ZÄÖÜ]|TOP\s+\d{1,2}\b)")
+
+
+def _passage_headings(text: str, lines: list[str]) -> set[int]:
+    """Indexes of the (plain) lines that are section headings."""
+    md = {h for raw in (text or "").replace("\r\n", "\n").split("\n") if _MD_HEADING.match(raw.strip())
+          for h in plain_lines(raw)}
+    return {i for i, ln in enumerate(lines) if ln in md or (
+        _PASSAGE_SECTION.match(ln) and len(ln.split()) <= 8 and ":" not in ln and not re.search(r"[.!?;,]$", ln))}
 
 
 def relevant_passage(text: str, question: str = "", answer: str = "", max_chars: int = 400) -> str:
@@ -1085,10 +1100,12 @@ def relevant_passage(text: str, question: str = "", answer: str = "", max_chars:
     Sentences are scored by the words and numbers they share with the answer (the statement quoted
     from this source, without the "Laut <Quelle>:" lead) and by the question words they cover; the
     best sentence is taken with the following sentences (and a little of what precedes it) as long as
-    they fit into ``max_chars``. Mail header lines and greetings are left out; signature lines (after
-    the closing, or a name/organisation ending the text) and the mail subject only count when the
-    answer quotes them ("Wer hat … unterschrieben?") and never extend a passage. A passage that does
-    not start the text begins with "… "."""
+    they fit into ``max_chars``. What precedes it never reaches back over the heading of its section
+    (a chunk may hold several short sections): the passage starts at that heading when the heading and
+    the text up to the sentence fit, otherwise inside the section. Mail header lines and greetings are
+    left out; signature lines (after the closing, or a name/organisation ending the text) and the mail
+    subject only count when the answer quotes them ("Wer hat … unterschrieben?") and never extend a
+    passage. A passage that does not start the text begins with "… "."""
     all_lines = plain_lines(text)
     kept = [(i, ln) for i, ln in enumerate(all_lines) if not _PASSAGE_NOISE.match(ln)] or list(enumerate(all_lines))
     lines = [ln for _, ln in kept]
@@ -1145,13 +1162,22 @@ def relevant_passage(text: str, question: str = "", answer: str = "", max_chars:
     lo = hi = best
     size = len(sents[best][1])
     lead = 0
+    headings = _passage_headings(text, lines)
+    heading = next((i for i in range(best, -1, -1) if sents[i][0] in headings and not sents[i][2]), None)
+    floor = heading or 0  # the passage never starts before the heading of the sentence's section
+    if heading is not None and heading < best:  # "7 Organisatorischer Brandschutz / Nachts mindestens …"
+        body = sum(len(sents[i][1]) for i in range(floor + 1, best))  # the section's text before the sentence
+        need = sum(1 + len(sents[i][1]) for i in range(floor, best))
+        if size + need <= max_chars and body <= PASSAGE_LEAD and (
+                sents[best][2] or not any(sents[i][2] for i in range(floor, best))):
+            lo, size, lead = floor, size + need, body
     while True:  # following sentences first (they continue the statement), then a little before
         if hi + 1 < len(sents) and size + 1 + len(sents[hi + 1][1]) <= max_chars and (
                 sents[best][2] or not sents[hi + 1][2]):
             hi += 1
             size += 1 + len(sents[hi][1])
             continue
-        if lo > 0 and size + 1 + len(sents[lo - 1][1]) <= max_chars and lead + len(sents[lo - 1][1]) <= PASSAGE_LEAD \
+        if lo > floor and size + 1 + len(sents[lo - 1][1]) <= max_chars and lead + len(sents[lo - 1][1]) <= PASSAGE_LEAD \
                 and (sents[best][2] or not sents[lo - 1][2]):
             lo -= 1
             size += 1 + len(sents[lo][1])
