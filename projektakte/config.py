@@ -105,6 +105,8 @@ class Settings:
     # reverse proxy: comma-separated IPs whose X-Forwarded-* headers are trusted (uvicorn)
     forwarded_allow_ips: str = ""
     log_level: str = "INFO"
+    # allow an empty/missing MAIL_DIR to remove all eml mails (otherwise protected, see ops-06)
+    mail_allow_empty: bool = False
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
@@ -185,6 +187,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         session_hours=_float(e.get("SESSION_HOURS"), 12.0),
         cookie_secure=_bool(e.get("COOKIE_SECURE")) if (e.get("COOKIE_SECURE") or "").strip() else None,
         log_level=(e.get("LOG_LEVEL") or "INFO").strip().upper(),
+        mail_allow_empty=_bool(e.get("MAIL_ALLOW_EMPTY")),
         plmail_url=(e.get("PLMAIL_URL") or "").rstrip("/"),
         plmail_token=e.get("PLMAIL_TOKEN", ""),
         plmail_timeout=_float(e.get("PLMAIL_TIMEOUT"), 30.0),
