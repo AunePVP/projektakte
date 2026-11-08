@@ -1,0 +1,64 @@
+# Projektakte behind a TLS reverse proxy (Caddy) – example for the office server.
+# Usage (in this directory):  cp projektakte.env.example projektakte.env  # fill in, chmod 600
+#                             docker compose up -d --build && docker compose ps
+# Details: deploy/README.md
+name: projektakte
+
+services:
+  app:
+    build: ..
+    image: projektakte:latest
+    restart: unless-stopped
+    env_file: projektakte.env          # SECRET_KEY, INTEGRATION_TOKEN, PLMAIL_TOKEN … (never commit)
+    environment:
+      APP_ENV: production              # strict checks: no AUTH_DISABLED, strong SECRET_KEY, secure cookies
+      DATA_DIR: /data
+      PROJECTS_DIR: /quellen/projekte
+      MAIL_DIR: /quellen/mails
+      AUTH_USERS_FILE: /run/projektakte/benutzer.txt
+      # trust X-Forwarded-For/-Proto only from the Caddy container (real client address for the
+      # login throttling and the log, https for secure cookies)
+      FORWARDED_ALLOW_IPS: 172.31.250.10
+    volumes:
+      - projektakte-daten:/data        # named volume: belongs to the app user (uid 10001) automatically
+      - /srv/projekte:/quellen/projekte:ro
+      - /srv/mails:/quellen/mails:ro
+      - ./benutzer.txt:/run/projektakte/benutzer.txt:ro
+    networks:
+      intern:
+        ipv4_address: 172.31.250.20
+    # no "ports:": the application is only reachable through Caddy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}   # keep the log short (it contains user names)
+
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"                        # only redirects to https
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-daten:/data              # certificates (with "tls internal" also the local root CA)
+      - caddy-config:/config
+    networks:
+      intern:
+        ipv4_address: 172.31.250.10
+    depends_on:
+      app:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+networks:
+  intern:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+
+volumes:
+  projektakte-daten:
+  caddy-daten:
+  caddy-config:

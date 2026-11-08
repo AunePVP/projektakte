@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="same-origin">
 <title>Anmelden – Projektakte</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -11,12 +12,18 @@
 <main class="login">
   <form method="post" action="/login" class="card login-card">
     <h1>Anmelden</h1>
+    {% if logged_out == "1" %}<p class="pill" role="status">Abgemeldet. Alle Sitzungen dieses Kontos sind beendet.</p>
+    {% elif logged_out == "teilweise" %}<p class="pill warn" role="alert">Abgemeldet in diesem Browser. Auf dem Server
+      konnte die Sitzung gerade nicht beendet werden – bitte anmelden und erneut abmelden.</p>{% endif %}
+    {% if insecure %}<p class="pill warn" role="alert">Diese Seite wurde über unverschlüsseltes HTTP aufgerufen,
+      die Anmeldung funktioniert aber nur über HTTPS (sichere Cookies). Bitte die https-Adresse verwenden –
+      der Administrator findet Hinweise unter <code>deploy/</code>.</p>{% endif %}
     {% if no_users %}<p class="pill warn">Es sind keine Benutzer eingerichtet. Ein Administrator legt sie mit
       <code>python -m projektakte.passwd NAME</code> an und setzt <code>AUTH_USERS</code>.</p>{% endif %}
     {% if error %}<p class="pill warn" role="alert">{{ error }}</p>{% endif %}
     <input type="hidden" name="next" value="{{ next }}">
-    <label>Benutzername<input type="text" name="username" autocomplete="username" required autofocus></label>
-    <label>Passwort<input type="password" name="password" autocomplete="current-password" required></label>
+    <label>Benutzername<input type="text" name="username" value="{{ username or '' }}" autocomplete="username" maxlength="128" required {% if not username %}autofocus{% endif %}></label>
+    <label>Passwort<input type="password" name="password" autocomplete="current-password" maxlength="1024" required {% if username %}autofocus{% endif %}></label>
     <button>Anmelden</button>
   </form>
 </main>

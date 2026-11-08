@@ -1,0 +1,28 @@
+# Exact versions of ALL runtime packages (direct and transitive) for reproducible Docker builds.
+# Used as: pip install -r requirements.txt -c constraints.txt
+# requirements.txt stays the place for direct dependencies; this file only pins what they pull in.
+#
+# Regenerate after changing requirements.txt (Python 3.12, empty virtualenv):
+#   python3.12 -m venv /tmp/pa-lock && /tmp/pa-lock/bin/pip install -r requirements.txt
+#   /tmp/pa-lock/bin/pip freeze --exclude pip > constraints.txt   (then add this header again)
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.16.0
+click==8.5.1
+fastapi==0.162.0
+h11==0.16.0
+idna==3.20
+Jinja2==3.1.6
+lxml==6.1.3
+MarkupSafe==3.0.4
+numpy==2.5.4
+opentelemetry-api==1.45.2
+pydantic==2.14.3
+pydantic_core==2.50.4
+pypdf==6.21.4
+python-docx==1.2.0
+python-multipart==0.0.32
+starlette==1.10.0
+typing-inspection==0.4.5
+typing_extensions==4.16.0
+uvicorn==0.54.0

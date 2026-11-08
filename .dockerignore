@@ -1,5 +1,23 @@
+# Only requirements.txt, constraints.txt, VERSION and projektakte/ are copied into the image;
+# everything else stays out of the build context (smaller, no local data or secrets).
 .git
+.github
 .venv
+venv
 data
-__pycache__
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/*.egg-info
+.env
+.env.*
+*.env
 tests
+docs
+deploy
+scripts
+conftest.py
+requirements-dev.txt
+Dockerfile
+.dockerignore
+*.md

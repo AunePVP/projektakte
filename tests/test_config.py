@@ -42,3 +42,21 @@ def test_demo_mode_defaults_to_demo_folders(tmp_path):
 def test_secrets_not_in_repr():
     s = load_settings({"LLM_API_KEY": "geheim123"})
     assert "geheim123" not in repr(s)
+
+
+def test_app_env_is_normalised():
+    assert load_settings({}).app_env == "dev"
+    assert load_settings({"APP_ENV": " Production "}).app_env == "production"
+
+
+def test_security_settings_from_environment():
+    s = load_settings({"FORWARDED_ALLOW_IPS": "172.31.250.10", "COOKIE_SECURE": "1", "SESSION_HOURS": "8"})
+    assert s.forwarded_allow_ips == "172.31.250.10" and s.cookie_secure is True and s.session_hours == 8
+    assert load_settings({}).forwarded_allow_ips == ""  # → only 127.0.0.1 is trusted (startup.trusted_proxies)
+
+
+def test_auth_secrets_not_in_repr():
+    s = load_settings({"SECRET_KEY": "sk-geheim-1", "AUTH_USERS": "anna:pbkdf2_sha256$1$x$y",
+                       "INTEGRATION_TOKEN": "tok-geheim-2", "PLMAIL_TOKEN": "plmail_geheim3"})
+    text = repr(s)
+    assert not any(secret in text for secret in ("sk-geheim-1", "pbkdf2_sha256", "tok-geheim-2", "plmail_geheim3"))

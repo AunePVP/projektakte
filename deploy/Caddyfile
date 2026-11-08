@@ -1,0 +1,24 @@
+# TLS reverse proxy for Projektakte. Replace the host name with the office DNS name.
+projektakte.firma.lan {
+	# Office network without public DNS: Caddy's own certificate authority. Distribute its root
+	# certificate to the clients once (deploy/README.md, "Zertifikat").
+	# With a company certificate instead:  tls /zertifikate/projektakte.crt /zertifikate/projektakte.key
+	tls internal
+
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	# Caddy sets X-Forwarded-For/-Proto/-Host and keeps the Host header. Answers to questions can
+	# take up to LLM_TIMEOUT (default 120 s); this timeout must stay above it.
+	reverse_proxy app:8000 {
+		transport http {
+			response_header_timeout 180s
+		}
+	}
+
+	# No access log here on purpose: Caddy logs requests only with a "log" directive. If one is
+	# added, strip the query string (search terms) with a log filter.
+}

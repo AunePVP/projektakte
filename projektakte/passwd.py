@@ -5,7 +5,7 @@ import argparse
 import getpass
 import sys
 
-from .auth import hash_password
+from .passwords import hash_password
 
 
 def main(argv: list[str] | None = None) -> None:
