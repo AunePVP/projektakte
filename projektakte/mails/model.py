@@ -32,6 +32,8 @@ class MailRecord:
     in_reply_to: str | None = None
     attachments: list[Attachment] = field(default_factory=list)
     content_hash: str = ""
+    # assignment made by a human in plMail (JMAP property "plmail:projektakte"); not part of the hash
+    external_assignment: dict | None = None
 
     def compute_hash(self) -> str:
         h = hashlib.sha256()

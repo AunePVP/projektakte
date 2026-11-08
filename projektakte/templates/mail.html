@@ -19,6 +19,10 @@
 {% endif %}
 <h2>Text</h2>
 <pre class="mailbody">{{ m.body }}</pre>
+{% if in_plmail %}
+<p class="card">Diese Mail wird in plMail zugeordnet – beim Lesen der Mail dort das Projekt wählen.
+  {% if plmail_link %}<a class="button secondary" href="{{ plmail_link }}" rel="noopener">In plMail öffnen</a>{% endif %}</p>
+{% else %}
 <details class="card">
   <summary>Zuordnung ändern</summary>
   <form method="post" action="/eingang/{{ m.id }}" class="ask-row">
@@ -32,4 +36,5 @@
   </form>
   <form method="post" action="/eingang/{{ m.id }}"><input type="hidden" name="back" value="/mails/{{ m.id }}"><input type="hidden" name="action" value="none"><button class="secondary">Kein Projektbezug</button></form>
 </details>
+{% endif %}
 {% endblock %}

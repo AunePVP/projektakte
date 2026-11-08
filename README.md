@@ -159,6 +159,13 @@ je Seite) und danach nur noch Änderungen (`Email/changes` ab dem gespeicherten 
 kommen über die `downloadUrl` der Session. Es werden ausschließlich lesende Methoden verwendet.
 `GET /health/deps` meldet plMail mit Zahl der Konten. Details: [docs/plmail-jmap.md](docs/plmail-jmap.md).
 
+**Zuordnung in plMail:** Sobald plMail angebunden ist, gilt `ASSIGN_MODE=manual` – Mails werden
+nicht mehr automatisch Projekten zugeordnet. Man wählt das Projekt in plMail beim Lesen der Mail
+(plMail holt Projektliste und Vorschlag über `/api/integration/*` mit `INTEGRATION_TOKEN`) und
+plMail liefert die Entscheidung als JMAP-Eigenschaft `plmail:projektakte`, die Projektakte beim
+Abgleich übernimmt. Schnittstellenvertrag: [docs/plmail-integration.md](docs/plmail-integration.md);
+Auftrag für die plMail-Seite: [docs/plmail-prompt.md](docs/plmail-prompt.md).
+
 ## Wie es funktioniert
 
 ### Indexieren
@@ -196,6 +203,10 @@ gefragt.
 
 ### Zuordnung der Mails
 
+Mit `ASSIGN_MODE=manual` (Standard, sobald plMail angebunden ist) ordnet Projektakte nichts selbst
+zu: Mails aus plMail werden in plMail zugeordnet, alle anderen bekommen im Zuordnungs-Eingang einen
+Vorschlag (auch eine gefundene Projektnummer ist dann nur ein Vorschlag). Mit `ASSIGN_MODE=auto`:
+
 1. **Sicher**: bekannte Projektnummer im Betreff, sonst im Text, sonst im Anhangnamen.
 2. **Vorschlag**: Sonst dient die Mail als Suchanfrage (Volltext + Vektor) gegen alle Abschnitte der
    Projekte (Projektdateien und sicher zugeordnete Mails). Die besten Treffer stimmen für ihr Projekt;
@@ -224,6 +235,7 @@ zugeordnet oder vorgeschlagen, 8 von 8 inhaltlichen Vorschlägen richtig.
 | `GET /api/search?q=&project=&k=` | Hybride Suche (Volltext + Vektor, Reranker), Treffer mit Quelle |
 | `POST /api/ask` | Frage beantworten: `{"question": "…", "project": "BS-…"}` (Projekt optional) → Antwort, `found`, zitierte Quellen |
 | `GET /api/inbox` | Zuordnungs-Eingang: Mails ohne sichere Zuordnung, mit Vorschlag und Begründung |
+| `GET /api/integration/info`, `GET /api/integration/projects`, `POST /api/integration/suggest`, `POST /api/integration/notify` | für plMail (Bearer `INTEGRATION_TOKEN`), siehe docs/plmail-integration.md |
 | `POST /api/mails/{id}/assign` | Entscheidung: `{"action": "confirm"}`, `{"action": "assign", "project": "BS-…"}`, `{"action": "reject"}` (Vorschlag verwerfen), `{"action": "none"}` (kein Projektbezug) |
 
 Die OpenAPI-Beschreibung liegt nach der Anmeldung unter `/openapi.json` (Swagger-UI ist
@@ -287,6 +299,10 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `PLMAIL_URL` | – | Basisadresse von plMail (z. B. `https://mail.example.local`) |
 | `PLMAIL_TOKEN` | – | App-Passwort `plmail_…` (Secret, nur aus der Umgebung) |
 | `PLMAIL_TIMEOUT` / `PLMAIL_PAGE_SIZE` | `30` / `100` | Sekunden / Mails je Abfrage |
+| `PLMAIL_WEB_URL` | – | Link-Vorlage zum Öffnen einer Mail in plMail (`{accountId}`, `{emailId}`) |
+| `ASSIGN_MODE` | `auto`, mit plMail `manual` | `manual` = keine automatische Zuordnung (plMail-Mails werden in plMail zugeordnet) |
+| `INTEGRATION_TOKEN` | – | Token, mit dem plMail `/api/integration/*` aufruft (Secret) |
+| `PUBLIC_URL` | Anfrage-URL | eigene Adresse für Links in API-Antworten |
 
 ## Aufbau des Codes
 

@@ -49,6 +49,12 @@ der echten KI-Dienste prüfen und in docs/ki-dienste.md eintragen, Schwellwerte 
 - [x] **14. plMail über JMAP** – zweite Mailquelle über die JMAP-API von plMail (App-Passwort, siehe
   docs/plmail-jmap.md), inkrementell über `Email/changes`; Tests gegen einen kleinen Fake-JMAP-Server.
 
+## Nach Phase A
+
+- [x] **15. Zuordnung in plMail** – keine automatische Zuordnung; der Mensch wählt das Projekt in plMail
+  beim Lesen, Projektakte übernimmt es per JMAP (docs/plmail-integration.md). Projektakte-Seite fertig
+  und gegen einen Fake-plMail getestet; die plMail-Seite beschreibt docs/plmail-prompt.md.
+
 ## Phase B – Ideen (nur mit benanntem Nutzen)
 
 - Auflagen und Fristen aus Baugenehmigungen extrahieren

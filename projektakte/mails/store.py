@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import sqlite3
@@ -44,6 +45,7 @@ def store_mail(conn: sqlite3.Connection, rec: MailRecord, *, cache_dir: Path, ll
                        (rec.source_key,)).fetchone()
     if row and row["sha256"] == rec.content_hash:
         conn.execute("UPDATE mails SET deleted = 0 WHERE id = ?", (row["id"],))
+        set_external_assignment(conn, row["id"], rec.external_assignment)
         return row["id"], "unchanged"
     preview = re.sub(r"\s+", " ", rec.body)[:240]
     values = (rec.source, rec.message_id, rec.in_reply_to, rec.subject, rec.sender, rec.sender_name,
@@ -66,6 +68,7 @@ def store_mail(conn: sqlite3.Connection, rec: MailRecord, *, cache_dir: Path, ll
         r = conn.execute("SELECT name FROM projects WHERE number = ?", (project,)).fetchone()
         project_name = r[0] if r else None
     _index_body(conn, mail_id, rec, project, project_name)
+    set_external_assignment(conn, mail_id, rec.external_assignment)
 
     # attachments: stored in our own cache (for download) and indexed like documents
     old = {r["path"]: r["id"] for r in conn.execute("SELECT id, path FROM documents WHERE mail_id = ?",
@@ -91,6 +94,17 @@ def store_mail(conn: sqlite3.Connection, rec: MailRecord, *, cache_dir: Path, ll
             conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
             conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
     return mail_id, status
+
+
+def set_external_assignment(conn: sqlite3.Connection, mail_id: int, assignment: dict | None) -> bool:
+    """Store the assignment made in plMail; a change sends the mail through assignment again."""
+    value = json.dumps(assignment, sort_keys=True, ensure_ascii=False) if assignment else None
+    old = conn.execute("SELECT external_assignment FROM mails WHERE id = ?", (mail_id,)).fetchone()
+    if old is not None and old[0] == value:
+        return False
+    conn.execute("UPDATE mails SET external_assignment = ?, assign_status = 'pending', suggest_done = 0 "
+                 "WHERE id = ?", (value, mail_id))
+    return True
 
 
 def delete_mail(conn: sqlite3.Connection, mail_id: int) -> None:

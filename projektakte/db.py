@@ -109,6 +109,10 @@ MIGRATIONS: list[str] = [
     );
     ALTER TABLE mails ADD COLUMN suggest_done INTEGER NOT NULL DEFAULT 0;
     """,
+    # 5 – assignment made in plMail (JMAP property, JSON), read-only copy
+    """
+    ALTER TABLE mails ADD COLUMN external_assignment TEXT;
+    """,
 ]
 
 

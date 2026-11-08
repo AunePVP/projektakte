@@ -149,7 +149,7 @@ def assign(request: Request, mail_id: int, body: AssignRequest) -> dict:
     user = getattr(request.state, "user", None)
     with db.session(s.db_path) as conn:
         try:
-            return decide(conn, mail_id, body.action, body.project, user=user)
+            return decide(conn, mail_id, body.action, body.project, user=user, mode=s.assign_mode)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from None
         except DecisionError as exc:
@@ -212,11 +212,12 @@ def status(request: Request) -> dict:
             "mails": one("SELECT COUNT(*) FROM mails WHERE deleted = 0"),
             "inbox": one("SELECT COUNT(*) FROM mails WHERE deleted = 0 AND "
                          "assign_status IN ('suggested', 'unassigned')"),
+            "plmail_open": one("SELECT COUNT(*) FROM mails WHERE deleted = 0 AND assign_status = 'plmail_open'"),
             "chunks": one("SELECT COUNT(*) FROM chunks"),
             "chunks_without_vector": one("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL"),
         }
     return {"indexing": request.app.state.indexer.status(), "counts": counts,
-            "ai_mode": s.ai_mode, "demo_mode": s.demo_mode}
+            "ai_mode": s.ai_mode, "demo_mode": s.demo_mode, "assign_mode": s.assign_mode}
 
 
 @router.post("/reindex", status_code=202)

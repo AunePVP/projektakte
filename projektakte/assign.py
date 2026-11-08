@@ -11,12 +11,14 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from dataclasses import dataclass
 
 import numpy as np
 
+from .ai import AIServiceError
 from .documents import fts_title
 from .registry import number_regex
 from .search import fts_search, rrf
@@ -26,6 +28,8 @@ from .vectors import VECTOR_INDEX, from_blob
 log = logging.getLogger("projektakte.assign")
 
 INBOX_STATUSES = ("suggested", "unassigned")
+# manual mode: mails from plMail wait for a human decision *in plMail* (not in Projektakte's inbox)
+PLMAIL_OPEN = "plmail_open"
 SENDER_BONUS_VOTES = 2.0 / 61  # worth two top-ranked hits
 
 
@@ -102,25 +106,23 @@ def assignment_text(mail: sqlite3.Row, attachment_names: list[str]) -> str:
     return "\n".join([mail["subject"], mail["body"][:4000], " ".join(attachment_names)])
 
 
-def suggest(conn: sqlite3.Connection, mail: sqlite3.Row, attachment_names: list[str], vector_key: str,
-            *, min_share: float, min_lead: float, exclude: set[str]) -> Suggestion | None:
-    """Treat the mail as a search query against everything known about each project (project files
-    and mails assigned for certain): the top hits of full-text (BM25) and vector search vote for
-    their project (Reciprocal Rank Fusion). The share of votes is the confidence."""
-    vec_rows = conn.execute("SELECT embedding FROM chunks WHERE mail_id = ? AND doc_id IS NULL "
-                            "AND embedding IS NOT NULL", (mail["id"],)).fetchall()
-    if not vec_rows:
-        return None  # no vectors yet (embedding service down) – try again later
-    text = assignment_text(mail, attachment_names)
-    fts = fts_search(conn, text, k=VOTE_HITS, where=EVIDENCE_SQL, args=(mail["id"],), max_terms=40,
+def vote_projects(conn: sqlite3.Connection, text: str, qvec, sender: str, vector_key: str, *,
+                  exclude_mail_id: int = -1, exclude: set[str] = frozenset()):
+    """Treat a text as a search query against everything known about each project (project files and
+    mails assigned for certain): the top hits of full-text (BM25) and vector search vote for their
+    project (Reciprocal Rank Fusion). Returns (ranking [(project, share)], projects with shared words,
+    project that got the sender bonus)."""
+    fts = fts_search(conn, text, k=VOTE_HITS, where=EVIDENCE_SQL, args=(exclude_mail_id,), max_terms=40,
                      keep_digits=False)
-    evidence = {r[0] for r in conn.execute(f"SELECT c.id FROM chunks c WHERE {EVIDENCE_SQL}", (mail["id"],))}
-    q = np.mean(np.vstack([from_blob(r[0]) for r in vec_rows]), axis=0)
-    q /= (np.linalg.norm(q) or 1.0)
-    vec = VECTOR_INDEX.search(conn, vector_key, q, k=VOTE_HITS, chunk_ids=evidence) if evidence else []
+    vec = []
+    if qvec is not None:
+        evidence = {r[0] for r in conn.execute(f"SELECT c.id FROM chunks c WHERE {EVIDENCE_SQL}",
+                                               (exclude_mail_id,))}
+        if evidence:
+            vec = VECTOR_INDEX.search(conn, vector_key, qvec, k=VOTE_HITS, chunk_ids=evidence)
     fused = rrf(fts, vec)
     if not fused:
-        return Suggestion(None, 0.0, None, 0.0, "keine ähnlichen Unterlagen gefunden")
+        return [], set(), None
     project_of = dict(conn.execute(
         f"SELECT id, project FROM chunks WHERE id IN ({','.join(str(c) for c, _ in fused)})").fetchall())
     votes: dict[str, float] = {}
@@ -131,16 +133,22 @@ def suggest(conn: sqlite3.Connection, mail: sqlite3.Row, attachment_names: list[
     lexical = {project_of.get(cid) for cid, _ in fts}
     hist = [r[0] for r in conn.execute(
         "SELECT DISTINCT project FROM mails WHERE sender = ? AND id != ? AND project IS NOT NULL "
-        "AND assign_status IN ('assigned', 'confirmed')", (mail["sender"], mail["id"]))]
+        "AND assign_status IN ('assigned', 'confirmed')", (sender or "", exclude_mail_id))] if sender else []
     bonus_for = hist[0] if len(hist) == 1 and hist[0] not in exclude else None
     if bonus_for:
         votes[bonus_for] = votes.get(bonus_for, 0.0) + SENDER_BONUS_VOTES
-    if not votes:
-        return Suggestion(None, 0.0, None, 0.0, "keine ähnlichen Unterlagen gefunden")
     total = sum(votes.values())
-    ranked = sorted(votes.items(), key=lambda kv: -kv[1])
-    best, s1 = ranked[0][0], ranked[0][1] / total
-    second, s2 = (ranked[1][0], ranked[1][1] / total) if len(ranked) > 1 else (None, 0.0)
+    if not total:
+        return [], lexical, None
+    ranked = [(p, v / total) for p, v in sorted(votes.items(), key=lambda kv: -kv[1])]
+    return ranked, lexical, bonus_for
+
+
+def _judge(ranked, lexical, bonus_for, min_share: float, min_lead: float) -> Suggestion:
+    if not ranked:
+        return Suggestion(None, 0.0, None, 0.0, "keine ähnlichen Unterlagen gefunden")
+    best, s1 = ranked[0]
+    second, s2 = ranked[1] if len(ranked) > 1 else (None, 0.0)
     detail = f"{best} mit {s1:.0%} der ähnlichsten Abschnitte"
     if second:
         detail += f" (danach {second} mit {s2:.0%})"
@@ -154,21 +162,123 @@ def suggest(conn: sqlite3.Connection, mail: sqlite3.Row, attachment_names: list[
     return Suggestion(None, s1, second, s2, f"kein eindeutiger Vorschlag: {detail}")
 
 
+def suggest(conn: sqlite3.Connection, mail: sqlite3.Row, attachment_names: list[str], vector_key: str,
+            *, min_share: float, min_lead: float, exclude: set[str]) -> Suggestion | None:
+    """Suggestion for an indexed mail (uses the mail's own vectors). None = no vectors yet."""
+    vec_rows = conn.execute("SELECT embedding FROM chunks WHERE mail_id = ? AND doc_id IS NULL "
+                            "AND embedding IS NOT NULL", (mail["id"],)).fetchall()
+    if not vec_rows:
+        return None  # no vectors yet (embedding service down) – try again later
+    q = np.mean(np.vstack([from_blob(r[0]) for r in vec_rows]), axis=0)
+    q /= (np.linalg.norm(q) or 1.0)
+    ranked, lexical, bonus = vote_projects(conn, assignment_text(mail, attachment_names), q, mail["sender"],
+                                           vector_key, exclude_mail_id=mail["id"], exclude=exclude)
+    return _judge(ranked, lexical, bonus, min_share, min_lead)
+
+
+def suggest_for_text(conn: sqlite3.Connection, ai, vector_key: str, pattern: str, *, subject: str, body: str,
+                     attachments: list[str], sender: str = "", limit: int = 3, min_share: float = 0.5,
+                     min_lead: float = 0.2) -> list[dict]:
+    """Suggestions for a mail that is not (yet) indexed – used by plMail while a human reads a mail.
+
+    Project numbers in subject, text or attachment names come first ("sicher"), then the content
+    vote. Nothing is stored and nothing is assigned: the human decides."""
+    known = known_projects(conn)
+    names = dict(conn.execute("SELECT number, name FROM projects WHERE active = 1").fetchall())
+    rx = number_regex(pattern)
+    out: list[dict] = []
+    for label, text in (("Betreff", subject), ("Text", body), ("Anhangname", "\n".join(attachments))):
+        found, _ = numbers_in(text, rx, known)
+        for n in found:
+            if n not in {o["number"] for o in out}:
+                out.append({"number": n, "name": names.get(n, ""), "confidence": "sicher", "score": 1.0,
+                            "reason": f"Projektnummer {n} im {label}"})
+    text = "\n".join([subject, body[:4000], " ".join(attachments)])
+    qvec = None
+    if ai is not None:
+        try:
+            qvec = ai.embed.embed([text])[0]
+        except AIServiceError:
+            qvec = None  # full text alone still votes
+    ranked, lexical, bonus = vote_projects(conn, text, qvec, (sender or "").lower(), vector_key)
+    verdict = _judge(ranked, lexical, bonus, min_share, min_lead)
+    for p, share in ranked:
+        if len(out) >= limit:
+            break
+        if p in {o["number"] for o in out} or p not in lexical:
+            continue
+        confidence = "hoch" if p == verdict.project else "niedrig"
+        reason = f"{share:.0%} der ähnlichsten Abschnitte"
+        if bonus == p:
+            reason += "; Absender schrieb bisher nur zu diesem Projekt"
+        out.append({"number": p, "name": names.get(p, ""), "confidence": confidence,
+                    "score": round(share, 4), "reason": reason})
+    return out[:limit]
+
+
+def _external(m: sqlite3.Row) -> dict | None:
+    try:
+        return json.loads(m["external_assignment"]) if m["external_assignment"] else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _decision(conn: sqlite3.Connection, source_key: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM assign_decisions WHERE source_key = ?", (source_key,)).fetchone()
 
 
+def _set(conn, mail_id: int, project: str | None, status: str, method: str | None, reason: str) -> None:
+    set_mail_project(conn, mail_id, project)
+    conn.execute("UPDATE mails SET assign_status=?, assign_method=?, assign_reason=?, suggested_project=NULL, "
+                 "suggestion_score=NULL, suggest_done=1 WHERE id=?", (status, method, reason, mail_id))
+
+
+def apply_plmail_assignment(conn, m: sqlite3.Row, ext: dict, known: dict[str, str]) -> str:
+    """Apply the assignment a human made in plMail. Returns the resulting status."""
+    who = ext.get("assignedBy") or "Mensch"
+    when = (ext.get("assignedAt") or "")[:10]
+    suffix = f" am {when[8:10]}.{when[5:7]}.{when[0:4]}" if len(when) == 10 else ""
+    if ext.get("status") == "none":
+        _set(conn, m["id"], None, "none", "plmail", f"in plMail von {who}{suffix} als ohne Projektbezug markiert")
+        return "none"
+    number = known.get(str(ext.get("project") or "").lower())
+    if not number:
+        _set(conn, m["id"], None, PLMAIL_OPEN, "plmail",
+             f"in plMail zugeordnetes Projekt {ext.get('project')} ist in Projektakte unbekannt")
+        return PLMAIL_OPEN
+    _set(conn, m["id"], number, "confirmed", "plmail", f"in plMail von {who}{suffix} zugeordnet")
+    return "confirmed"
+
+
 def assign_mails(conn: sqlite3.Connection, pattern: str, *, min_share: float, min_lead: float,
-                 vector_key: str) -> dict:
-    """Process new mails and mails still waiting in the inbox."""
+                 vector_key: str, mode: str = "auto") -> dict:
+    """Process new mails and mails still waiting for a decision.
+
+    Order of precedence: assignment made in plMail > decision made in Projektakte > automatic.
+    In ``manual`` mode nothing is assigned automatically: mails from plMail wait for a decision in
+    plMail, all other mails get suggestions (a project number only proposes) for the inbox."""
+    from . import db
+
+    if db.get_meta(conn, "assign_mode") != mode:  # mode switched: re-evaluate everything
+        conn.execute("UPDATE mails SET assign_status = 'pending', suggest_done = 0")
+        db.set_meta(conn, "assign_mode", mode)
     rx = number_regex(pattern)
     known = known_projects(conn)
-    stats = {"assigned": 0, "suggested": 0, "unassigned": 0, "decided": 0}
+    stats = {"assigned": 0, "suggested": 0, "unassigned": 0, "decided": 0, "plmail": 0, PLMAIL_OPEN: 0}
     rows = conn.execute(
         "SELECT * FROM mails WHERE deleted = 0 AND (assign_status = 'pending' OR "
         "(assign_status IN ('unassigned', 'suggested') AND suggest_done = 0) OR "
         "(assign_status = 'unassigned' AND assign_method = 'unknown'))").fetchall()
     for m in rows:
+        ext = _external(m)
+        if ext and ext.get("status") in ("assigned", "none"):
+            status = apply_plmail_assignment(conn, m, ext, known)
+            stats["plmail" if status != PLMAIL_OPEN else PLMAIL_OPEN] += 1
+            continue
+        if mode == "manual" and m["source"] == "jmap":
+            _set(conn, m["id"], None, PLMAIL_OPEN, None, "wartet auf Zuordnung in plMail")
+            stats[PLMAIL_OPEN] += 1
+            continue
         dec = _decision(conn, m["source_key"])
         if dec and dec["action"] in ("assign", "none"):
             project = dec["project"] if dec["action"] == "assign" else None
@@ -184,6 +294,13 @@ def assign_mails(conn: sqlite3.Connection, pattern: str, *, min_share: float, mi
                 continue
         names = [r[0] for r in conn.execute("SELECT filename FROM documents WHERE mail_id = ?", (m["id"],))]
         project, method, reason = certain_project(m["subject"], m["body"], names, rx, known)
+        if project and mode == "manual":  # a number only proposes – a human confirms
+            set_mail_project(conn, m["id"], None)
+            conn.execute("UPDATE mails SET assign_status='suggested', assign_method=?, assign_reason=?, "
+                         "suggested_project=?, suggestion_score=1.0, suggest_done=1 WHERE id=?",
+                         (method, f"{reason} – bitte bestätigen", project, m["id"]))
+            stats["suggested"] += 1
+            continue
         if project:
             set_mail_project(conn, m["id"], project)
             conn.execute("UPDATE mails SET assign_status='assigned', assign_method=?, assign_reason=?, "
@@ -218,11 +335,14 @@ class DecisionError(ValueError):
 
 
 def decide(conn: sqlite3.Connection, mail_id: int, action: str, project: str | None = None,
-           user: str | None = None) -> dict:
+           user: str | None = None, mode: str = "auto") -> dict:
     """Apply a human decision: confirm | assign | reject | none."""
     m = conn.execute("SELECT * FROM mails WHERE id = ? AND deleted = 0", (mail_id,)).fetchone()
     if not m:
         raise LookupError("Mail nicht gefunden")
+    if m["source"] == "jmap" and (mode == "manual" or _external(m)):
+        raise DecisionError("Diese Mail wird in plMail zugeordnet – bitte dort beim Lesen der Mail das "
+                            "Projekt wählen.")
     known = known_projects(conn)
     dec = _decision(conn, m["source_key"])
     rejected = set(filter(None, (dec["rejected"] or "").split(","))) if dec else set()

@@ -66,7 +66,8 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
         stats["assignment"] = assign_mails(conn, settings.project_number_pattern,
                                            min_share=settings.assign_min_share,
                                            min_lead=settings.assign_min_lead,
-                                           vector_key=str(settings.db_path))
+                                           vector_key=str(settings.db_path),
+                                           mode=settings.assign_mode)
     stats["seconds"] = round(time.time() - started, 2)
     log.info("Indexierung fertig: %s", stats)
     return stats

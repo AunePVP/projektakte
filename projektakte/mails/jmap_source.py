@@ -26,6 +26,9 @@ USING = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"]
 MAIL_CAP = "urn:ietf:params:jmap:mail"
 PROPERTIES = ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "preview", "hasAttachment",
               "attachments", "bodyValues", "textBody", "htmlBody"]
+# plMail extension (docs/plmail-integration.md): project assignment made by a human in plMail
+PROJECT_CAP = "urn:plmail:params:jmap:projektakte"
+PROJECT_PROP = "plmail:projektakte"
 MAX_ATTACHMENT_BYTES = 80 * 1024 * 1024
 
 
@@ -43,6 +46,17 @@ class JMAPClient:
         self.page_size = page_size
         self._session: dict | None = None
         self.calls: list[str] = []  # method names used (read-only check in tests)
+
+    @property
+    def has_project_extension(self) -> bool:
+        """Does this plMail expose the project assignment (capability in the session)?"""
+        return PROJECT_CAP in (self.session().get("capabilities") or {})
+
+    def _using(self) -> list[str]:
+        return USING + [PROJECT_CAP] if self.has_project_extension else USING
+
+    def _properties(self) -> list[str]:
+        return PROPERTIES + [PROJECT_PROP] if self.has_project_extension else PROPERTIES
 
     # -- session ---------------------------------------------------------------------------------
     def session(self, refresh: bool = False) -> dict:
@@ -81,7 +95,7 @@ class JMAPClient:
             self.calls.append(name)
         api_url = self.session()["apiUrl"]
         try:
-            data = request_json("POST", api_url, payload={"using": USING, "methodCalls": method_calls},
+            data = request_json("POST", api_url, payload={"using": self._using(), "methodCalls": method_calls},
                                 timeout=self.timeout, headers=self._headers)
         except HTTPStatusError as exc:
             detail = exc.body
@@ -122,7 +136,7 @@ class JMAPClient:
                              "position": position, "limit": self.page_size, "calculateTotal": False}, "q0"],
             ["Email/get", {"accountId": account_id,
                            "#ids": {"resultOf": "q0", "name": "Email/query", "path": "/ids"},
-                           "properties": PROPERTIES, "fetchTextBodyValues": True,
+                           "properties": self._properties(), "fetchTextBodyValues": True,
                            "fetchHTMLBodyValues": True}, "g0"],
         ])
         ids = next(a for n, a, c in responses if c == "q0").get("ids") or []
@@ -130,7 +144,7 @@ class JMAPClient:
         return _in_order(got.get("list") or [], ids), got.get("state"), ids
 
     def get(self, account_id: str, ids: list[str]) -> tuple[list[dict], str | None]:
-        responses = self.call([["Email/get", {"accountId": account_id, "ids": ids, "properties": PROPERTIES,
+        responses = self.call([["Email/get", {"accountId": account_id, "ids": ids, "properties": self._properties(),
                                               "fetchTextBodyValues": True, "fetchHTMLBodyValues": True}, "g0"]])
         got = responses[0][1]
         return _in_order(got.get("list") or [], ids), got.get("state")
@@ -145,7 +159,8 @@ class JMAPClient:
             with Timer() as t:
                 self.session(refresh=True)
                 accounts = self.account_ids()
-            info.update(ok=True, format="jmap", accounts=len(accounts), latency_ms=t.ms)
+            info.update(ok=True, format="jmap", accounts=len(accounts), latency_ms=t.ms,
+                        project_extension=self.has_project_extension)
         except JMAPError as exc:
             info.update(ok=False, format=None, error=str(exc))
         return info
@@ -171,10 +186,12 @@ def _body(email: dict) -> str:
 
 
 def fingerprint(email: dict) -> str:
-    """Cheap content fingerprint before downloading attachments (flag changes do not count)."""
+    """Cheap fingerprint before downloading attachments (flag changes do not count, a project
+    assignment made in plMail does)."""
     parts = [email.get("subject") or "", json.dumps(email.get("from") or [], sort_keys=True),
              email.get("receivedAt") or "", _body(email),
-             ",".join(sorted((a or {}).get("blobId", "") for a in email.get("attachments") or []))]
+             ",".join(sorted((a or {}).get("blobId", "") for a in email.get("attachments") or [])),
+             json.dumps(email.get(PROJECT_PROP), sort_keys=True)]
     return hashlib.sha256("\0".join(parts).encode("utf-8", "replace")).hexdigest()
 
 
@@ -201,9 +218,24 @@ def to_record(client: JMAPClient, account_id: str, email: dict) -> MailRecord:
         attachments.append(Attachment(name, data, att.get("type") or "application/octet-stream"))
     rec = MailRecord(source="jmap", source_key=f"jmap:{account_id}:{email['id']}",
                      subject=(email.get("subject") or "").strip(), sender=sender, sender_name=sender_name,
-                     recipients=recipients, date=date, body=_body(email), attachments=attachments)
+                     recipients=recipients, date=date, body=_body(email), attachments=attachments,
+                     external_assignment=parse_assignment(email.get(PROJECT_PROP)))
     rec.compute_hash()
     return rec
+
+
+def parse_assignment(value) -> dict | None:
+    """Validate the plMail property; anything unexpected counts as 'not assigned yet'."""
+    if not isinstance(value, dict) or value.get("status") not in ("assigned", "none"):
+        return None
+    out = {"status": value["status"],
+           "project": str(value.get("project") or "").strip().upper() or None,
+           "projectName": str(value.get("projectName") or "")[:200],
+           "assignedBy": str(value.get("assignedBy") or "")[:100],
+           "assignedAt": str(value.get("assignedAt") or "")[:40]}
+    if out["status"] == "assigned" and not out["project"]:
+        return None
+    return out
 
 
 def _store(conn, client, account_id, email, stats, cache_dir: Path, llm) -> None:

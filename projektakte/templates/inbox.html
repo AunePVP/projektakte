@@ -2,7 +2,11 @@
 {% block title %}Zuordnungs-Eingang{% endblock %}
 {% block content %}
 <h1>Zuordnungs-Eingang</h1>
+{% if assign_mode == 'manual' %}
+<p class="muted">Zuordnung von Hand: Vorschläge (Projektnummer oder inhaltliche Ähnlichkeit) werden erst nach Bestätigung zugeordnet. Mails aus plMail ordnet ihr direkt in plMail zu; sie erscheinen hier nicht.</p>
+{% else %}
 <p class="muted">Mails ohne sichere Projektnummer. Vorschläge beruhen auf inhaltlicher Ähnlichkeit und werden erst nach Bestätigung zugeordnet.</p>
+{% endif %}
 {% if not mails %}<p class="empty">Alles zugeordnet – der Eingang ist leer.</p>{% endif %}
 {% for m in mails %}
 <article class="card inbox-item" id="mail-{{ m.id }}">

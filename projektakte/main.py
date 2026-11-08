@@ -1,6 +1,7 @@
 """HTTP application."""
 from __future__ import annotations
 
+import hmac
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -64,7 +65,12 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
                 request.state.user = auth.read_cookie(request.cookies.get(COOKIE))
             return await call_next(request)
         user = auth.read_cookie(request.cookies.get(COOKIE))
-        if not user and path.startswith(("/api/", "/health/")) and request.headers.get("authorization"):
+        if not user and path.startswith("/api/integration/") and settings.integration_token:
+            given = request.headers.get("authorization", "")
+            if hmac.compare_digest(given.encode(), f"Bearer {settings.integration_token}".encode()):
+                user = "plmail-integration"
+        basic = request.headers.get("authorization", "").lower().startswith("basic ")
+        if not user and basic and path.startswith(("/api/", "/health/")):
             client = request.client.host if request.client else ""
             user = await run_in_threadpool(auth.basic_user, request.headers["authorization"], client)
         if user:
@@ -93,9 +99,11 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
         return {"version": __version__}
 
     from .api import router as api_router
+    from .integration import router as integration_router
     from .web import router as web_router, templates
 
     app.include_router(api_router)
+    app.include_router(integration_router)
     app.include_router(web_router)
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 

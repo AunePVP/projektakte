@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen. Format angelehnt an „Keep a Changelog“; ein Abschnitt je
 Roadmap-Schritt.
 
+## [0.3.0] – 2026-11-08 – Zuordnung in plMail
+
+- `ASSIGN_MODE=manual` (Standard, sobald plMail angebunden ist): keine automatische Zuordnung mehr.
+  Mails aus plMail werden in plMail beim Lesen zugeordnet; andere Mails bekommen nur Vorschläge
+  (auch die Projektnummer schlägt nur vor) und werden im Projektakte-Eingang bestätigt.
+- JMAP: Projektakte fordert die plMail-Erweiterung `urn:plmail:params:jmap:projektakte` mit der
+  Email-Eigenschaft `plmail:projektakte` an, sofern plMail sie anbietet, und übernimmt die Zuordnung
+  (Rangfolge: plMail > Projektakte-Entscheidung > Automatik). Neuer Status „in plMail offen“.
+- Integrations-API für plMail mit `INTEGRATION_TOKEN`: `GET /api/integration/info`,
+  `GET /api/integration/projects`, `POST /api/integration/suggest` (Vorschläge für eine gelesene Mail,
+  speichert nichts), `POST /api/integration/notify` (sofort abgleichen).
+- Mail-Seite verweist bei plMail-Mails auf plMail (`PLMAIL_WEB_URL`), Umhängen in Projektakte ist
+  dort gesperrt; Statusseite zeigt Zuordnungsmodus und offene plMail-Mails.
+- docs/plmail-integration.md (Schnittstellenvertrag) und docs/plmail-prompt.md (Auftrag für plMail).
+- Fake-JMAP-Server bildet die Erweiterung nach; Tests für den gesamten Ablauf.
+
 ## [0.2.0] – 2026-11-08 – Phase A umgesetzt
 
 ### Abschluss

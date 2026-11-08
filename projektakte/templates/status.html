@@ -19,7 +19,8 @@
     <dl class="meta">
       <dt>Projekte</dt><dd>{{ st.counts.projects }}</dd>
       <dt>Dokumente</dt><dd>{{ st.counts.documents }} ({{ st.counts.documents_skipped }} übersprungen/fehlerhaft)</dd>
-      <dt>Mails</dt><dd>{{ st.counts.mails }} ({{ st.counts.inbox }} im Eingang)</dd>
+      <dt>Mails</dt><dd>{{ st.counts.mails }} ({{ st.counts.inbox }} im Eingang{% if st.counts.plmail_open %}, {{ st.counts.plmail_open }} in plMail noch nicht zugeordnet{% endif %})</dd>
+      <dt>Zuordnung</dt><dd>{{ 'von Hand (Mails aus plMail werden in plMail zugeordnet)' if st.assign_mode == 'manual' else 'automatisch über die Projektnummer, sonst Vorschlag' }}</dd>
       <dt>Abschnitte</dt><dd>{{ st.counts.chunks }} ({{ st.counts.chunks_without_vector }} ohne Vektor)</dd>
     </dl>
   </section>

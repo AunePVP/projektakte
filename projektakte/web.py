@@ -61,9 +61,10 @@ def cite_links(text: str, prefix: str = "src") -> Markup:
 ASSIGN_LABELS = {
     "assigned": "sicher zugeordnet", "suggested": "Vorschlag", "unassigned": "offen",
     "confirmed": "bestätigt", "none": "ohne Projektbezug", "pending": "wird verarbeitet",
+    "plmail_open": "in plMail offen",
 }
 METHOD_LABELS = {"subject": "Nummer im Betreff", "body": "Nummer im Text", "attachment": "Nummer im Anhangnamen",
-                 "manual": "von Hand", "similarity": "inhaltlich"}
+                 "manual": "von Hand", "similarity": "inhaltlich", "plmail": "in plMail"}
 DOC_STATUS = {"ok": "", "skipped": "übersprungen", "error": "Fehler", "empty": "ohne Text"}
 
 templates.env.filters.update(de_date=de_date, filesize=filesize, cite_links=cite_links)
@@ -198,7 +199,8 @@ def inbox_page(request: Request):
     with db.session(_settings(request).db_path) as conn:
         mails = _inbox_rows(conn)
         projects = list_projects(conn)
-    return render(request, "inbox.html", mails=mails, projects=projects)
+    return render(request, "inbox.html", mails=mails, projects=projects,
+                  assign_mode=_settings(request).assign_mode)
 
 
 @router.post("/eingang/{mail_id}", response_class=HTMLResponse)
@@ -208,7 +210,8 @@ def inbox_decide(request: Request, mail_id: int, action: str = Form(...), projec
     error = None
     with db.session(s.db_path) as conn:
         try:
-            result = decide(conn, mail_id, action, project or None, user=getattr(request.state, "user", None))
+            result = decide(conn, mail_id, action, project or None, user=getattr(request.state, "user", None),
+                            mode=s.assign_mode)
         except LookupError:
             raise HTTPException(404, "Mail nicht gefunden") from None
         except DecisionError as exc:
@@ -238,7 +241,15 @@ def mail_page(request: Request, mail_id: int):
             "SELECT id, filename, ext, size, status, message FROM documents WHERE mail_id = ? ORDER BY id",
             (mail_id,))]
         projects = list_projects(conn)
-    return render(request, "mail.html", m=dict(m), atts=atts, projects=projects)
+    s = _settings(request)
+    m = dict(m)
+    in_plmail = m["source"] == "jmap" and (s.assign_mode == "manual" or bool(m.get("external_assignment")))
+    plmail_link = None
+    if m["source"] == "jmap" and s.plmail_web_url:
+        _, account_id, email_id = m["source_key"].split(":", 2)
+        plmail_link = s.plmail_web_url.replace("{accountId}", account_id).replace("{emailId}", email_id)
+    return render(request, "mail.html", m=m, atts=atts, projects=projects, in_plmail=in_plmail,
+                  plmail_link=plmail_link)
 
 
 @router.get("/dokumente/{doc_id}", response_class=HTMLResponse)

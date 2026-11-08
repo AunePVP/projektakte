@@ -34,6 +34,13 @@ def _int(value: str | None, default: int) -> int:
         return default
 
 
+def _assign_mode(value: str | None, plmail: bool) -> str:
+    value = (value or "").strip().lower()
+    if value in ("auto", "manual"):
+        return value
+    return "manual" if plmail else "auto"
+
+
 @dataclass(frozen=True)
 class Settings:
     port: int
@@ -83,6 +90,12 @@ class Settings:
     plmail_token: str = field(default="", repr=False)
     plmail_timeout: float = 30.0
     plmail_page_size: int = 100
+    plmail_web_url: str = ""  # link template to open a mail in plMail: …{accountId}…{emailId}…
+    # assignment: "auto" (project number → assigned) or "manual" (humans decide, in plMail for its mails)
+    assign_mode: str = "auto"
+    # plMail → Projektakte integration API (Bearer token) and the public base URL for links
+    integration_token: str = field(default="", repr=False)
+    public_url: str = ""
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
@@ -166,6 +179,11 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         plmail_token=e.get("PLMAIL_TOKEN", ""),
         plmail_timeout=_float(e.get("PLMAIL_TIMEOUT"), 30.0),
         plmail_page_size=max(1, _int(e.get("PLMAIL_PAGE_SIZE"), 100)),
+        plmail_web_url=e.get("PLMAIL_WEB_URL", ""),
+        # with plMail connected, mails are assigned by humans in plMail unless configured otherwise
+        assign_mode=_assign_mode(e.get("ASSIGN_MODE"), bool(e.get("PLMAIL_URL") and e.get("PLMAIL_TOKEN"))),
+        integration_token=e.get("INTEGRATION_TOKEN", ""),
+        public_url=(e.get("PUBLIC_URL") or "").rstrip("/"),
         llm_api_key=e.get("LLM_API_KEY", ""),
         embed_api_key=e.get("EMBED_API_KEY", ""),
         rerank_api_key=e.get("RERANK_API_KEY", ""),

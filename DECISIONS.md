@@ -263,3 +263,23 @@ Versionsnummer bleibt daher unter 1.0 (0.2.0), bis die echten Dienste geprüft s
   Vorschläge notiert, nicht umgangen.
 - **Fehler isoliert**: Ein nicht erreichbares plMail oder ein abgelehntes App-Passwort steht im
   Indexierungsergebnis und in `/health/deps`; die eml-Quelle und alles andere laufen weiter.
+
+## Nach Phase A – Zuordnung in plMail (Wunsch des Betreibers)
+
+- **plMail ist die Wahrheit über die Zuordnung**, Projektakte liest sie per JMAP. Alternative wäre
+  gewesen, dass plMail die Zuordnung per POST an Projektakte schickt. Dagegen spricht: Projektakte
+  müsste eine schreibende Schnittstelle für Fremdsysteme anbieten, die Zuordnung ginge bei einem
+  Neuaufbau des Index verloren, und plMail könnte sie nicht selbst anzeigen. So bleibt Projektakte
+  gegenüber plMail rein lesend (VISION.md Abschnitt 8) und die Zuordnung ist in plMail sichtbar.
+- **Eigene JMAP-Capability + Email-Eigenschaft** (`urn:plmail:params:jmap:projektakte`,
+  `plmail:projektakte`, Namensraum-Präfix nach RFC 8620 für Herstellererweiterungen) statt eines
+  IMAP-Keywords: Keywords würden zum IMAP-Server synchronisiert und wären für andere Mailprogramme
+  sichtbar; außerdem fehlten Benutzer und Zeitpunkt. Fehlt die Capability, läuft alles wie bisher.
+- **Kleine Integrations-API mit eigenem Token** für das, was plMail von Projektakte braucht
+  (Projektliste, Vorschlag, Anstoß zum Abgleich). Das Token öffnet nur `/api/integration/*`, kein
+  Zugriff auf Mails oder Dokumente. Aufrufe nur serverseitig aus plMail.
+- **Vorschläge zustandslos** aus Betreff/Text/Anhangnamen, damit plMail sie schon anzeigen kann,
+  bevor Projektakte die Mail abgeglichen hat; dieselbe Abstimmungslogik wie im Eingang.
+- **`manual` als Standard, sobald plMail angebunden ist** (überschreibbar mit `ASSIGN_MODE`); ohne
+  plMail (Demo mit eml-Ordner) bleibt `auto`. Im Modus `manual` ist auch eine Projektnummer nur ein
+  Vorschlag. Ein Moduswechsel bewertet alle Mails neu.

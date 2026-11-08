@@ -11,6 +11,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TOKEN = "plmail_" + "ab" * 32
+PROJECT_CAP = "urn:plmail:params:jmap:projektakte"
+PROJECT_PROP = "plmail:projektakte"
 
 
 class FakePlMail:
@@ -22,6 +24,9 @@ class FakePlMail:
         self.methods: list[str] = []
         self.well_known = True
         self.forget_history = False  # simulate cannotCalculateChanges
+        self.project_extension = True  # advertise the Projektakte capability + Email property
+        self.usings: list[list[str]] = []
+        self.using: list[str] = []
         self._next = 0
         self.lock = threading.Lock()
 
@@ -43,9 +48,21 @@ class FakePlMail:
                 "from": [{"name": sender[0], "email": sender[1]}], "to": [{"name": "Büro", "email": "b@x.example"}],
                 "cc": [], "receivedAt": received, "preview": body[:60], "hasAttachment": bool(atts),
                 "attachments": atts, "bodyValues": {"1": {"value": body, "isTruncated": False}},
-                "textBody": [] if html else [part], "htmlBody": [part], "keywords": {}}
+                "textBody": [] if html else [part], "htmlBody": [part], "keywords": {}, PROJECT_PROP: None}
             self._bump(account, "created", eid)
             return eid
+
+    def assign(self, account: str, eid: str, project: str | None, *, status: str = "assigned",
+               user: str = "anna", name: str = "") -> None:
+        """What plMail's UI does when a human picks a project (or 'kein Projekt'); None = remove."""
+        with self.lock:
+            e = self.accounts[account][eid]
+            if project is None and status == "assigned":
+                e[PROJECT_PROP] = None
+            else:
+                e[PROJECT_PROP] = {"status": status, "project": project, "projectName": name,
+                                   "assignedBy": user, "assignedAt": "2025-03-10T09:30:00Z"}
+            self._bump(account, "updated", eid)  # the assignment changes the Email state
 
     def flag(self, account: str, eid: str) -> None:
         with self.lock:
@@ -83,6 +100,10 @@ class FakePlMail:
             ids = args.get("ids") or []
             found = [emails[i] for i in sorted(ids) if i in emails]  # database order, not request order
             props = args.get("properties")
+            if props and PROJECT_PROP in props and (not self.project_extension or PROJECT_CAP not in self.using):
+                return ["error", {"type": "invalidArguments", "description": f"unknown property {PROJECT_PROP}"}]
+            if not props or PROJECT_PROP not in props:
+                found = [{k: v for k, v in e.items() if k != PROJECT_PROP} for e in found]
             if props:
                 found = [{k: v for k, v in e.items() if k in props} for e in found]
             return ["Email/get", {"accountId": acc, "state": str(self.state.get(acc, 0)), "list": found,
@@ -136,7 +157,8 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 return
             return self._send(200, {
-                "capabilities": {"urn:ietf:params:jmap:core": {}, "urn:ietf:params:jmap:mail": {}},
+                "capabilities": {"urn:ietf:params:jmap:core": {}, "urn:ietf:params:jmap:mail": {},
+                                 **({PROJECT_CAP: {}} if fake.project_extension else {})},
                 "accounts": {a: {"name": f"Konto {a}", "isPersonal": True,
                                  "accountCapabilities": {"urn:ietf:params:jmap:mail": {}}}
                              for a in fake.accounts},
@@ -170,6 +192,8 @@ class _Handler(BaseHTTPRequestHandler):
                                     "detail": "Request does not match the JMAP Request object"},
                               "application/problem+json")
         results, responses = {}, []
+        fake.using = req["using"]
+        fake.usings.append(req["using"])
         for name, args, call_id in req["methodCalls"]:
             resp_name, resp_args = fake.handle(name, args, results)
             results[call_id] = resp_args

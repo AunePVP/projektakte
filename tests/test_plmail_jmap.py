@@ -46,7 +46,8 @@ def fill(fake):
 def env(tmp_path, fake_ai, plmail):
     url, fake = plmail
     generate(tmp_path / "demo")
-    s = fake_settings(fake_ai, tmp_path, DEMO_MODE=1, PLMAIL_URL=url, PLMAIL_TOKEN=TOKEN, PLMAIL_PAGE_SIZE=2)
+    s = fake_settings(fake_ai, tmp_path, DEMO_MODE=1, PLMAIL_URL=url, PLMAIL_TOKEN=TOKEN, PLMAIL_PAGE_SIZE=2,
+                      ASSIGN_MODE="auto")
     return s, AIServices.from_settings(s), fake
 
 
