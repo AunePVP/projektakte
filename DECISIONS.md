@@ -384,3 +384,37 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
 **Tests**
 - *Parallel mit pytest-xdist* (neue Entwicklungsabhängigkeit, gepinnt): Mit 559 Tests lag der
   serielle Lauf bei 73 s und damit über der Leitplanke „< 1 min“; parallel ≈ 25 s.
+
+**Runde 2 (nach der ersten Gegenprüfung)**
+- *Fake-KI „fail closed“*: Eine falsche Antwort mit Quellenangabe ist vor dem Team schlimmer als
+  „nicht gefunden“. Wert-Fragen werden nur mit einem Wert der gefragten Art beim gefragten Thema
+  beantwortet. Lockerere Regeln brachten auf dem Prüfsatz höchstens 0,64 statt 0,57, dafür
+  erfundene Antworten – deshalb nicht übernommen.
+- *Zurückgehaltener Prüfsatz*: von einem unabhängigen Autor aus den Demo-Dokumenten geschrieben, beim
+  Tuning nur über Summen sichtbar. Das 80-%-Ziel bleibt bestehen; der Test ist „xfail“ mit der echten
+  Zahl im Grund, eine Untergrenze fängt Rückschritte ab. Bewusst *keine* gezielten Ergänzungen der
+  Abkürzungsliste für Kürzel, die nur aus dem Prüfsatz bekannt wurden.
+- *Belegte Negativ-Fakten sind Antworten*: „Es liegen keine Mängel mehr vor [1]“ ist eine Aussage über
+  die Quelle, keine Absage. Absagen werden nur ohne Zitat bzw. mit starken Absageformen erkannt.
+- *Compare-and-Set in der Zuordnung*: Ein Ergebnis wird nur geschrieben, wenn die Mail noch so ist wie
+  beim Lesen; menschliche Entscheidungen gewinnen immer. `decide()` liest und schreibt in einer
+  Transaktion, Schreibtransaktionen nehmen die Sperre sofort (`BEGIN IMMEDIATE`).
+- *Werbeerkennung zweiseitig präzise*: ein starkes Signal oder zwei schwache, nie bei Absendern mit
+  Projekthistorie; Kopfzeilen gelten nicht bei Projektverteilern derselben Firma. Kopien erben keine
+  Entscheidung über die Message-ID (konstante Message-IDs würden sonst zu Fehlzuordnungen führen).
+- *Karenzzeit vor dem Löschen* fehlender Projektordner (24 h und 3 Läufe): Ein kurz nicht eingebundenes
+  Laufwerk soll keine Neuextraktion und Neueinbettung auslösen; aus Suche und Antworten verschwinden
+  die Dateien trotzdem sofort.
+- *Demo-Bereinigung beim Umstieg*: Demo-Inhalte erkennt Projektakte am Pfad unter `DATA_DIR/demo` (und
+  bei Mails zusätzlich an der Message-ID); menschliche Entscheidungen bleiben.
+- *Bremse je Adresse nur „weich“*: höchstens ein Versuch alle 2 s (Warteschlange bis 20 s, darüber
+  503), aber kein Abweisen richtiger Passwörter – hinter Terminalserver, NAT oder Docker-Gateway traf
+  die harte Bremse alle Kollegen. Hart gesperrt wird nur der Name mit Fehlversuchen; HTTP Basic nur je
+  Benutzer+Adresse. Preis: Namens-Spraying von einer Adresse ist auf etwa 1800 Versuche je Stunde
+  begrenzt; bekannte Namen schützen die Bremsen je Name.
+- *`/health/ready` ohne Tabellenscan*: ausstehende Vektoren aus der Statistik des letzten Laufs, weil ein
+  COUNT über 300 000 Abschnitte kalt 6 s dauerte – länger als das HEALTHCHECK-Timeout.
+- *Eingang mit Schlüssel-Blättern* (Cursor auf Sortierschlüssel und ID) statt OFFSET: Nach Entscheidungen
+  rutschen sonst Mails nach vorne und „Weiter“ überspringt sie. `/api/inbox` bleibt offsetbasiert.
+- *Kennungstreffer immer sichtbar*: Ein echter Cross-Encoder bewertet Projektnummern oder Aktenzeichen
+  nicht zuverlässig; ein wörtlicher Treffer ist aber eindeutig.

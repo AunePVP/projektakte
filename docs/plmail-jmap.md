@@ -81,11 +81,13 @@ Fallstricke (laut plMail-Doku):
   gelöscht wird nur, was `Email/get` als nicht vorhanden (`notFound`) bestätigt. Ein vom Server
   begrenztes `limit` wird beachtet. Grund: Ohne Anker-Paging verschiebt ein Löschen während des
   Blätterns die Positionen, sonst fehlte eine Mail dauerhaft.
-- **Fehler isoliert:** Eine fehlerhafte Mail oder ein nicht ladbarer Anhang wird protokolliert,
-  gezählt (`errors`) und mit wachsendem Abstand erneut versucht (15 min, verdoppelt, höchstens
-  1 Tag; Wiederholliste in `meta`, Schlüssel `jmap_retry:<Konto>`). Anhänge, die plMail nicht mehr
-  hat (404/410), werden übersprungen; nach 6 Fehlversuchen wird die Mail ohne den fehlenden Anhang
-  übernommen. Die übrigen Mails, Embeddings und die Zuordnung laufen weiter.
+- **Fehler isoliert:** Eine fehlerhafte Mail wird protokolliert, gezählt (`errors`) und mit
+  wachsendem Abstand erneut versucht (15 min, verdoppelt, höchstens 1 Tag; Wiederholliste in `meta`,
+  Schlüssel `jmap_retry:<Konto>`). Ein Anhang, den plMail gerade nicht liefert, hält die Mail nicht
+  auf: Die Mail wird sofort übernommen, der Anhang erscheint als Dokument „Anhang ausstehend“ (Status
+  `pending`) und wird über eine eigene Wiederholliste nachgeladen (`jmap_att_retry:<Konto>`, 15 min
+  bis 1 Tag). Nach 10 Versuchen sowie bei 404/410 oder mehr als 80 MB bleibt ein sichtbares
+  Fehlerdokument (Status `error`). Die übrigen Mails, Embeddings und die Zuordnung laufen weiter.
 - Anhänge werden vor dem Schreiben in die Datenbank heruntergeladen und extrahiert; jede Mail wird
   atomar (SAVEPOINT) gespeichert und einzeln committet.
 - Reine Flag-Änderungen (gelesen/markiert) lösen keinen erneuten Anhang-Download aus: Ein

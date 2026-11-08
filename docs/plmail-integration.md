@@ -65,8 +65,9 @@ Vorschläge für die gerade gelesene Mail. Speichert nichts, ordnet nichts zu.
 
 `headers` ist optional; ausgewertet werden nur `List-Unsubscribe` und `Precedence`. Newsletter und
 Werbung (an diesen Kopfzeilen, an Massenabsendern wie `newsletter@`/`noreply@` oder an
-Werbeformulierungen erkannt) bekommen keine inhaltlichen Vorschläge; eine Projektnummer bleibt
-`sicher`. Inhaltliche Vorschläge brauchen mindestens 3 gemeinsame Fachbegriffe mit dem Projekt.
+Werbeformulierungen erkannt; Absender mit Projekthistorie gelten nie als Werbung) bekommen keine
+inhaltlichen Vorschläge; eine Projektnummer bleibt `sicher`. Inhaltliche Vorschläge brauchen
+mindestens 3 gemeinsame Fachbegriffe mit dem Projekt, weitere Projekte (`niedrig`) mindestens 2.
 
 ```json
 {"suggestions": [

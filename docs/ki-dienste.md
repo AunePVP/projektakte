@@ -97,6 +97,12 @@ erwartete Quellen unter einer Schwelle lägen gegen wie viele Fragen ohne Antwor
 Damit `ASK_MIN_RERANK` (Standard 0,01), `SEARCH_MIN_RERANK` (0,05) und `ASSIGN_MIN_SIMILARITY`
 (aus) für die echten Modelle einstellen. Die Werte stammen aus der Entwicklung mit den Fakes.
 
+`--set holdout --summary-only` misst zusätzlich mit dem zurückgehaltenen Prüfsatz
+(`tests/eval_holdout.json`, 40 Fragen eines unabhängigen Autors) und zeigt nur Summen. Vor jedem Lauf
+werden die Dienste geprüft. Exit-Code 0 = Ziele erreicht (≥ 80 % beantwortbare Fragen richtig,
+≥ 90 % unbeantwortbare abgelehnt; `--min-correct`/`--min-refused`), 1 = verfehlt, 2 = Dienst nicht
+erreichbar. Mit den Fakes: eigener Satz 94/94, Prüfsatz 0,57 / 1,00 (siehe README).
+
 ### Denkmodelle
 
 Qwen3 denkt standardmäßig in `<think>…</think>`. Reicht `LLM_MAX_TOKENS` nicht, endet die Ausgabe
@@ -122,5 +128,8 @@ ohnehin; die Liste hilft dem Volltext.
 length|reasoning_only|unterminated_think`, `--no-models`); `AI_MODE=fake` startet dieselben Fakes
 im Prozess der Anwendung. Die Tests nutzen sie auf `127.0.0.1` mit zufälligem Port. Der Fake-Chat
 ist ein extraktiver Leser (Sätze nach Themenwörtern, Synonymen und IDF bewertet, Projektname zählt
-nicht, „letzter Stand“ = neueste Quelle) – er zeigt den Ablauf glaubwürdig, sagt aber nichts über
-die Antwortqualität des echten Modells.
+nicht, „letzter Stand“ = neueste Quelle, Tabellen als „Spalte: Wert“, Entscheidungsfragen zitieren
+den Satz mit der Entscheidung). Er lehnt im Zweifel ab: Wert-Fragen (Kosten, Anzahl, Datum, Dauer,
+Maß, Name, Norm …) beantwortet er nur mit einem Wert dieser Art beim gefragten Thema. Er zeigt den
+Ablauf glaubwürdig, versteht frei formulierte Fragen aber nur etwa in 6 von 10 Fällen und sagt nichts
+über die Antwortqualität des echten Modells.

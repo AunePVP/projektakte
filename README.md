@@ -55,11 +55,15 @@ Wichtig für `docker run` von Hand:
   nicht beschreibbar, bricht der Start mit einer deutschen Meldung ab.
 - In `production` gehen Sitzungs-Cookies nur über HTTPS (`COOKIE_SECURE`), also einen TLS-Proxy
   vorschalten; nur `localhost` geht auch ohne. `COOKIE_SECURE=0` nur zum Testen.
+- Benutzerdatei einbinden und für Benutzer 10001 lesbar machen. In `production` bricht der Start
+  ohne Benutzer bzw. mit nicht lesbarer `AUTH_USERS_FILE` mit einer deutschen Meldung ab.
 
 ```bash
+sudo chown 10001:10001 benutzer.txt && sudo chmod 600 benutzer.txt   # nur für die App lesbar
 docker run -p 127.0.0.1:8000:8000 -v projektakte-daten:/data \
   -v /srv/projekte:/projekte:ro -e PROJECTS_DIR=/projekte \
-  -e AUTH_USERS_FILE=/run/secrets/users -e SECRET_KEY=… projektakte
+  -v "$PWD/benutzer.txt:/run/secrets/users:ro" -e AUTH_USERS_FILE=/run/secrets/users \
+  -e SECRET_KEY=… projektakte
 ```
 
 ## Tests
@@ -96,7 +100,13 @@ nur mit `PROJEKTAKTE_INTEGRATION=1` (siehe docs/ki-dienste.md).
 Mail- und Dokumentseiten zeigen den Text bzw. die Abschnitte (mit Seitenangabe) und öffnen die
 Originaldatei. Serverseitig gerendert (Jinja2), HTMX liegt lokal unter `/static` (kein CDN); alle
 Formulare funktionieren auch ohne JavaScript. Keine Inline-Skripte oder -Styles (strenge CSP).
-Ohne horizontales Scrollen auf Laptop und Handy.
+Ohne horizontales Scrollen auf Laptop und Handy. Ausschnitte in Antworten und Suche zeigen die
+passende Stelle als Klartext (ohne Markdown-Zeichen), die Dokumentseite eine bereinigte Ansicht mit
+Überschriften und Tabellen. Originaldateien öffnen im Betrachter des Browsers
+(`/dokumente/{id}/datei/{Dateiname}`, eigene skriptfreie CSP). Die Suche zeigt Treffer, die eine
+Projektnummer oder ein Aktenzeichen aus der Anfrage wörtlich enthalten, immer an. Der Eingang blättert
+per Schlüssel – nach Entscheidungen werden keine Mails übersprungen. Unbekannte Adressen zeigen eine
+deutsche Fehlerseite.
 
 ## Anmeldung
 
@@ -116,10 +126,14 @@ z. B. `curl -u anna https://projektakte.lan/health/deps`.
 
 - **Abmelden** beendet alle Sitzungen des Benutzers serverseitig (auf allen Geräten, auch kopierte
   Cookies). Eine Anmeldung gilt höchstens `SESSION_HOURS` (Standard 12, maximal 720).
-- **Anmeldebremse statt Sperre:** Fehlversuche verlängern die Wartezeit exponentiell (je Rechner
-  und Benutzer, je Benutzer, je Rechner; höchstens 5 Minuten). Ein Browser, mit dem man sich schon
-  einmal angemeldet hat, wird durch Fehlversuche anderer nicht ausgesperrt. Passwortprüfungen laufen
-  nur wenige gleichzeitig; bei Überlast kommt 503 mit `Retry-After`.
+- **Anmeldebremse statt Sperre:** Fehlversuche für einen Benutzernamen verlängern die Wartezeit für
+  diesen Namen exponentiell (je Rechner und Benutzer sowie je Benutzer, höchstens 5 Minuten).
+  Fehlversuche mit anderen Namen von derselben Adresse (Terminalserver, NAT, Proxy) verzögern
+  Anmeldungen nur, um höchstens 2 s je Versuch – wer das richtige Passwort hat und nicht selbst Ziel
+  der Fehlversuche ist, kommt immer hinein. Ein Browser, mit dem man sich schon einmal angemeldet hat,
+  wird durch Fehlversuche anderer nicht ausgesperrt. Skripte und Überwachung mit HTTP Basic (am besten
+  mit eigenem Benutzer) sperren nur Fehlversuche für genau diesen Benutzer von genau dieser Adresse.
+  Passwortprüfungen laufen nur wenige gleichzeitig; bei Überlast kommt 503 mit `Retry-After`.
 - **Hinter einem Reverse-Proxy** `FORWARDED_ALLOW_IPS` auf dessen Adresse setzen, damit Anmeldebremse
   und Log die echte Client-Adresse sehen (siehe deploy/README.md).
 - **Schutz vor fremden Formularen:** Zustandsändernde Anfragen anderer Seiten (`Sec-Fetch-Site`
@@ -175,13 +189,20 @@ python -m projektakte.evaluate --real [--json ergebnis.json]
 docker compose exec app python -m projektakte.evaluate --real      # im Container
 ```
 
-Der Befehl indexiert den Demo-Datensatz mit den konfigurierten Diensten in einen eigenen Index
-(`$DATA_DIR/eval`, nie die Produktionsdaten; `--data-dir`, `--no-index`, `--only ID`,
-`--category stand` zum Eingrenzen) und lässt den Evaluationssatz (79 Fragen) laufen. Ausgabe je
+Der Befehl prüft zuerst die Dienste, indexiert den Demo-Datensatz mit den konfigurierten Diensten in
+einen eigenen Index (`$DATA_DIR/eval`, nie die Produktionsdaten; `--data-dir`, `--no-index`,
+`--only ID`, `--category stand` zum Eingrenzen) und lässt den Evaluationssatz (94 Fragen) laufen;
+`--set holdout` nimmt den zurückgehaltenen Prüfsatz eines unabhängigen Autors (40 Fragen), mit
+`--summary-only` nur Summen ohne Fragetexte. Exit-Code 0 = Ziele erreicht (≥ 80 % beantwortbare
+Fragen richtig, ≥ 90 % unbeantwortbare abgelehnt; `--min-correct`, `--min-refused`), 1 = verfehlt,
+2 = Dienst nicht erreichbar. Ausgabe je
 Frage: erwartete Quelle in den Top 5, Fakt und Quelle in der Antwort, Status, Rerank-Scores,
 Laufzeit; zusammengefasst die Score-Verteilung und eine Schwellwerttabelle. Damit
 `ASK_MIN_RERANK`, `SEARCH_MIN_RERANK` und `ASSIGN_MIN_SIMILARITY` für die echten Modelle einstellen.
-Mit den Fakes: 79/79.
+Mit den Fakes: eigener Satz 94/94; zurückgehaltener Prüfsatz 16 von 28 beantwortbaren Fragen richtig
+(0,57 – das 80-%-Ziel ist für die Fake-KI nicht erreicht, der Test ist mit Begründung als „xfail“
+markiert, nicht abgesenkt), 12 von 12 unbeantwortbaren korrekt abgelehnt, keine erfundene Antwort;
+die erwartete Quelle steht in 96 % der Fälle unter den ersten 5 Treffern.
 
 ## Fake-KI-Dienste
 
@@ -204,8 +225,11 @@ und Projektnummern), beide Antwortformate. Chat = ein extraktiver Leser: Er bewe
 nummerierten Quellen nach den Themenwörtern der Frage (Synonyme, Abkürzungen, Wortformen,
 IDF-Gewichte; Projektnummer und -name zählen nicht), beantwortet Fragen nach dem „letzten Stand“
 mit der neuesten Quelle und zitiert den passenden Satz einmal mit `[n]` („Laut Baugenehmigung
-(S. 2), Auflage 7 …: … [1]“), sonst „Nicht gefunden.“; mit `usage` und `<think>`-Block. Die
-Antwortqualität echter Modelle sagt das nicht voraus – dafür gibt es `python -m projektakte.evaluate`.
+(S. 2), Auflage 7 …: … [1]“), sonst „Nicht gefunden.“; mit `usage` und `<think>`-Block. Er lehnt im
+Zweifel ab: Fragen nach einem Wert (Kosten, Anzahl, Datum, Hersteller …) beantwortet er nur mit einem
+Wert dieser Art beim gefragten Thema. Frei formulierte Fragen versteht er etwa in 6 von 10 Fällen –
+**für eine Vorführung mit eigenen Fragen aus dem Publikum die echten Dienste anbinden**. Die
+Antwortqualität echter Modelle sagt der Fake nicht voraus – dafür gibt es `python -m projektakte.evaluate`.
 
 ## plMail anbinden (JMAP)
 
@@ -244,7 +268,10 @@ Projekte sind Ordner unter `PROJECTS_DIR`, deren Name mit einer Projektnummer be
 Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften und Tabellen), EML.
 Textdateien in UTF-8, UTF-16/32 (auch Windows-„Unicode“) oder cp1252. Bilder (PNG/JPG/TIFF) und
 PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1` über das multimodale Modell gelesen, sonst
-als „übersprungen“ vermerkt. Jedes Dokument merkt sich sein Extraktionsprofil: Wird `LLM_VISION`
+als „übersprungen“ vermerkt. Die Bilder gescannter PDF-Seiten liest Pillow aus (JPEG/PNG unverändert,
+TIFF/CCITT, JPEG 2000 und CMYK umgewandelt, große Bilder verkleinert, höchstens 3 je Seite);
+JBIG2-Scans brauchen das Programm `jbig2dec`, sonst gilt die Seite als „Bilder nicht lesbar“ und wird
+später erneut versucht. Jedes Dokument merkt sich sein Extraktionsprofil: Wird `LLM_VISION`
 eingeschaltet oder das Modell gewechselt, liest der nächste Lauf alle bisher übersprungenen bzw.
 unvollständigen Dokumente nach (auch Mail-Anhänge); Fehler werden mit wachsendem Abstand
 wiederholt (15 min … höchstens 7 Tage). Mails werden aus `MAIL_DIR` (alle
@@ -259,19 +286,25 @@ Verknüpfungen (Symlinks), die aus `PROJECTS_DIR` herausführen, werden nie gele
   Entscheidungen im Eingang gehen auch während einer großen Indexierung sofort.
 - **Umbenannte oder verschobene Projektordner** (gleiche Nummer) behalten ihre Dokumente und Vektoren;
   ein neuer Projektname wird im Volltext nachgezogen. **Verschwundene Projekte** werden inaktiv, ihre
-  Dateien verlassen Suche und Antworten (Mails und Entscheidungen bleiben).
+  Dateien verlassen sofort Suche und Antworten (Mails und Entscheidungen bleiben). Gelöscht werden die
+  Dateien erst, wenn der Ordner mindestens 24 h und in 3 aufeinanderfolgenden Läufen fehlt; kommt er
+  vorher zurück, ist alles ohne Neuverarbeitung wieder da.
 - **Laufwerk fehlt:** Ist `PROJECTS_DIR` oder `MAIL_DIR` nicht da, nicht lesbar oder plötzlich leer,
   obwohl schon Inhalte bekannt sind, wird nichts deaktiviert oder gelöscht; die Statusseite zeigt
   eine Warnung.
 - **Verschobene .eml-Dateien** behalten Mail, Vektoren und Entscheidung.
-- **plMail:** Eine fehlerhafte Mail oder ein nicht ladbarer Anhang wird gezählt und später erneut
-  versucht, der Lauf geht weiter. Der Erstabgleich blättert mit Überlappung und gleicht danach alle
+- **plMail:** Eine fehlerhafte Mail wird gezählt und später erneut versucht, der Lauf geht weiter.
+  Ein Anhang, den plMail gerade nicht liefert, hält die Mail nicht auf: Er erscheint als „Anhang
+  ausstehend“ und wird nachgeladen. Der Erstabgleich blättert mit Überlappung und gleicht danach alle
   IDs ab, damit gleichzeitiges Löschen keine Mail verschluckt.
 - **Speicher:** Die Vektorsuche hält etwa Abschnitte × Dimension × 4 Byte im RAM (100 000 Abschnitte
   × 2560 Dimensionen ≈ 1 GB).
 
-Für den Umstieg von der Demo auf echte Daten einen leeren `DATA_DIR` verwenden (Demo-Projekte
-verschwinden sonst zwar aus der Suche, bleiben aber als inaktive Projekte in der Datenbank).
+**Umstieg von der Demo auf echte Daten:** Der erste Lauf mit `DEMO_MODE=0` nach einem Demo-Lauf
+entfernt die Demo-Projekte mit ihren Dateien und die Demo-Mails aus dem Index (menschliche
+Entscheidungen bleiben); von Hand: `python -m projektakte.index --purge-demo`. Ein leerer `DATA_DIR`
+ist trotzdem der sauberste Start. `MAIL_ALLOW_EMPTY=1` erlaubt, dass ein absichtlich geleerter
+`MAIL_DIR` den Mail-Index leert (sonst nur eine Warnung).
 
 ### Suche
 
@@ -320,8 +353,11 @@ Vorschlag (auch eine gefundene Projektnummer ist dann nur ein Vorschlag). Mit `A
    liegt eines klar vorn (`ASSIGN_MIN_SHARE`, `ASSIGN_MIN_LEAD`), teilt es mindestens 3 Fachbegriffe
    mit der Mail (4 bei Absendern ohne Projekthistorie) und erreicht es optional
    `ASSIGN_MIN_SIMILARITY`, wird es vorgeschlagen. Absender, die bisher nur zu einem Projekt
-   geschrieben haben, zählen zusätzlich. Newsletter und Werbung (List-Unsubscribe, Precedence bulk,
-   Massenabsender, Werbeformulierungen) bekommen keinen inhaltlichen Vorschlag.
+   geschrieben haben, zählen zusätzlich. Newsletter und Werbung bekommen keinen inhaltlichen
+   Vorschlag: Ein starkes Signal genügt (Massenadresse wie `newsletter@`/`noreply@`, `List-Unsubscribe`
+   bzw. `Precedence: bulk` – außer bei Projektverteilern), schwache Signale (Werbeformulierungen,
+   `vertrieb@`, Shop-Domains) nur zu zweit; wer schon zu einem Projekt geschrieben hat, gilt nie als
+   Werbung. Ein Zuordnungslauf überschreibt nie eine gleichzeitig getroffene menschliche Entscheidung.
 3. **Unbekannte Projektnummer** (Ordner gibt es noch nicht): kein Vorschlag für ein anderes Projekt;
    sobald der Ordner existiert, wird die Mail zugeordnet. Das gilt auch für Zuordnungen aus plMail.
 4. **Zuordnungs-Eingang**: Vorschläge bestätigt oder verwirft ein Mensch; die Begründung steht in
@@ -409,6 +445,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `SEARCH_MIN_RERANK` | `0.05` | Suchseite: Treffer mit niedrigerem Reranker-Score ausblenden (nur wenn der Reranker antwortet; auf Wunsch einblendbar) |
 | `SYNONYMS_FILE` | – | eigene Abkürzungen/Synonyme für den Volltext (siehe „Suche“) |
 | `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
+| `MAIL_ALLOW_EMPTY` | `0` | `1` = ein leerer/fehlender `MAIL_DIR` leert den Mail-Index (sonst Schutz mit Warnung) |
 | `ASSIGN_MIN_SIMILARITY` | `0` (aus) | zusätzlich nötige Vektorähnlichkeit für einen Mail-Vorschlag (modellabhängig, mit `projektakte.evaluate` einstellen) |
 | `AUTH_USERS` | – | Benutzer `name:pbkdf2_sha256$…`, durch Komma getrennt (Secret) |
 | `AUTH_USERS_FILE` | – | Datei mit einem Eintrag `name:hash` je Zeile |
@@ -430,15 +467,19 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 - **TLS und Reverse-Proxy:** Beispiel mit Caddy unter [deploy/](deploy/README.md) (Compose-Datei,
   Caddyfile, Umgebungsvorlage). Die App selbst spricht HTTP; TLS übernimmt der Proxy.
 - **Überwachung:** `GET /health/ready` (200 = bereit, `status` `ok`/`degraded`; 503 = Datenbank oder
-  Indexierungs-Thread ausgefallen). Das Docker-Image hat einen HEALTHCHECK
-  (`python -m projektakte.healthcheck`). `/health` bleibt die schnelle Lebendprüfung.
-- **Zeitlimits:** Eine Frage wird synchron beantwortet und darf bis `LLM_TIMEOUT` (Standard 120 s)
-  dauern. Das Lese-Timeout eines vorgeschalteten Proxys muss darüber liegen (nginx-Standard 60 s →
-  `proxy_read_timeout 180s`; im Caddy-Beispiel `response_header_timeout 180s`), sonst bricht der
-  Proxy mit 504 ab. Alternativ `LLM_TIMEOUT` unter das Proxy-Limit setzen.
+  Indexierungs-Thread ausgefallen). Die Abfrage kostet unabhängig von der Datenmenge nur
+  Millisekunden; `pending_vectors` ist der Stand nach dem letzten Indexierungslauf. Das Docker-Image
+  hat einen HEALTHCHECK (`python -m projektakte.healthcheck`). `/health` bleibt die schnelle
+  Lebendprüfung.
+- **Zeitlimits:** Eine Frage wird synchron beantwortet und wartet nacheinander auf Embedding-Dienst,
+  Reranker und Sprachmodell, im ungünstigsten Fall also `EMBED_TIMEOUT` + `RERANK_TIMEOUT` +
+  `LLM_TIMEOUT` (Standard 60 + 30 + 120 = 210 s). Das Lese-Timeout eines vorgeschalteten Proxys muss
+  über dieser Summe liegen (nginx-Standard 60 s → `proxy_read_timeout 240s`; im Caddy-Beispiel
+  `response_header_timeout 240s`), sonst bricht der Proxy mit 504 ab. nginx vor einem
+  Docker-Container: `FORWARDED_ALLOW_IPS` auf die Gateway-Adresse des Docker-Netzes setzen.
 - **Logs:** einheitliches Format mit Zeitstempel; das Zugriffsprotokoll enthält keine
-  Query-Strings (also keine Suchbegriffe); beim Start steht die wirksame Konfiguration im Log (ohne
-  Geheimnisse).
+  Query-Strings (also keine Suchbegriffe, auch nicht im Fehlerlog des Caddy-Beispiels); beim Start
+  stehen Version und wirksame Konfiguration im Log (ohne Geheimnisse).
 - **Reproduzierbares Image:** `constraints.txt` pinnt alle Laufzeitpakete einschließlich der
   transitiven Abhängigkeiten.
 
