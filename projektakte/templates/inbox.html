@@ -26,7 +26,7 @@
   {% if start_url %}<a class="button secondary" href="{{ start_url }}">« Anfang</a>{% endif %}
   {% if prev_url %}<a class="button secondary" href="{{ prev_url }}" rel="prev">‹ Zurück</a>{% endif %}
   {% with oob=false %}{% include "_inbox_pager_info.html" %}{% endwith %}
-  {% if next_url %}<a class="button secondary" href="{{ next_url }}" rel="next">Weiter ›</a>{% endif %}
+  {% if next_url %}{% with oob=false %}{% include "_inbox_next.html" %}{% endwith %}{% endif %}
   {% if end_url %}<a class="button secondary" href="{{ end_url }}">Ende »</a>{% endif %}
 </nav>
 {% endif %}

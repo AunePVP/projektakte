@@ -1,5 +1,5 @@
 {#- HTMX answer to an inbox decision: the new card plus, out of band, the navigation badge, the
-    counts of the filter buttons and the summary line of the page (and its pager). -#}
+    counts of the filter buttons and the summary line of the page (and its pager and "Weiter" link). -#}
 {% if card == 'item' %}{% include "_inbox_item.html" %}{% else %}{% include "_inbox_done.html" %}{% endif %}
 {% if counts %}
 {% with count=counts[''], oob=true %}{% include "_inbox_badge.html" %}{% endwith %}
@@ -8,4 +8,5 @@
 {% endif %}
 {% if summary %}
 {% with shown=summary, oob=true %}{% include "_inbox_summary.html" %}{% if summary.pager %}{% include "_inbox_pager_info.html" %}{% endif %}{% endwith %}
+{% if summary.next_url %}{% with next_url=summary.next_url, oob=true %}{% include "_inbox_next.html" %}{% endwith %}{% endif %}
 {% endif %}

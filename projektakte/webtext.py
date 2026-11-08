@@ -11,7 +11,8 @@ that way as well), pipe tables (``| Angabe | Inhalt |`` with ``|---|---|``, DOCX
   word boundaries, and of a mail it shows the body only (:func:`mail_body`: no Betreff/Von/Datum
   lines, salutation or closing – the label of the hit names subject, sender and date),
 * :func:`highlight` – ``<mark>`` for the query words. Identifiers (project numbers, file numbers,
-  "T90", "DIN 4102") are matched as a whole, never as single parts, and never inside dates,
+  "T90", "DIN 4102") are matched as a whole, never as single parts, and never inside dates; a code
+  typed with spaces ("BS 2024 0233") counts as the written code (:func:`join_spaced_codes`),
 * :func:`trim_overlap` – the paragraph that chunking repeats at the start of the next section is
   shown only once on the document page.
 
@@ -250,6 +251,24 @@ _SEP = re.compile(r"[-/.]")
 _DOTTED_NUMBER = re.compile(r"^\d+(?:\.\d+)+$")  # dates, decimals, thousands, section numbers
 _ISO_DATE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
 MIN_IDENTIFIER_CHARS = 3  # "T90", "F30", "0137" – a lone "1" is no identifier
+# A reference code typed with spaces: "BS 2024 0233", "bs 2023 0412", "BS2024 0233" – letters, then two
+# to four groups of digits (the shape of textutil's reference codes). A single group stays apart
+# ("DIN 4102"), lower-case letters count only as a short code ("bs 2023 0412", not "seite 12 13").
+_SPACED_CODE = re.compile(r"(?<![^\W_])([^\W\d_]{1,6})([-/]?|\s?)(\d{2,6}(?:(?:\s+|[-/])\d{2,6}){1,3})(?![^\W_])")
+_SPACES = re.compile(r"\s+")
+
+
+def join_spaced_codes(text: str) -> str:
+    """Reference codes typed with spaces in their written form: 'BS 2024 0233' → 'BS-2024-0233'.
+    Then they match the code in a text as a whole (not '2024' alone), name the project like
+    'BS-2024-0233' does, and their letters are not taken for an abbreviation (BS → Brandschutz)."""
+    def join(m: re.Match) -> str:
+        prefix, sep, digits = m.groups()
+        short_code = len(prefix) <= 3 and fold(prefix) not in STOPWORDS and fold(prefix) not in QUESTION_WORDS
+        if not any(c.isspace() for c in m.group(0)) or not (prefix.isupper() or short_code):
+            return m.group(0)
+        return f"{prefix}{'/' if sep == '/' else '-'}{_SPACES.sub('-', digits)}"
+    return _SPACED_CODE.sub(join, text or "")
 
 
 def _segments(token: str) -> list[tuple[int, int, str]]:
@@ -278,7 +297,7 @@ class QueryMatcher:
     """
 
     def __init__(self, query: str):
-        query = query or ""
+        query = join_spaced_codes(query or "")  # "BS 2024 0233" is the code BS-2024-0233
         self.identifiers: list[tuple[str, ...]] = []
         rest: list[str] = []
         for m in _COMPOUND.finditer(query):

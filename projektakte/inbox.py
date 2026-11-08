@@ -6,6 +6,10 @@ page by page; attachment names are loaded with one query per page instead of one
 The web interface pages by key (keyset), not by offset: a page starts at the sort key of a mail
 (suggestion first, date, id – see :data:`SortKey`). Decided mails leave the inbox while their page
 is still open; with an offset the next page would then skip as many mails as were decided.
+
+A rejected suggestion stays on its page as an actionable card although it now sorts further back
+(behind the suggestions) or, in the filter "Mit Vorschlag", left the filter. Its page counts it;
+the following pages get its id (:func:`carried`) and neither show nor count it a second time.
 """
 from __future__ import annotations
 
@@ -93,12 +97,16 @@ def _where(status: str) -> tuple[str, tuple]:
 
 def page_rows(conn: sqlite3.Connection, *, status: str = "", limit: int = PAGE_SIZE, offset: int = 0,
               start: SortKey | None = None, before: SortKey | None = None,
-              last: bool = False) -> list[dict]:
+              last: bool = False, exclude: list[int] | tuple[int, ...] = ()) -> list[dict]:
     """One page of inbox mails in inbox order (with suggested project name and attachment names).
 
     ``start``: the page begins at this key (inclusive) – keyset paging; ``before``: the ``limit``
-    mails right before this key; ``last``: the last ``limit`` mails; otherwise ``offset`` (API)."""
+    mails right before this key; ``last``: the last ``limit`` mails; otherwise ``offset`` (API).
+    ``exclude``: ids of mails an earlier page still shows (:func:`carried`)."""
     where, args = _where(status)
+    if exclude:
+        where += f" AND m.id NOT IN ({','.join('?' * len(exclude))})"
+        args = (*args, *exclude)
     limit = max(1, limit)
     if before is not None or last:
         if before is not None:
@@ -151,9 +159,24 @@ def count_ids(conn: sqlite3.Connection, ids: list[int], *, status: str = "") -> 
     return left, in_filter
 
 
-def encode_ids(mails: list[dict]) -> str:
-    """Ids of the cards of a page as a form value: '12,13,40'."""
-    return ",".join(str(int(m["id"])) for m in mails)
+def carried(conn: sqlite3.Connection, ids: list[int], *, behind: SortKey, status: str = "") -> list[int]:
+    """Of the mails ``ids`` (cards of a page, or carried from earlier pages): those still open that
+    count for a page although they sort behind ``behind`` now – a rejected suggestion moves behind the
+    suggestions – or no longer match the filter ``status``. The pages after ``behind`` must neither
+    show nor count them again."""
+    ids = list(dict.fromkeys(int(i) for i in ids))
+    if not ids:
+        return []
+    wanted = statuses_for(status)
+    out = {row["id"] for row in conn.execute(
+        f"SELECT id, assign_status, date FROM mails WHERE deleted = 0 AND id IN ({','.join('?' * len(ids))})", ids)
+        if row["assign_status"] in INBOX_STATUSES and (row["assign_status"] not in wanted or sort_key(row) < behind)}
+    return [i for i in ids if i in out][:MAX_PAGE_IDS]
+
+
+def encode_ids(mails: list[dict] | list[int]) -> str:
+    """Ids of the cards of a page (mails or ids) as a form value: '12,13,40'."""
+    return ",".join(str(int(m["id"] if isinstance(m, dict) else m)) for m in mails)
 
 
 def decode_ids(text: str | None) -> list[int]:

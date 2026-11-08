@@ -1,0 +1,3 @@
+{#- "Weiter" link of an inbox page; a decision sends it again out of band, then it passes on the
+    rejected cards that moved behind the page (``gezeigt``), so the next page does not repeat them. -#}
+<a class="button secondary" id="inbox-next" href="{{ next_url }}" rel="next"{% if oob %} hx-swap-oob="true"{% endif %}>Weiter ›</a>
