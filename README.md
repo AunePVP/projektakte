@@ -66,6 +66,20 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 
+## Demo-Datensatz
+
+```bash
+python -m projektakte.demo            # schreibt nach $DATA_DIR/demo (Standard ./data/demo)
+python -m projektakte.demo --target /tmp/demo
+```
+
+Erzeugt deterministisch (fester Seed, ohne Zeitstempel in den Dateien) 8 frei erfundene
+Brandschutz-Projekte (Schule, Pflegeheim, Bürogebäude, Tiefgarage, Hotel, Industriehalle, Kita,
+Wohnhochhaus) unter `demo/projekte/<Nummer> <Name>/` mit Baugenehmigung (PDF, nummerierte
+Auflagen), Brandschutzkonzept (DOCX), Prüfbericht (Markdown), Besprechungsprotokoll (TXT) und
+einem Bild-„Scan“ eines Fluchtwegplans. Alle Namen, Firmen und Orte sind erfunden; Mailadressen
+nutzen die reservierte Domain `.example`.
+
 ## Fake-KI-Dienste
 
 Für Entwicklung und Tests gibt es deterministische Fakes aller drei Dienste auf einem Port:

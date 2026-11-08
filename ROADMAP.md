@@ -10,7 +10,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
   (`projektakte/config.py` erweitern: `DATA_DIR`, `PROJECTS_DIR`, `MAIL_DIR`, `PROJECT_NUMBER_PATTERN`,
   `LLM_URL`, `LLM_MODEL`, `EMBED_URL`, `EMBED_MODEL`, `RERANK_URL`, `DEMO_MODE`). `GET /health/deps`
   prüft LLM, Embeddings und Reranker mit kurzem Timeout und meldet je Dienst ok/Fehler.
-- [ ] **2. Demo-Projekte und -Dokumente erzeugen** – `python -m projektakte.demo` legt deterministisch
+- [x] **2. Demo-Projekte und -Dokumente erzeugen** – `python -m projektakte.demo` legt deterministisch
   mindestens 8 fiktive Projekte mit Ordnerstruktur und Dokumenten (TXT, MD, PDF, DOCX) unter
   `DATA_DIR/demo/projekte` an (siehe VISION.md Abschnitt 6), inkl. bekannter Fakten für Tests.
 - [ ] **3. Demo-Mails erzeugen** – derselbe Generator legt mindestens 60 `.eml`-Dateien (teils mit
