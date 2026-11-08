@@ -15,13 +15,19 @@
 </nav>
 {% if mails %}
 {{ project_datalist(projects) }}
-<p class="muted small">{% if pages > 1 %}{{ first|de_num }}–{{ last|de_num }} von {% endif %}{{ total|plural('Mail', 'Mails') }} · Vorschläge zuerst, dann die neuesten</p>
+{% with oob=false %}{% include "_inbox_summary.html" %}{% endwith %}
+{#- The cursor of this page goes with every HTMX decision (hx-vals is inherited by the card forms),
+    so the answer can update the summary line; without JavaScript the forms return to this page. -#}
+<div class="inbox-list"{% if page_state %} hx-vals='{{ page_state|tojson }}'{% endif %}>
 {% for m in mails %}{% include "_inbox_item.html" %}{% endfor %}
-{% if pages > 1 %}
+</div>
+{% if shown.paged %}
 <nav class="pager" aria-label="Seiten">
+  {% if start_url %}<a class="button secondary" href="{{ start_url }}">« Anfang</a>{% endif %}
   {% if prev_url %}<a class="button secondary" href="{{ prev_url }}" rel="prev">‹ Zurück</a>{% endif %}
-  <span>Seite {{ page|de_num }} von {{ pages|de_num }}</span>
+  {% with oob=false %}{% include "_inbox_pager_info.html" %}{% endwith %}
   {% if next_url %}<a class="button secondary" href="{{ next_url }}" rel="next">Weiter ›</a>{% endif %}
+  {% if end_url %}<a class="button secondary" href="{{ end_url }}">Ende »</a>{% endif %}
 </nav>
 {% endif %}
 {% elif status %}

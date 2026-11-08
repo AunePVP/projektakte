@@ -4,18 +4,19 @@
 <p class="crumbs">{% if d.project %}<a href="/projekte/{{ d.project }}">{{ d.project }} {{ d.project_name }}</a> › {% endif %}Dokument</p>
 <h1>{{ d.filename }}</h1>
 <dl class="meta">
-  <dt>Pfad</dt><dd>{{ d.rel_path }}</dd>
+  <dt>Pfad</dt><dd>{{ d.rel_path|path }}</dd>
   {% if mail %}<dt>Anhang von</dt><dd><a href="/mails/{{ mail.id }}">{{ mail.subject }}</a> ({{ mail.date|de_date(true) }})</dd>{% endif %}
   <dt>Datum</dt><dd>{{ d.doc_date|de_date }}</dd>
   <dt>Größe</dt><dd>{{ d.size|filesize }}{% if d.pages %} · {{ d.pages|plural('Seite', 'Seiten') }}{% endif %}</dd>
   <dt>Status</dt><dd>{% if d.status == 'ok' %}indexiert{% if d.method == 'vision' %} (per Bildauswertung){% endif %}{% else %}<span class="pill warn">{{ DOC_STATUS[d.status] }}</span> {{ d.message or '' }}{% endif %}</dd>
 </dl>
-<p><a class="button secondary" href="/dokumente/{{ d.id }}/datei">Originaldatei öffnen</a></p>
+<p><a class="button secondary" href="{{ file_url(d.id, d.filename) }}">Originaldatei öffnen</a></p>
 <h2>Abschnitte</h2>
+{#- c.html: the chunk text without markdown syntax (web.chunk_view) – headings, tables, lists -#}
 {% for c in chunks %}
 <section class="chunk" id="c{{ c.id }}">
-  <p class="muted small">{% if c.page %}Seite {{ c.page }}{% endif %}{% if c.heading %}{% if c.page %} · {% endif %}{{ c.heading }}{% endif %}</p>
-  <pre>{{ c.text }}</pre>
+  {% if c.context %}<p class="muted small chunk-context">{{ c.context }}</p>{% endif %}
+  <div class="doc-text">{{ c.html }}</div>
 </section>
 {% else %}<p class="empty">Kein Text extrahiert.</p>{% endfor %}
 {% endblock %}

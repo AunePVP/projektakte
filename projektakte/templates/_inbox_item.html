@@ -21,7 +21,7 @@
     <form method="post" action="/eingang/{{ m.id }}" hx-post="/eingang/{{ m.id }}" hx-target="#mail-{{ m.id }}" hx-swap="outerHTML" class="assign-form">
       <input type="hidden" name="action" value="assign"><input type="hidden" name="back" value="{{ back }}">
       <input type="text" name="project" list="project-options" required autocomplete="off" maxlength="200"
-             placeholder="Projekt: Nummer oder Name …" aria-label="Projekt wählen (Nummer oder Name)">
+             value="{{ typed or '' }}" placeholder="Projekt: Nummer oder Name …" aria-label="Projekt wählen (Nummer oder Name)">
       <button class="secondary">Zuordnen</button>
     </form>
     <form method="post" action="/eingang/{{ m.id }}" hx-post="/eingang/{{ m.id }}" hx-target="#mail-{{ m.id }}" hx-swap="outerHTML">

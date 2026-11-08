@@ -27,8 +27,8 @@
       <span class="date">{{ e.date|de_date }}</span>
       <span class="tag {{ e.kind }}">{{ 'Mail' if e.kind == 'mail' else 'Dokument' }}</span>
       {% if e.kind == 'mail' %}<a href="/mails/{{ e.id }}">{{ e.title or '(ohne Betreff)' }}</a> <span class="muted">– {{ e.sub }}</span>
-      {% if e.atts %}<span class="atts-inline">📎 {% for a in e.atts %}<a href="/dokumente/{{ a.id }}">{{ a.filename }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}
-      {% else %}<a href="/dokumente/{{ e.id }}">{{ e.title }}</a> <span class="muted">{{ e.sub }}</span>{% endif %}
+      {% if e.atts %}<span class="atts-inline">📎 {% for a in e.atts %}<a href="/dokumente/{{ a.id }}">{{ a.filename|path }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}
+      {% else %}<a href="/dokumente/{{ e.id }}">{{ e.title|path }}</a> <span class="muted">{{ e.sub }}</span>{% endif %}
     </li>
     {% endfor %}
   </ol>
@@ -38,13 +38,13 @@
 <section id="dokumente">
   <h2>Dokumente</h2>
   <table class="list">
-    <thead><tr><th>Datei</th><th class="w-s">Typ</th><th class="w-m">Datum</th><th class="w-l">Hinweis</th></tr></thead>
+    <thead><tr><th>Datei</th><th class="w-s hide-sm">Typ</th><th class="w-m date">Datum</th><th class="w-l">Hinweis</th></tr></thead>
     <tbody>
     {% for d in docs %}
     <tr>
-      <td><a href="/dokumente/{{ d.id }}">{{ d.rel_path }}</a></td>
-      <td>{{ d.ext[1:]|upper }}</td>
-      <td>{{ d.doc_date|de_date }}</td>
+      <td><a href="/dokumente/{{ d.id }}">{{ d.rel_path|path }}</a></td>
+      <td class="hide-sm">{{ d.ext[1:]|upper }}</td>
+      <td class="date">{{ d.doc_date|de_date }}</td>
       <td>{% if d.status != 'ok' %}<span class="pill warn" title="{{ d.message or '' }}">{{ DOC_STATUS[d.status] }}</span>{% elif d.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
     </tr>
     {% else %}<tr><td colspan="4" class="empty">Keine Dokumente.</td></tr>{% endfor %}
@@ -55,13 +55,14 @@
 <section id="anhaenge">
   <h2>Anhänge aus Mails</h2>
   <table class="list">
-    <thead><tr><th>Datei</th><th class="w-s">Typ</th><th>Aus der Mail</th><th class="w-l">Hinweis</th></tr></thead>
+    <thead><tr><th>Datei</th><th class="w-s hide-sm">Typ</th><th class="hide-sm">Aus der Mail</th><th class="w-l">Hinweis</th></tr></thead>
     <tbody>
     {% for a in attachments %}
     <tr>
-      <td><a href="/dokumente/{{ a.id }}">{{ a.filename }}</a></td>
-      <td>{{ a.ext[1:]|upper }}</td>
-      <td><span class="muted">{{ a.date|de_date }}</span> <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a></td>
+      <td><a href="/dokumente/{{ a.id }}">{{ a.filename|path }}</a>
+        <span class="show-sm small">aus der Mail <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a> <span class="muted">vom {{ a.date|de_date }}</span></span></td>
+      <td class="hide-sm">{{ a.ext[1:]|upper }}</td>
+      <td class="hide-sm"><span class="muted">{{ a.date|de_date }}</span> <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a></td>
       <td>{% if a.status != 'ok' %}<span class="pill warn" title="{{ a.message or '' }}">{{ DOC_STATUS[a.status] }}</span>{% elif a.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
     </tr>
     {% else %}<tr><td colspan="4" class="empty">Keine Anhänge in den zugeordneten Mails.</td></tr>{% endfor %}
@@ -72,13 +73,14 @@
 <section id="mails">
   <h2>Mails</h2>
   <table class="list">
-    <thead><tr><th class="w-m">Datum</th><th class="w-l">Von</th><th>Betreff</th><th class="w-l">Zuordnung</th></tr></thead>
+    <thead><tr><th class="w-m date">Datum</th><th class="w-l hide-sm">Von</th><th>Betreff</th><th class="w-l">Zuordnung</th></tr></thead>
     <tbody>
     {% for m in mails %}
     <tr>
-      <td>{{ m.date|de_date }}</td>
-      <td>{{ m.sender_name or m.sender }}</td>
-      <td><a href="/mails/{{ m.id }}">{{ m.subject or '(ohne Betreff)' }}</a>{% if m.has_attachments %} <span class="muted" title="mit Anhang">📎</span>{% endif %}</td>
+      <td class="date">{{ m.date|de_date }}</td>
+      <td class="hide-sm">{{ m.sender_name or m.sender }}</td>
+      <td><a href="/mails/{{ m.id }}">{{ m.subject or '(ohne Betreff)' }}</a>{% if m.has_attachments %} <span class="muted" title="mit Anhang">📎</span>{% endif %}
+        <span class="show-sm muted small">{{ m.sender_name or m.sender }}</span></td>
       {% set how = METHOD_LABELS.get(m.assign_method, ASSIGN_LABELS[m.assign_status]) %}
       <td><span class="pill {{ m.assign_status }}" title="{{ how }}">{{ how }}</span></td>
     </tr>

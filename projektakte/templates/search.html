@@ -10,21 +10,28 @@
 </form>
 {% if res %}
   {% for n in res.notes %}<p class="note warn">{{ n }}</p>{% endfor %}
+  {% if named_projects %}
+  <p class="project-links">{% for p in named_projects %}<a class="button secondary" href="/projekte/{{ p.number }}">Zum Projekt {{ p.number }} {{ p.name }}</a>{% endfor %}</p>
+  {% endif %}
   {% if view.strong %}
   <p class="muted small">{{ view.strong|length|plural('passender Treffer', 'passende Treffer') }}{% if res.reranked %}, nach Relevanz sortiert{% endif %}</p>
   <ol class="hits">
-  {% for h in view.strong %}{{ search_hit(h, q) }}{% endfor %}
+  {% for h in view.strong %}{{ search_hit(h, q, show_project=not project) }}{% endfor %}
   </ol>
   {% else %}
+  {% if view.weak and view.show_weak %}
+  <p class="empty">Keine gut passenden Treffer für „{{ q }}“ – unten die Stellen, die am ehesten passen.</p>
+  {% else %}
   <p class="empty">Keine passenden Treffer für „{{ q }}“.</p>
-  <p class="muted small">Tipp: andere Begriffe oder die ausgeschriebene Form einer Abkürzung versuchen{% if project %} oder in allen Projekten suchen{% endif %}.</p>
+  {% endif %}
+  <p class="muted small">Tipp: andere Begriffe oder die ausgeschriebene Form einer Abkürzung versuchen{% if project %} oder <a href="{{ all_projects_url }}">in allen Projekten suchen</a>{% endif %}.</p>
   {% endif %}
   {% if view.weak %}
     {% if view.show_weak %}
     <h2>Schwach passende Treffer</h2>
     <p class="muted small">Diese Stellen haben mit der Suche wahrscheinlich wenig zu tun. <a href="{{ strong_url }}">Wieder ausblenden</a></p>
     <ol class="hits weak">
-    {% for h in view.weak %}{{ search_hit(h, q, weak=true) }}{% endfor %}
+    {% for h in view.weak %}{{ search_hit(h, q, weak=true, show_project=not project) }}{% endfor %}
     </ol>
     {% else %}
     <p class="muted small">{{ view.weak|length|plural('schwach passender Treffer', 'schwach passende Treffer') }} ausgeblendet – <a href="{{ weak_url }}">trotzdem schwache Treffer zeigen</a></p>

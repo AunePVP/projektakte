@@ -15,7 +15,7 @@
 {% if atts %}
 <h2>Anhänge</h2>
 <ul class="atts">
-  {% for a in atts %}<li><a href="/dokumente/{{ a.id }}">{{ a.filename }}</a> <span class="muted">({{ a.size|filesize }})</span> · <a href="/dokumente/{{ a.id }}/datei">Datei öffnen</a>{% if a.status != 'ok' %} <span class="pill warn" title="{{ a.message or '' }}">{{ DOC_STATUS[a.status] }}</span>{% endif %}</li>{% endfor %}
+  {% for a in atts %}<li><a href="/dokumente/{{ a.id }}">{{ a.filename }}</a> <span class="muted">({{ a.size|filesize }})</span> · <a href="{{ file_url(a.id, a.filename) }}">Datei öffnen</a>{% if a.status != 'ok' %} <span class="pill warn" title="{{ a.message or '' }}">{{ DOC_STATUS[a.status] }}</span>{% endif %}</li>{% endfor %}
 </ul>
 {% endif %}
 <h2>Text</h2>

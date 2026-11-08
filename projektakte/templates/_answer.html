@@ -11,17 +11,17 @@
   {% for n in result.notes %}<p class="note warn">{{ n }}</p>{% endfor %}
   {% if v.cited %}
   <h3>Quellen</h3>
-  {{ source_list(v.cited) }}
+  {{ source_list(v.cited, question=result.question) }}
   {% endif %}
   {% if v.possible %}
   <h3>Mögliche Fundstellen</h3>
   <p class="muted small">Von der Suche gefunden, aber nicht als Beleg bestätigt – bitte selbst nachlesen.</p>
-  {{ source_list(v.possible) }}
+  {{ source_list(v.possible, question=result.question) }}
   {% endif %}
   {% if v.more %}
   <details class="more-sources">
     <summary>Weitere Fundstellen ({{ v.more|length }}{% if v.cited %}, in der Antwort nicht zitiert{% endif %})</summary>
-    {{ source_list(v.more) }}
+    {{ source_list(v.more, question=result.question) }}
   </details>
   {% endif %}
   {% if v.search_prominent %}

@@ -11,7 +11,7 @@
 <form action="/suche" method="get" class="card ask-row">
   <input type="text" name="q" placeholder="In allen Projekten suchen, z. B. „Druckbelüftung Sicherheitstreppenraum“" aria-label="Volltextsuche">
   <button>Suchen</button>
-  <a class="button secondary" href="/fragen">Frage stellen</a>
+  <button class="secondary" formaction="/fragen" formmethod="post">Frage stellen</button>
 </form>
 <div id="project-list">{% include "_project_rows.html" %}</div>
 {% endblock %}

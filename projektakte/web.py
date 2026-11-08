@@ -11,7 +11,7 @@ import re
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -23,7 +23,8 @@ from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .registry import get_project, list_projects
 from .search import hybrid_search
-from .textutil import QUESTION_WORDS, content_terms, fold, stem
+from .webtext import (breakable_path, highlight, matcher, parse_blocks, passage, render_html, same_heading,
+                      snippet)
 
 log = logging.getLogger("projektakte.web")
 
@@ -138,39 +139,19 @@ def cite_links(text: str, prefix: str = "src", n_sources: int | None = None) -> 
     return Markup(_CITE_GROUP.sub(repl, str(escape(text))))
 
 
-_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
-
-
-def highlight(text: str, query: str) -> Markup:
-    """Escape ``text`` and mark the words of the search query (<mark>), matching like the search does:
-    case and accents ignored, word forms and compounds by prefix in both directions (Rettungsweg →
-    Rettungswege, Löschwasserteich → Löschwasser; cf. ``textutil.term_in``)."""
-    terms = [t for t in content_terms(query or "", QUESTION_WORDS) if len(t) >= 3 or t.isdigit()]
-    if not terms:
-        return Markup(escape(text))
-
-    def matches(word: str) -> bool:
-        folded = fold(word)
-        stemmed = stem(folded)
-        return any(stemmed == t or folded == t or (len(t) >= 4 and folded.startswith(t))
-                   or (len(folded) >= 6 and t.startswith(folded)) for t in terms)
-
-    out, pos = [], 0
-    for m in _TOKEN.finditer(text):
-        if matches(m.group(0)):
-            out.append(escape(text[pos:m.start()]))
-            out.append(Markup("<mark>") + escape(m.group(0)) + Markup("</mark>"))
-            pos = m.end()
-    out.append(escape(text[pos:]))
-    return Markup("").join(out)
-
-
 def search_url(query: str, project: str | None = None, **extra) -> str:
     params = {"q": query}
     if project:
         params["project"] = project
     params.update({k: v for k, v in extra.items() if v})
     return "/suche?" + urlencode(params)
+
+
+def file_url(doc_id: int, filename: str | None = None) -> str:
+    """Address of an original file. It ends with the file name, so the browser's PDF viewer names
+    the tab and the save dialog after the file instead of "datei"."""
+    name = (filename or "").strip()
+    return f"/dokumente/{doc_id}/datei/{quote(name, safe='')}" if name else f"/dokumente/{doc_id}/datei"
 
 
 # ------------------------------------------------------------------------------------- answers
@@ -188,6 +169,9 @@ def answer_view(result) -> dict:
     * every other status: the message or the marked text, the best (uncited) context passages as
       "Mögliche Fundstellen" (rest collapsed) and a link to the search page with the same question; a
       cut-off answer ("truncated") also keeps its cited sources under "Quellen".
+
+    The search link always shows the weak hits as well: a question rarely reaches the relevance
+    threshold of the search page, and "In der Suche öffnen" must never lead to an empty page.
     """
     field = result.get if isinstance(result, dict) else (lambda name: getattr(result, name, None))
     status = field("status")
@@ -208,18 +192,29 @@ def answer_view(result) -> dict:
         "possible": possible,
         "more": more,
         "n_sources": len(context),
-        "search_url": search_url(field("question") or "", field("project")),
+        "search_url": search_url(field("question") or "", field("project"), weak="1"),
         "search_prominent": status != "answered",
     }
 
 
 # ------------------------------------------------------------------------------------- search
-def search_view(res, *, min_score: float, show_weak: bool) -> dict:
+def literal_identifier_hit(h, query: str) -> bool:
+    """Does a hit literally contain an identifier of the query (project number, file number, "T90")?
+    Rerankers – the fake one on purpose, real cross-encoders in practice – score a bare identifier
+    low, but such a hit is exactly what was searched for."""
+    return matcher(query).has_identifier(getattr(h, "text", ""), getattr(h, "title", ""),
+                                         getattr(h, "rel_path", ""), getattr(h, "label", ""))
+
+
+def search_view(res, *, min_score: float, show_weak: bool, query: str = "") -> dict:
     """Split search hits into matching and weak ones. Only the reranker gives a comparable score;
-    without it (fallback) every hit counts as matching."""
+    without it (fallback) every hit counts as matching. A hit that literally contains an identifier
+    of the query is never weak."""
     if res.reranked:
-        strong = [h for h in res.hits if (h.rerank or 0.0) >= min_score]
-        weak = [h for h in res.hits if (h.rerank or 0.0) < min_score]
+        strong, weak = [], []
+        for h in res.hits:
+            ok = (h.rerank or 0.0) >= min_score or (query and literal_identifier_hit(h, query))
+            (strong if ok else weak).append(h)
     else:
         strong, weak = list(res.hits), []
     return {"strong": strong, "weak": weak, "show_weak": show_weak}
@@ -233,7 +228,8 @@ ASSIGN_LABELS = {
 }
 METHOD_LABELS = {"subject": "Nummer im Betreff", "body": "Nummer im Text", "attachment": "Nummer im Anhangnamen",
                  "manual": "von Hand", "similarity": "inhaltlich", "plmail": "in plMail"}
-DOC_STATUS = {"ok": "", "skipped": "übersprungen", "error": "Fehler", "empty": "ohne Text"}
+DOC_STATUS = {"ok": "", "skipped": "übersprungen", "error": "Fehler", "empty": "ohne Text",
+              "pending": "Anhang ausstehend"}
 INBOX_FILTERS = {"": "Alle", "suggested": "Mit Vorschlag", "unassigned": "Ohne Vorschlag"}
 
 
@@ -243,10 +239,11 @@ def auth_disabled_for(request: Request) -> bool:
 
 
 templates.env.filters.update(de_date=de_date, de_num=de_num, plural=plural, filesize=filesize,
-                             cite_links=cite_links, highlight=highlight)
+                             cite_links=cite_links, highlight=highlight, snippet=snippet,
+                             path=breakable_path)
 templates.env.globals.update(ASSIGN_LABELS=ASSIGN_LABELS, METHOD_LABELS=METHOD_LABELS, DOC_STATUS=DOC_STATUS,
                              INBOX_FILTERS=INBOX_FILTERS, version=__version__, answer_view=answer_view,
-                             auth_disabled_for=auth_disabled_for)
+                             auth_disabled_for=auth_disabled_for, passage=passage, file_url=file_url)
 
 
 # ------------------------------------------------------------------------------------- helpers
@@ -362,16 +359,20 @@ def project_page(request: Request, number: str):
 
 
 @router.get("/fragen", response_class=HTMLResponse)
-def ask_page(request: Request, project: str | None = None):
+def ask_page(request: Request, project: str | None = None, q: str = ""):
+    """Question form; ``q`` fills in a question typed elsewhere."""
     with db.session(_settings(request).db_path) as conn:
         projects = list_projects(conn)
-    return render(request, "ask.html", projects=projects, project=project, result=None, question="")
+    return render(request, "ask.html", projects=projects, project=project, result=None,
+                  question=q.strip()[:MAX_QUERY])
 
 
 @router.post("/fragen", response_class=HTMLResponse)
-def ask_submit(request: Request, question: str = Form(""), project: str = Form("")):
+def ask_submit(request: Request, question: str = Form(""), project: str = Form(""), q: str = Form("")):
+    """Answer a question. ``q`` is the field of the search box on the start page, whose button
+    "Frage stellen" sends the typed text here."""
     s = _settings(request)
-    question = question.strip()[:MAX_QUERY]
+    question = (question.strip() or q.strip())[:MAX_QUERY]
     with db.session(s.db_path) as conn:
         p = get_project(conn, project) if project else None
         result = None
@@ -387,49 +388,129 @@ def ask_submit(request: Request, question: str = Form(""), project: str = Form("
                   result=result, question=question)
 
 
+_IDENTIFIER_TOKEN = re.compile(r"[^\W_]+(?:[-/.][^\W_]+)*")
+MAX_PROJECT_LINKS = 3
+
+
+def projects_named_in(conn, query: str) -> list[dict]:
+    """Projects whose number appears in a search query ('BS-2024-0233' → link to the project page)."""
+    found: dict[str, dict] = {}
+    for token in _IDENTIFIER_TOKEN.findall(query or ""):
+        if any(c.isdigit() for c in token) and "-" in token:
+            p = get_project(conn, token)
+            if p:
+                found.setdefault(p["number"], p)
+        if len(found) >= MAX_PROJECT_LINKS:
+            break
+    return list(found.values())
+
+
 @router.get("/suche", response_class=HTMLResponse)
 def search_page(request: Request, q: str = "", project: str = "", weak: str = ""):
     s = _settings(request)
     query = q.strip()[:MAX_QUERY]
     res = view = None
+    named: list[dict] = []
     with db.session(s.db_path) as conn:
         p = get_project(conn, project) if project else None
         number = p["number"] if p else ""
         if query:
             res = hybrid_search(conn, request.app.state.ai, str(s.db_path), query, project=number or None,
                                 k=SEARCH_HITS, rerank_top_k=s.rerank_top_k, synonyms_file=s.synonyms_file)
+            named = projects_named_in(conn, query)
         projects = list_projects(conn)
     if res is not None:
-        view = search_view(res, min_score=getattr(s, "search_min_rerank", 0.05), show_weak=weak == "1")
+        view = search_view(res, min_score=getattr(s, "search_min_rerank", 0.05), show_weak=weak == "1",
+                           query=query)
     return render(request, "search.html", q=query, project=number, projects=projects, res=res, view=view,
+                  named_projects=named, all_projects_url=search_url(query, None, weak="1" if weak == "1" else ""),
                   weak_url=search_url(query, number, weak="1"), strong_url=search_url(query, number))
 
 
 # ------------------------------------------------------------------------------------- inbox
-def inbox_url(status: str = "", page: int = 1) -> str:
-    params = {k: v for k, v in (("status", status), ("page", page if page > 1 else "")) if v}
+def inbox_url(status: str = "", page: int = 1, **cursor: str) -> str:
+    """Address of an inbox page: filter plus the keyset cursor (``ab``: page starts at this mail,
+    ``vor``: the page before this mail, ``ende``: last page); ``page`` is the old offset form."""
+    params = {"status": status, "page": page if page > 1 else ""}
+    params.update(cursor)
+    params = {k: v for k, v in params.items() if v}
     return "/eingang" + ("?" + urlencode(params) if params else "")
 
 
+def _inbox_page_rows(conn, status: str, total: int, *, ab: str, vor: str, ende: str,
+                     page: str) -> list[dict]:
+    """One page read by key, plus the first mail of the next page if there is one (to link it)."""
+    size = inbox.PAGE_SIZE
+    start, before = inbox.decode_key(ab), inbox.decode_key(vor)
+    if before is not None:
+        rows = inbox.page_rows(conn, status=status, limit=size, before=before)
+        if len(rows) == size:  # fewer: the page before reaches the beginning – show the first page
+            following = inbox.page_rows(conn, status=status, limit=2, start=inbox.sort_key(rows[-1]))
+            return rows + following[1:]
+    elif start is not None:
+        rows = inbox.page_rows(conn, status=status, limit=size + 1, start=start)
+        if rows or not total:
+            return rows
+        ende = "1"  # the cursor lies behind the last open mail (decided meanwhile)
+    if ende == "1":
+        return inbox.page_rows(conn, status=status, limit=size, last=True)
+    if page:  # old links with a page number
+        pages = max(1, math.ceil(total / size))
+        offset = (min(max(1, _int(page, 1)), pages) - 1) * size
+        return inbox.page_rows(conn, status=status, limit=size + 1, offset=offset)
+    return inbox.page_rows(conn, status=status, limit=size + 1)
+
+
+def inbox_range(first: int, last: int, total: int, pager: bool = False) -> dict:
+    """What the summary line and the pager say about the shown part of the inbox: positions
+    ``first``–``last`` of ``total`` open mails (``done``: nothing of the page is left open)."""
+    return {"first": first, "last": last, "total": total, "done": last < first,
+            "paged": total > inbox.PAGE_SIZE or first > 1, "pager": pager}
+
+
 @router.get("/eingang", response_class=HTMLResponse)
-def inbox_page(request: Request, status: str = "", page: str = "1"):
+def inbox_page(request: Request, status: str = "", ab: str = "", vor: str = "", ende: str = "",
+               page: str = ""):
     s = _settings(request)
     status = status if status in INBOX_STATUSES else ""
+    size = inbox.PAGE_SIZE
     with db.session(s.db_path) as conn:
         counts = inbox.counts_by_status(conn)
         total = counts[status]
-        pages = max(1, math.ceil(total / inbox.PAGE_SIZE))
-        current = min(max(1, _int(page, 1)), pages)
-        offset = (current - 1) * inbox.PAGE_SIZE
-        mails = inbox.page_rows(conn, status=status, limit=inbox.PAGE_SIZE, offset=offset)
+        rows = _inbox_page_rows(conn, status, total, ab=ab, vor=vor, ende=ende, page=page)
+        mails, following = rows[:size], rows[size:size + 1]
+        first = inbox.count_before(conn, inbox.sort_key(mails[0]), status=status) + 1 if mails else 0
         projects = list_projects(conn)
-    back = inbox_url(status, current)
+    first_key = inbox.sort_key(mails[0]) if mails else None
+    last_key = inbox.sort_key(mails[-1]) if mails else None
+    last = first + len(mails) - 1 if mails else 0
+    next_key = inbox.sort_key(following[0]) if following else None
+    back = inbox_url(status, ab=inbox.encode_key(first_key)) if mails and first > 1 else inbox_url(status)
+    shown = inbox_range(first, last, total)
+    page_state = None
+    if mails:
+        page_state = {"seite_status": status, "seite_von": inbox.encode_key(first_key),
+                      "seite_bis": inbox.encode_key(last_key), "seite_pager": "1" if shown["paged"] else ""}
     return render(request, "inbox.html", mails=mails, projects=projects, assign_mode=s.assign_mode,
-                  counts=counts, status=status, page=current, pages=pages, total=total,
-                  first=offset + 1 if mails else 0, last=offset + len(mails), back=back,
+                  counts=counts, status=status, total=total, back=back, shown=shown, page_state=page_state,
                   filter_urls={k: inbox_url(k) for k in INBOX_FILTERS},
-                  prev_url=inbox_url(status, current - 1) if current > 1 else None,
-                  next_url=inbox_url(status, current + 1) if current < pages else None)
+                  start_url=inbox_url(status) if first > 1 else None,
+                  prev_url=inbox_url(status, vor=inbox.encode_key(first_key)) if first > 1 else None,
+                  next_url=inbox_url(status, ab=inbox.encode_key(next_key)) if next_key else None,
+                  end_url=inbox_url(status, ende="1") if next_key else None)
+
+
+def _page_summary(conn, state: dict) -> dict | None:
+    """The summary line of the inbox page a decision came from (sent with the HTMX request as
+    ``seite_*``): position of the mails still open on that page and the total of its filter."""
+    first_key, last_key = inbox.decode_key(state.get("von")), inbox.decode_key(state.get("bis"))
+    status = state.get("status") or ""
+    if first_key is None or last_key is None or status not in ("", *INBOX_STATUSES):
+        return None
+    total = inbox.counts_by_status(conn)[status]
+    before = inbox.count_before(conn, first_key, status=status)
+    left = inbox.count_between(conn, first_key, last_key, status=status)
+    return inbox_range(before + 1, before + left, total, pager=state.get("pager") == "1")
 
 
 def resolve_project_input(conn, text: str | None) -> str | None:
@@ -450,8 +531,10 @@ def resolve_project_input(conn, text: str | None) -> str | None:
     return text
 
 
-def _decide(conn, mail_id: int, action: str, project: str, user: str | None, mode: str) -> dict:
-    """Apply a decision; DecisionError becomes ``error``. LookupError (mail gone) propagates."""
+def _decide(conn, mail_id: int, action: str, project: str, user: str | None, mode: str,
+            page_state: dict | None = None) -> dict:
+    """Apply a decision; DecisionError becomes ``error``. LookupError (mail gone) propagates.
+    ``page_state`` (cursor of the page the decision came from) yields its new summary line."""
     result, error = None, None
     try:
         target = resolve_project_input(conn, project) if action == "assign" else (project or None)
@@ -464,7 +547,8 @@ def _decide(conn, mail_id: int, action: str, project: str, user: str | None, mod
         name = row[0] if row else None
     mail = inbox.mail_row(conn, mail_id) or {"id": mail_id, "subject": "", "assign_status": None}
     return {"action": action, "result": result, "error": error, "name": name, "mail": mail,
-            "counts": inbox.counts_by_status(conn)}
+            "counts": inbox.counts_by_status(conn), "typed": project if action == "assign" else "",
+            "summary": _page_summary(conn, page_state) if page_state else None}
 
 
 def _card_context(outcome: dict, back: str) -> dict:
@@ -474,12 +558,12 @@ def _card_context(outcome: dict, back: str) -> dict:
     failed decision keeps the mail actionable in the inbox (neutral card with the buttons)."""
     mail, result, error = outcome["mail"], outcome["result"], outcome["error"]
     ctx = {"mail": mail, "m": mail, "result": result, "error": error, "name": outcome["name"], "back": back,
-           "counts": outcome["counts"]}
+           "counts": outcome["counts"], "summary": outcome.get("summary")}
     if result and result["assign_status"] in ("confirmed", "none", "assigned"):
         return {**ctx, "card": "done"}
     if mail and mail["assign_status"] in INBOX_STATUSES:
-        if error:
-            return {**ctx, "card": "item", "notice": error, "notice_kind": "warn"}
+        if error:  # the typed project stays in the field, so a typo can be corrected
+            return {**ctx, "card": "item", "notice": error, "notice_kind": "warn", "typed": outcome.get("typed")}
         return {**ctx, "card": "item", "notice_kind": "info",
                 "notice": "Vorschlag verworfen – die Mail bleibt im Eingang. Bitte von Hand zuordnen oder "
                           "„Kein Projektbezug“ wählen."}
@@ -488,20 +572,25 @@ def _card_context(outcome: dict, back: str) -> dict:
 
 @router.post("/eingang/{mail_id}", response_class=HTMLResponse)
 def inbox_decide(request: Request, mail_id: int, action: str = Form(...), project: str = Form(""),
-                 back: str = Form("/eingang")):
+                 back: str = Form("/eingang"), seite_status: str = Form(""), seite_von: str = Form(""),
+                 seite_bis: str = Form(""), seite_pager: str = Form("")):
+    """A decision from an inbox card or the mail page. HTMX requests carry the cursor of their page
+    (``seite_*``, set on the card list) so the summary line of that page is updated as well."""
     s = _settings(request)
     back = safe_back(back)
     user = getattr(request.state, "user", None)
+    page_state = ({"status": seite_status, "von": seite_von, "bis": seite_bis, "pager": seite_pager}
+                  if is_htmx(request) and seite_von else None)
     try:
         with db.session(s.db_path) as conn:
-            outcome = _decide(conn, mail_id, action, project, user, s.assign_mode)
+            outcome = _decide(conn, mail_id, action, project, user, s.assign_mode, page_state)
     except LookupError:
         raise HTTPException(404, "Mail nicht gefunden") from None
     except sqlite3.OperationalError as exc:
         if not inbox.is_db_busy(exc):
             raise
         log.warning("Entscheidung zu Mail %s nicht gespeichert – Datenbank belegt: %s", mail_id, exc)
-        return _busy_response(request, mail_id, back)
+        return _busy_response(request, mail_id, back, project if action == "assign" else "")
     if is_htmx(request):
         return templates.TemplateResponse(request, "_inbox_update.html", _card_context(outcome, back))
     if outcome["error"]:
@@ -510,7 +599,7 @@ def inbox_decide(request: Request, mail_id: int, action: str = Form(...), projec
     return RedirectResponse(back, status_code=303)
 
 
-def _busy_response(request: Request, mail_id: int, back: str) -> HTMLResponse:
+def _busy_response(request: Request, mail_id: int, back: str, typed: str = "") -> HTMLResponse:
     """The decision could not be written: friendly German message, the mail stays actionable."""
     if not is_htmx(request):
         return render(request, "error.html", status_code=503, headers={"Retry-After": str(BUSY_RETRY_AFTER)},
@@ -524,7 +613,7 @@ def _busy_response(request: Request, mail_id: int, back: str) -> HTMLResponse:
     ctx = {"mail": mail or {"id": mail_id, "subject": ""}, "m": mail, "result": None, "error": BUSY_TEXT,
            "name": None, "back": back, "counts": counts}
     if mail and mail["assign_status"] in INBOX_STATUSES:
-        ctx.update(card="item", notice=BUSY_TEXT, notice_kind="warn")
+        ctx.update(card="item", notice=BUSY_TEXT, notice_kind="warn", typed=typed)
     else:
         ctx.update(card="done")
     return templates.TemplateResponse(request, "_inbox_update.html", ctx)
@@ -560,7 +649,7 @@ def document_page(request: Request, doc_id: int):
                          "p.number = d.project WHERE d.id = ?", (doc_id,)).fetchone()
         if not d:
             raise HTTPException(404, "Dokument nicht gefunden")
-        chunks = [dict(r) for r in conn.execute(
+        chunks = [chunk_view(dict(r)) for r in conn.execute(
             "SELECT id, ord, page, heading, text FROM chunks WHERE doc_id = ? ORDER BY ord", (doc_id,))]
         mail = None
         if d["mail_id"]:
@@ -568,9 +657,24 @@ def document_page(request: Request, doc_id: int):
     return render(request, "document.html", d=dict(d), chunks=chunks, mail=dict(mail) if mail else None)
 
 
+def chunk_view(chunk: dict) -> dict:
+    """A chunk as the document page shows it: the text without markdown syntax (headings as
+    headings, tables as tables) and a context line with the page and – unless the text starts with
+    it – the heading of the section it belongs to."""
+    blocks = parse_blocks(chunk.get("text") or "")
+    starts_with_heading = bool(blocks) and blocks[0].kind == "heading" and (
+        not chunk.get("heading") or same_heading(blocks[0].text, chunk["heading"]))
+    context = [f"Seite {chunk['page']}"] if chunk.get("page") else []
+    if chunk.get("heading") and not starts_with_heading:
+        context.append(chunk["heading"])
+    return {**chunk, "context": " · ".join(context), "html": render_html(blocks)}
+
+
 @router.get("/dokumente/{doc_id}/datei")
-def document_file(request: Request, doc_id: int):
-    """Original file (read-only). Only paths known to the index and below the configured roots."""
+@router.get("/dokumente/{doc_id}/datei/{filename:path}")
+def document_file(request: Request, doc_id: int, filename: str = ""):
+    """Original file (read-only). Only paths known to the index and below the configured roots.
+    The file name at the end of the address only names the browser tab; ``doc_id`` decides."""
     s = _settings(request)
     with db.session(s.db_path) as conn:
         d = conn.execute("SELECT path, cache_path, filename, mail_id FROM documents WHERE id = ?",

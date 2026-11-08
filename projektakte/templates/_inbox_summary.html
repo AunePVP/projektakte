@@ -1,0 +1,12 @@
+{#- Summary line of an inbox page (``shown`` from web.inbox_range); after every HTMX decision it is
+    sent again out of band with the numbers of the mails still open. -#}
+<p class="muted small" id="inbox-summary"{% if oob %} hx-swap-oob="true"{% endif %}>
+{%- if shown.done -%}
+Alle Mails dieser Seite sind bearbeitet · noch {{ shown.total|plural('Mail', 'Mails') }} im Eingang
+{%- if shown.total %} · <a href="{{ back or '/eingang' }}">Nächste Mails laden</a>{% endif %}
+{%- elif shown.paged -%}
+{{ shown.first|de_num }}–{{ shown.last|de_num }} von {{ shown.total|plural('Mail', 'Mails') }} · Vorschläge zuerst, dann die neuesten
+{%- else -%}
+{{ shown.total|plural('Mail', 'Mails') }} · Vorschläge zuerst, dann die neuesten
+{%- endif -%}
+</p>

@@ -2,9 +2,14 @@
 
 The inbox can hold thousands of mails after the first import of a mailbox, so it is always read
 page by page; attachment names are loaded with one query per page instead of one per mail.
+
+The web interface pages by key (keyset), not by offset: a page starts at the sort key of a mail
+(suggestion first, date, id – see :data:`SortKey`). Decided mails leave the inbox while their page
+is still open; with an offset the next page would then skip as many mails as were decided.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 
 from .assign import INBOX_STATUSES
@@ -17,8 +22,15 @@ _INBOX_COLUMNS = (
     "m.has_attachments, m.project, m.assign_status, m.assign_method, m.assign_reason, "
     "m.suggested_project, m.suggestion_score, p.name AS suggested_name"
 )
-# suggestions first (they need only one click), then the newest mails; id keeps pages stable
-_INBOX_ORDER = "(m.assign_status = 'suggested') DESC, m.date DESC, m.id DESC"
+# suggestions first (they need only one click), then the newest mails; id keeps pages stable.
+# The key columns in that order; every column is sorted descending.
+_KEY = "(m.assign_status = 'suggested'), COALESCE(m.date, ''), m.id"
+_INBOX_ORDER = "(m.assign_status = 'suggested') DESC, COALESCE(m.date, '') DESC, m.id DESC"
+_INBOX_ORDER_REVERSED = "(m.assign_status = 'suggested') ASC, COALESCE(m.date, '') ASC, m.id ASC"
+_FROM = "FROM mails m LEFT JOIN projects p ON p.number = m.suggested_project"
+
+SortKey = tuple[int, str, int]  # (1 for a suggestion else 0, date or '', id) – compared descending
+_KEY_TEXT = re.compile(r"^([01])~(\d{1,18})~(.{0,64})$", re.S)
 
 
 def statuses_for(status: str | None) -> tuple[str, ...]:
@@ -57,23 +69,74 @@ def attachment_names(conn: sqlite3.Connection, mails: list[dict]) -> None:
         m["attachments"] = by_mail.get(m["id"], [])
 
 
-def page_rows(conn: sqlite3.Connection, *, status: str = "", limit: int = PAGE_SIZE,
-              offset: int = 0) -> list[dict]:
-    """One page of inbox mails (with suggested project name and attachment names)."""
+def sort_key(mail: dict) -> SortKey:
+    """Position of a mail in the inbox order (as it was when the mail was read)."""
+    return (1 if mail["assign_status"] == "suggested" else 0, mail["date"] or "", int(mail["id"]))
+
+
+def encode_key(key: SortKey) -> str:
+    """Key as a URL parameter: '1~4711~2024-03-23T14:58:00+00:00'."""
+    return f"{key[0]}~{key[2]}~{key[1]}"
+
+
+def decode_key(text: str | None) -> SortKey | None:
+    """Key from a URL parameter; None for missing or malformed values."""
+    m = _KEY_TEXT.match(text or "")
+    return (int(m.group(1)), m.group(3), int(m.group(2))) if m else None
+
+
+def _where(status: str) -> tuple[str, tuple]:
     statuses = statuses_for(status)
-    marks = ",".join("?" * len(statuses))
-    rows = [dict(r) for r in conn.execute(
-        f"SELECT {_INBOX_COLUMNS} FROM mails m LEFT JOIN projects p ON p.number = m.suggested_project "
-        f"WHERE m.deleted = 0 AND m.assign_status IN ({marks}) ORDER BY {_INBOX_ORDER} LIMIT ? OFFSET ?",
-        (*statuses, max(1, limit), max(0, offset)))]
+    return f"m.deleted = 0 AND m.assign_status IN ({','.join('?' * len(statuses))})", statuses
+
+
+def page_rows(conn: sqlite3.Connection, *, status: str = "", limit: int = PAGE_SIZE, offset: int = 0,
+              start: SortKey | None = None, before: SortKey | None = None,
+              last: bool = False) -> list[dict]:
+    """One page of inbox mails in inbox order (with suggested project name and attachment names).
+
+    ``start``: the page begins at this key (inclusive) – keyset paging; ``before``: the ``limit``
+    mails right before this key; ``last``: the last ``limit`` mails; otherwise ``offset`` (API)."""
+    where, args = _where(status)
+    limit = max(1, limit)
+    if before is not None or last:
+        if before is not None:
+            where += f" AND ({_KEY}) > (?, ?, ?)"
+            args = (*args, *before)
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT {_INBOX_COLUMNS} {_FROM} WHERE {where} ORDER BY {_INBOX_ORDER_REVERSED} LIMIT ?",
+            (*args, limit))][::-1]
+    else:
+        if start is not None:
+            where += f" AND ({_KEY}) <= (?, ?, ?)"
+            args = (*args, *start)
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT {_INBOX_COLUMNS} {_FROM} WHERE {where} ORDER BY {_INBOX_ORDER} LIMIT ? OFFSET ?",
+            (*args, limit, 0 if start is not None else max(0, offset)))]
     attachment_names(conn, rows)
     return rows
 
 
+def count_before(conn: sqlite3.Connection, key: SortKey, *, status: str = "") -> int:
+    """Number of open mails that come before ``key`` in inbox order."""
+    where, args = _where(status)
+    return conn.execute(f"SELECT COUNT(*) FROM mails m WHERE {where} AND ({_KEY}) > (?, ?, ?)",
+                        (*args, *key)).fetchone()[0]
+
+
+def count_between(conn: sqlite3.Connection, first: SortKey, last: SortKey, *, status: str = "") -> int:
+    """Number of open mails from ``first`` to ``last`` (both inclusive, inbox order) – what is left of
+    a page after decisions."""
+    where, args = _where(status)
+    return conn.execute(
+        f"SELECT COUNT(*) FROM mails m WHERE {where} AND ({_KEY}) <= (?, ?, ?) AND ({_KEY}) >= (?, ?, ?)",
+        (*args, *first, *last)).fetchone()[0]
+
+
 def mail_row(conn: sqlite3.Connection, mail_id: int) -> dict | None:
     """A single mail in the shape of an inbox row (also when it has left the inbox)."""
-    row = conn.execute(f"SELECT {_INBOX_COLUMNS} FROM mails m LEFT JOIN projects p ON "
-                       "p.number = m.suggested_project WHERE m.id = ? AND m.deleted = 0", (mail_id,)).fetchone()
+    row = conn.execute(f"SELECT {_INBOX_COLUMNS} {_FROM} WHERE m.id = ? AND m.deleted = 0",
+                       (mail_id,)).fetchone()
     if not row:
         return None
     mail = dict(row)

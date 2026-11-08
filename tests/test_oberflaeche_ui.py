@@ -108,7 +108,7 @@ def test_no_citation_is_marked_and_shows_possible_locations():
     possible = _section(html, "<h3>Mögliche Fundstellen</h3>")
     assert [int(n) for n in re.findall(r'id="q-src-(\d)"', possible)] == [1, 2, 3]
     assert "Weitere Fundstellen (2)" in html
-    assert ('href="/suche?q=Wie+lange+muss+das+Notlicht+funktionieren%3F&amp;project=BS-1"' in html
+    assert ('href="/suche?q=Wie+lange+muss+das+Notlicht+funktionieren%3F&amp;project=BS-1&amp;weak=1"' in html
             and "In der Suche öffnen" in html)
 
 
@@ -166,7 +166,8 @@ def test_not_found_in_the_app_shows_possible_locations_and_search_link(ro):
         html = ro.post("/fragen", data=data, headers=headers).text
         assert "nichts gefunden" in html and "Mögliche Fundstellen" in html
         assert re.search(r'<li id="q-src-1" value="1">.*?href="/(dokumente|mails)/\d+', html, re.S)
-        assert 'href="/suche?q=Welche+Kantinenpreise+gelten+im+Sommer%3F&amp;project=BS-2024-0137"' in html
+        assert ('href="/suche?q=Welche+Kantinenpreise+gelten+im+Sommer%3F&amp;project=BS-2024-0137&amp;weak=1"'
+                in html)
 
 
 def test_llm_down_shows_found_passages(demo):
@@ -344,20 +345,26 @@ def test_inbox_is_paged_filtered_and_has_one_project_list(rw):
     assert page.count("<datalist") == 1 and "<select" not in page.split("<main>")[1]
     n_projects = len(rw.get("/api/projects").json()["projects"])
     assert page.split("<main>")[1].count("<option") == n_projects
-    assert 'href="/eingang?page=2"' in page and f"Seite 1 von {-(-total // 50)}" in page
+    assert re.search(r'href="/eingang\?ab=[^"]+" rel="next">Weiter', page) and 'href="/eingang?ende=1"' in page
     # suggestions first, then the newest
     statuses = [m["assign_status"] for m in rw.get("/api/inbox").json()["mails"]]
     assert statuses == sorted(statuses, key=lambda st: st != "suggested")
-    last = rw.get("/eingang", params={"page": "999"}).text
-    assert len(_card_ids(last)) == total - 50 * (-(-total // 50) - 1) and "Testmail 000" in last
+    last = rw.get("/eingang", params={"ende": "1"}).text
+    assert len(_card_ids(last)) == 50 and "Testmail 000" in last and f"{total - 49}–{total} von {total}" in last
+    # old page numbers still work
+    old = rw.get("/eingang", params={"page": "999"}).text
+    assert len(_card_ids(old)) == total - 50 * (-(-total // 50) - 1) and "Testmail 000" in old
     assert len(_card_ids(rw.get("/eingang", params={"page": "abc"}).text)) == 50
+    assert len(_card_ids(rw.get("/eingang", params={"ab": "kaputt", "vor": "1~x"}).text)) == 50
     # filter
     sugg = rw.get("/eingang", params={"status": "suggested"}).text
     assert 'class="active" aria-current="page">Mit Vorschlag' in sugg and "Testmail" not in sugg
     assert all('value="confirm"' in a for a in re.findall(r"<article.*?</article>", sugg, re.S))
-    # the non-JS forms return to the same page
-    p2 = rw.get("/eingang", params={"status": "unassigned", "page": "2"}).text
-    assert 'name="back" value="/eingang?status=unassigned&amp;page=2"' in p2
+    # the non-JS forms return to the same page (its first mail as cursor)
+    first = rw.get("/eingang", params={"status": "unassigned"}).text
+    nxt = re.search(r'href="(/eingang\?status=unassigned&amp;ab=[^"]+)" rel="next"', first).group(1)
+    p2 = rw.get(nxt.replace("&amp;", "&")).text
+    assert f'name="back" value="{nxt}"' in p2
     # the page stays small: no project list per card
     assert len(page) < 120_000
 
