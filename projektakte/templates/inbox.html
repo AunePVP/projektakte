@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import project_datalist %}
 {% block title %}Zuordnungs-Eingang{% endblock %}
 {% block content %}
 <h1>Zuordnungs-Eingang</h1>
@@ -7,36 +8,25 @@
 {% else %}
 <p class="muted">Mails ohne sichere Projektnummer. Vorschläge beruhen auf inhaltlicher Ähnlichkeit und werden erst nach Bestätigung zugeordnet.</p>
 {% endif %}
-{% if not mails %}<p class="empty">Alles zugeordnet – der Eingang ist leer.</p>{% endif %}
-{% for m in mails %}
-<article class="card inbox-item" id="mail-{{ m.id }}">
-  <div class="inbox-head">
-    <a href="/mails/{{ m.id }}"><strong>{{ m.subject or '(ohne Betreff)' }}</strong></a>
-    <span class="muted small">{{ m.date|de_date(true) }} · {{ m.sender_name or m.sender }}{% if m.attachments %} · 📎 {{ m.attachments|join(', ') }}{% endif %}</span>
-  </div>
-  <p class="preview">{{ m.preview }}</p>
-  {% if m.assign_status == 'suggested' %}
-  <p class="suggestion">Vorschlag: <a href="/projekte/{{ m.suggested_project }}"><strong>{{ m.suggested_project }} {{ m.suggested_name }}</strong></a></p>
-  {% endif %}
-  <p class="muted small">{{ m.assign_reason }}</p>
-  <div class="actions">
-    {% if m.assign_status == 'suggested' %}
-    <form method="post" action="/eingang/{{ m.id }}" hx-post="/eingang/{{ m.id }}" hx-target="#mail-{{ m.id }}" hx-swap="outerHTML">
-      <input type="hidden" name="action" value="confirm"><button>Bestätigen</button></form>
-    <form method="post" action="/eingang/{{ m.id }}" hx-post="/eingang/{{ m.id }}" hx-target="#mail-{{ m.id }}" hx-swap="outerHTML">
-      <input type="hidden" name="action" value="reject"><button class="secondary">Verwerfen</button></form>
-    {% endif %}
-    <form method="post" action="/eingang/{{ m.id }}" hx-post="/eingang/{{ m.id }}" hx-target="#mail-{{ m.id }}" hx-swap="outerHTML" class="assign-form">
-      <input type="hidden" name="action" value="assign">
-      <select name="project" aria-label="Projekt wählen" required>
-        <option value="">Projekt wählen …</option>
-        {% for p in projects %}<option value="{{ p.number }}">{{ p.number }} {{ p.name }}</option>{% endfor %}
-      </select>
-      <button class="secondary">Zuordnen</button>
-    </form>
-    <form method="post" action="/eingang/{{ m.id }}" hx-post="/eingang/{{ m.id }}" hx-target="#mail-{{ m.id }}" hx-swap="outerHTML">
-      <input type="hidden" name="action" value="none"><button class="secondary">Kein Projektbezug</button></form>
-  </div>
-</article>
-{% endfor %}
+<nav class="filters" aria-label="Filter">
+  {% for key, label in INBOX_FILTERS.items() %}
+  <a href="{{ filter_urls[key] }}"{% if key == status %} class="active" aria-current="page"{% endif %}>{{ label }} <span class="count" id="inbox-count-{{ key or 'all' }}">{{ counts[key]|de_num }}</span></a>
+  {% endfor %}
+</nav>
+{% if mails %}
+{{ project_datalist(projects) }}
+<p class="muted small">{% if pages > 1 %}{{ first|de_num }}–{{ last|de_num }} von {% endif %}{{ total|plural('Mail', 'Mails') }} · Vorschläge zuerst, dann die neuesten</p>
+{% for m in mails %}{% include "_inbox_item.html" %}{% endfor %}
+{% if pages > 1 %}
+<nav class="pager" aria-label="Seiten">
+  {% if prev_url %}<a class="button secondary" href="{{ prev_url }}" rel="prev">‹ Zurück</a>{% endif %}
+  <span>Seite {{ page|de_num }} von {{ pages|de_num }}</span>
+  {% if next_url %}<a class="button secondary" href="{{ next_url }}" rel="next">Weiter ›</a>{% endif %}
+</nav>
+{% endif %}
+{% elif status %}
+<p class="empty">Keine Mails mit diesem Filter. <a href="/eingang">Alle anzeigen</a></p>
+{% else %}
+<p class="empty">Alles zugeordnet – der Eingang ist leer.</p>
+{% endif %}
 {% endblock %}

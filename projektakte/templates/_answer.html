@@ -1,23 +1,33 @@
+{% from "_macros.html" import source_list %}
 {% if result %}
+{% set v = answer_view(result) %}
 <div class="answer {{ result.status }}">
-  {% if result.status == 'answered' or result.status == 'no_citation' %}
-  <p class="answer-text">{{ result.answer|cite_links('q-src') }}</p>
-  {% else %}
+  {% if v.title %}<p class="answer-title">{{ v.title }}</p>{% endif %}
+  {% if v.message_only %}
   <p class="answer-text"><strong>{{ result.answer }}</strong></p>
+  {% else %}
+  <p class="answer-text{% if v.unverified %} unverified{% endif %}">{{ result.answer|cite_links('q-src', v.n_sources) }}</p>
   {% endif %}
-  {% for n in result.notes %}<p class="pill warn">{{ n }}</p>{% endfor %}
-  {% if result.sources %}
+  {% for n in result.notes %}<p class="note warn">{{ n }}</p>{% endfor %}
+  {% if v.cited %}
   <h3>Quellen</h3>
-  <ol class="sources">
-    {% for s in result.sources %}
-    <li id="q-src-{{ s.n }}" value="{{ s.n }}">
-      {% if s.kind == 'mail' %}<a href="/mails/{{ s.mail_id }}">{{ s.label }}</a>
-      {% else %}<a href="/dokumente/{{ s.doc_id }}#c{{ s.chunk_id }}">{{ s.label }}</a>{% endif %}
-      {% if s.project %}<span class="muted">· <a href="/projekte/{{ s.project }}">{{ s.project }}</a></span>{% endif %}
-      <blockquote>{{ s.snippet }}{% if s.text|length > 400 %} …{% endif %}</blockquote>
-    </li>
-    {% endfor %}
-  </ol>
+  {{ source_list(v.cited) }}
+  {% endif %}
+  {% if v.possible %}
+  <h3>Mögliche Fundstellen</h3>
+  <p class="muted small">Von der Suche gefunden, aber nicht als Beleg bestätigt – bitte selbst nachlesen.</p>
+  {{ source_list(v.possible) }}
+  {% endif %}
+  {% if v.more %}
+  <details class="more-sources">
+    <summary>Weitere Fundstellen ({{ v.more|length }}{% if v.cited %}, in der Antwort nicht zitiert{% endif %})</summary>
+    {{ source_list(v.more) }}
+  </details>
+  {% endif %}
+  {% if v.search_prominent %}
+  <p class="answer-actions"><a class="button secondary" href="{{ v.search_url }}">In der Suche öffnen</a></p>
+  {% else %}
+  <p class="answer-actions small"><a href="{{ v.search_url }}">Alle Treffer in der Suche ansehen</a></p>
   {% endif %}
 </div>
 {% elif question == '' %}

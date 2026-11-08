@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{#- htmx must not inject its own <style> (blocked by the CSP); app.css styles the indicators -#}
+<meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false}'>
 <title>{% block title %}Projektakte{% endblock %} – Projektakte</title>
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/htmx.min.js" defer></script>
@@ -12,7 +14,7 @@
   <a class="brand" href="/">Projektakte</a>
   <nav>
     <a href="/" {% if request.url.path == '/' or request.url.path.startswith('/projekte') %}class="active"{% endif %}>Projekte</a>
-    <a href="/eingang" {% if request.url.path.startswith('/eingang') %}class="active"{% endif %}>Zuordnungs-Eingang{% if inbox_count %} <span class="badge">{{ inbox_count }}</span>{% endif %}</a>
+    <a href="/eingang" {% if request.url.path.startswith('/eingang') %}class="active"{% endif %}><span class="nav-long">Zuordnungs-Eingang</span><span class="nav-short">Eingang</span> {% with count=inbox_count, oob=false %}{% include "_inbox_badge.html" %}{% endwith %}</a>
     <a href="/fragen" {% if request.url.path.startswith('/fragen') %}class="active"{% endif %}>Fragen</a>
     <a href="/suche" {% if request.url.path.startswith('/suche') %}class="active"{% endif %}>Suche</a>
     <a href="/status" {% if request.url.path.startswith('/status') %}class="active"{% endif %}>Status</a>
@@ -22,6 +24,9 @@
     {% if user %}<span>Angemeldet: {{ user }}</span> <form method="post" action="/logout" class="inline"><button class="link">Abmelden</button></form>{% endif %}
   </div>
 </header>
+{% if (auth_disabled if auth_disabled is defined else auth_disabled_for(request)) %}
+<div class="notice danger"><strong>Zugangsschutz ist ausgeschaltet (nur Entwicklung)</strong> – alle Projekte, Mails und Dokumente sind ohne Anmeldung erreichbar. Für den Betrieb AUTH_DISABLED entfernen und Benutzer einrichten.</div>
+{% endif %}
 {% if demo_mode or ai_mode == 'fake' %}
 <div class="notice">Demo-Betrieb{% if demo_mode %}: frei erfundene Projekte und Mails{% endif %}{% if ai_mode == 'fake' %}; KI-Dienste simuliert{% endif %}.</div>
 {% endif %}

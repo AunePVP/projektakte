@@ -1,0 +1,31 @@
+<article class="card inbox-item" id="mail-{{ m.id }}">
+  <div class="inbox-head">
+    <a href="/mails/{{ m.id }}"><strong>{{ m.subject or '(ohne Betreff)' }}</strong></a>
+    <span class="muted small">{{ m.date|de_date(true) }} · {{ m.sender_name or m.sender }}{% if m.attachments %} · 📎 {{ m.attachments|join(', ') }}{% endif %}</span>
+  </div>
+  {% if notice %}<p class="note {{ notice_kind or 'info' }}" role="status">{{ notice }}</p>{% endif %}
+  <p class="preview">{{ m.preview }}</p>
+  {% if m.assign_status == 'suggested' %}
+  <p class="suggestion">Vorschlag: <a href="/projekte/{{ m.suggested_project }}"><strong>{{ m.suggested_project }} {{ m.suggested_name or '' }}</strong></a></p>
+  {% endif %}
+  {% if m.assign_reason %}<p class="muted small">{{ m.assign_reason }}</p>{% endif %}
+  <div class="actions">
+    {% if m.assign_status == 'suggested' %}
+    <form method="post" action="/eingang/{{ m.id }}" hx-post="/eingang/{{ m.id }}" hx-target="#mail-{{ m.id }}" hx-swap="outerHTML">
+      <input type="hidden" name="action" value="confirm"><input type="hidden" name="back" value="{{ back }}">
+      <button>Bestätigen</button></form>
+    <form method="post" action="/eingang/{{ m.id }}" hx-post="/eingang/{{ m.id }}" hx-target="#mail-{{ m.id }}" hx-swap="outerHTML">
+      <input type="hidden" name="action" value="reject"><input type="hidden" name="back" value="{{ back }}">
+      <button class="secondary">Verwerfen</button></form>
+    {% endif %}
+    <form method="post" action="/eingang/{{ m.id }}" hx-post="/eingang/{{ m.id }}" hx-target="#mail-{{ m.id }}" hx-swap="outerHTML" class="assign-form">
+      <input type="hidden" name="action" value="assign"><input type="hidden" name="back" value="{{ back }}">
+      <input type="text" name="project" list="project-options" required autocomplete="off" maxlength="200"
+             placeholder="Projekt: Nummer oder Name …" aria-label="Projekt wählen (Nummer oder Name)">
+      <button class="secondary">Zuordnen</button>
+    </form>
+    <form method="post" action="/eingang/{{ m.id }}" hx-post="/eingang/{{ m.id }}" hx-target="#mail-{{ m.id }}" hx-swap="outerHTML">
+      <input type="hidden" name="action" value="none"><input type="hidden" name="back" value="{{ back }}">
+      <button class="secondary">Kein Projektbezug</button></form>
+  </div>
+</article>

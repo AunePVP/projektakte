@@ -1,0 +1,8 @@
+{#- HTMX answer to an inbox decision: the new card plus, out of band, the navigation badge and the
+    counts of the filter buttons. -#}
+{% if card == 'item' %}{% include "_inbox_item.html" %}{% else %}{% include "_inbox_done.html" %}{% endif %}
+{% if counts %}
+{% with count=counts[''], oob=true %}{% include "_inbox_badge.html" %}{% endwith %}
+{% for key in INBOX_FILTERS %}<span class="count" id="inbox-count-{{ key or 'all' }}" hx-swap-oob="true">{{ counts[key]|de_num }}</span>
+{% endfor %}
+{% endif %}

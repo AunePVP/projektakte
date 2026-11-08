@@ -1,0 +1,39 @@
+{#- Shared building blocks. No inline scripts or styles (CSP default-src 'self'). -#}
+
+{% macro project_options(projects, selected='', empty_label='Projekt wählen …') -%}
+<option value="">{{ empty_label }}</option>
+{% for p in projects %}<option value="{{ p.number }}"{% if p.number == selected %} selected{% endif %}>{{ p.number }} {{ p.name }}</option>
+{% endfor %}
+{%- endmacro %}
+
+{#- One list of all projects per page; every inbox card's project field refers to it (list="project-options"). -#}
+{% macro project_datalist(projects) -%}
+<datalist id="project-options">
+{% for p in projects %}<option value="{{ p.number }}">{{ p.number }} {{ p.name }}</option>
+{% endfor %}</datalist>
+{%- endmacro %}
+
+{#- Numbered sources of an answer; the number is the one used in the answer text ([3]). -#}
+{% macro source_list(items, prefix='q-src') -%}
+<ol class="sources">
+  {% for s in items %}
+  <li id="{{ prefix }}-{{ s.n }}" value="{{ s.n }}">
+    <span class="src-n">[{{ s.n }}]</span>
+    {% if s.kind == 'mail' %}<a href="/mails/{{ s.mail_id }}">{{ s.label }}</a>
+    {% else %}<a href="/dokumente/{{ s.doc_id }}#c{{ s.chunk_id }}">{{ s.label }}</a>{% endif %}
+    {% if s.project %}<span class="muted">· <a href="/projekte/{{ s.project }}">{{ s.project }}</a></span>{% endif %}
+    {% set text = s.snippet or (s.text or '')[:400] %}
+    <blockquote>{{ text }}{% if (s.text or '')|length > text|length %} …{% endif %}</blockquote>
+  </li>
+  {% endfor %}
+</ol>
+{%- endmacro %}
+
+{% macro search_hit(h, q, weak=false) -%}
+<li{% if weak %} class="weak"{% endif %}>
+  <div>{% if h.kind == 'mail' %}<a href="/mails/{{ h.mail_id }}">{{ h.label }}</a>{% else %}<a href="/dokumente/{{ h.doc_id }}#c{{ h.chunk_id }}">{{ h.label }}</a>{% endif %}
+  {% if h.project %}<span class="muted">· <a href="/projekte/{{ h.project }}">{{ h.project }} {{ h.project_name }}</a></span>{% endif %}
+  {% if weak %}<span class="pill">schwach passend</span>{% endif %}</div>
+  <blockquote>{{ h.text[:500]|highlight(q) }}{% if h.text|length > 500 %} …{% endif %}</blockquote>
+</li>
+{%- endmacro %}

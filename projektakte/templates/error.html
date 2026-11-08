@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}Fehler{% endblock %}
+{% block title %}{{ title or 'Fehler' }}{% endblock %}
 {% block content %}
-<h1>{{ title }}</h1>
+<h1>{{ title or 'Fehler' }}</h1>
 <p>{{ message }}</p>
-<p><a href="/">Zur Projektliste</a></p>
+<p>{% if back %}<a href="{{ back }}">{{ back_label or 'Zurück' }}</a> · {% endif %}<a href="/">Zur Projektliste</a></p>
 {% endblock %}

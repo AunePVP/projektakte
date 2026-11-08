@@ -1,7 +1,9 @@
-<article class="card inbox-item done" id="mail-{{ mail.id }}">
+{#- Card after a decision: green only for a real decision, neutral with a warning if it failed. -#}
+<article class="card inbox-item {{ 'failed' if error or not result else 'done' }}" id="mail-{{ mail.id }}">
   <a href="/mails/{{ mail.id }}"><strong>{{ mail.subject or '(ohne Betreff)' }}</strong></a>
-  {% if error %}<p class="pill warn">{{ error }}</p>
-  {% elif result.assign_status == 'confirmed' %}<p>✓ Zugeordnet zu <a href="/projekte/{{ result.project }}">{{ result.project }} {{ name }}</a>.</p>
+  {% if error %}<p class="note warn" role="status">{{ error }}</p>
+  {% elif result.assign_status == 'confirmed' %}<p>✓ Zugeordnet zu <a href="/projekte/{{ result.project }}">{{ result.project }} {{ name or '' }}</a>.</p>
   {% elif result.assign_status == 'none' %}<p>✓ Als „ohne Projektbezug“ markiert.</p>
-  {% else %}<p>Vorschlag verworfen – die Mail bleibt im Eingang. <a href="/eingang">Neu laden</a></p>{% endif %}
+  {% else %}<p>Status: {{ ASSIGN_LABELS.get(result.assign_status, result.assign_status) }}</p>{% endif %}
+  <p class="small"><a href="/mails/{{ mail.id }}">Zuordnung ändern</a>{% if error %} · <a href="{{ back or '/eingang' }}">Eingang neu laden</a>{% endif %}</p>
 </article>

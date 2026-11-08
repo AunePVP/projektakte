@@ -57,7 +57,11 @@ def test_ask_form_htmx_and_plain(client):
 
 def test_search_page(client):
     r = client.get("/suche", params={"q": "Löschwasserteich"})
-    assert r.status_code == 200 and "Industriehalle Nordring" in r.text
+    assert r.status_code == 200
+    hits = r.text.split('<ol class="hits">', 1)[1].split("</ol>", 1)[0]  # not the project select
+    assert "Industriehalle Nordring" in hits
+    nothing = client.get("/suche", params={"q": "xyzzy"}).text
+    assert "Keine passenden Treffer" in nothing and '<ol class="hits">' not in nothing
 
 
 def test_inbox_actions(client):
@@ -65,7 +69,7 @@ def test_inbox_actions(client):
     assert "Bestätigen" in page and "Verwerfen" in page and "Kein Projektbezug" in page
     ids = re.findall(r'id="mail-(\d+)"', page)
     r = client.post(f"/eingang/{ids[0]}", data={"action": "confirm"}, headers=HX)
-    assert "Zugeordnet zu" in r.text
+    assert "Zugeordnet zu" in r.text and 'id="inbox-badge"' in r.text and 'hx-swap-oob="true"' in r.text
     r = client.post(f"/eingang/{ids[1]}", data={"action": "reject"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/eingang"
     r = client.post(f"/eingang/{ids[2]}", data={"action": "assign", "project": "BS-2024-0058"}, headers=HX)

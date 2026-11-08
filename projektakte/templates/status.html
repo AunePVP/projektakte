@@ -7,21 +7,22 @@
     <h2>Indexierung</h2>
     <dl class="meta">
       <dt>Zustand</dt><dd>{{ 'läuft (' ~ st.indexing.phase ~ ')' if st.indexing.running else 'wartet' }}</dd>
-      <dt>Läufe</dt><dd>{{ st.indexing.runs }}</dd>
+      <dt>Läufe</dt><dd>{{ st.indexing.runs|de_num }}</dd>
       <dt>Letzter Lauf</dt><dd>{{ st.indexing.last_finished|de_date(true) }}</dd>
       <dt>Nächster Lauf</dt><dd>{{ st.indexing.next_run|de_date(true) if st.indexing.next_run else 'auf Anforderung' }}</dd>
-      {% if st.indexing.last_error %}<dt>Fehler</dt><dd class="pill warn">{{ st.indexing.last_error }}</dd>{% endif %}
+      {% if st.indexing.last_error %}<dt>Fehler</dt><dd><p class="note warn">{{ st.indexing.last_error }}</p></dd>{% endif %}
+      {% if st.indexing.last_warnings %}<dt>Hinweise</dt><dd>{% for w in st.indexing.last_warnings %}<p class="note warn">{{ w }}</p>{% endfor %}</dd>{% endif %}
     </dl>
     <form method="post" action="/status/neu-indexieren"><button>Jetzt neu indexieren</button></form>
   </section>
   <section class="card">
     <h2>Bestand</h2>
     <dl class="meta">
-      <dt>Projekte</dt><dd>{{ st.counts.projects }}</dd>
-      <dt>Dokumente</dt><dd>{{ st.counts.documents }} ({{ st.counts.documents_skipped }} übersprungen/fehlerhaft)</dd>
-      <dt>Mails</dt><dd>{{ st.counts.mails }} ({{ st.counts.inbox }} im Eingang{% if st.counts.plmail_open %}, {{ st.counts.plmail_open }} in plMail noch nicht zugeordnet{% endif %})</dd>
+      <dt>Projekte</dt><dd>{{ st.counts.projects|de_num }}</dd>
+      <dt>Dokumente</dt><dd>{{ st.counts.documents|de_num }} ({{ st.counts.documents_skipped|de_num }} übersprungen/fehlerhaft)</dd>
+      <dt>Mails</dt><dd>{{ st.counts.mails|de_num }} ({{ st.counts.inbox|de_num }} im Eingang{% if st.counts.plmail_open %}, {{ st.counts.plmail_open|de_num }} in plMail noch nicht zugeordnet{% endif %})</dd>
       <dt>Zuordnung</dt><dd>{{ 'von Hand (Mails aus plMail werden in plMail zugeordnet)' if st.assign_mode == 'manual' else 'automatisch über die Projektnummer, sonst Vorschlag' }}</dd>
-      <dt>Abschnitte</dt><dd>{{ st.counts.chunks }} ({{ st.counts.chunks_without_vector }} ohne Vektor)</dd>
+      <dt>Abschnitte</dt><dd>{{ st.counts.chunks|de_num }} ({{ st.counts.chunks_without_vector|de_num }} ohne Vektor)</dd>
     </dl>
   </section>
 </div>

@@ -1,0 +1,1 @@
+<span id="inbox-badge"{% if count %} class="badge"{% else %} hidden{% endif %}{% if oob %} hx-swap-oob="true"{% endif %}>{% if count %}{{ count|de_num }}{% endif %}</span>

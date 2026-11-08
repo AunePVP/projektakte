@@ -1,27 +1,34 @@
 {% extends "base.html" %}
+{% from "_macros.html" import project_options, search_hit %}
 {% block title %}Suche{% endblock %}
 {% block content %}
 <h1>Suche</h1>
-<form method="get" action="/suche" class="card ask-row">
-  <input type="search" name="q" value="{{ q }}" placeholder="Suchbegriffe" aria-label="Suchbegriffe">
-  <select name="project" aria-label="Projekt">
-    <option value="">alle Projekte</option>
-    {% for p in projects %}<option value="{{ p.number }}" {% if p.number == project %}selected{% endif %}>{{ p.number }} {{ p.name }}</option>{% endfor %}
-  </select>
+<form method="get" action="/suche" class="card ask-row" role="search">
+  <input type="search" name="q" value="{{ q }}" placeholder="Suchbegriffe" aria-label="Suchbegriffe" maxlength="2000">
+  <select name="project" aria-label="Projekt">{{ project_options(projects, project, 'alle Projekte') }}</select>
   <button>Suchen</button>
 </form>
 {% if res %}
-  {% for n in res.notes %}<p class="pill warn">{{ n }}</p>{% endfor %}
-  {% if res.hits %}
+  {% for n in res.notes %}<p class="note warn">{{ n }}</p>{% endfor %}
+  {% if view.strong %}
+  <p class="muted small">{{ view.strong|length|plural('passender Treffer', 'passende Treffer') }}{% if res.reranked %}, nach Relevanz sortiert{% endif %}</p>
   <ol class="hits">
-  {% for h in res.hits %}
-    <li>
-      <div>{% if h.kind == 'mail' %}<a href="/mails/{{ h.mail_id }}">{{ h.label }}</a>{% else %}<a href="/dokumente/{{ h.doc_id }}#c{{ h.chunk_id }}">{{ h.label }}</a>{% endif %}
-      {% if h.project %}<span class="muted">· <a href="/projekte/{{ h.project }}">{{ h.project }} {{ h.project_name }}</a></span>{% endif %}</div>
-      <blockquote>{{ h.text[:500] }}{% if h.text|length > 500 %} …{% endif %}</blockquote>
-    </li>
-  {% endfor %}
+  {% for h in view.strong %}{{ search_hit(h, q) }}{% endfor %}
   </ol>
-  {% else %}<p class="empty">Keine Treffer.</p>{% endif %}
+  {% else %}
+  <p class="empty">Keine passenden Treffer für „{{ q }}“.</p>
+  <p class="muted small">Tipp: andere Begriffe oder die ausgeschriebene Form einer Abkürzung versuchen{% if project %} oder in allen Projekten suchen{% endif %}.</p>
+  {% endif %}
+  {% if view.weak %}
+    {% if view.show_weak %}
+    <h2>Schwach passende Treffer</h2>
+    <p class="muted small">Diese Stellen haben mit der Suche wahrscheinlich wenig zu tun. <a href="{{ strong_url }}">Wieder ausblenden</a></p>
+    <ol class="hits weak">
+    {% for h in view.weak %}{{ search_hit(h, q, weak=true) }}{% endfor %}
+    </ol>
+    {% else %}
+    <p class="muted small">{{ view.weak|length|plural('schwach passender Treffer', 'schwach passende Treffer') }} ausgeblendet – <a href="{{ weak_url }}">trotzdem schwache Treffer zeigen</a></p>
+    {% endif %}
+  {% endif %}
 {% endif %}
 {% endblock %}

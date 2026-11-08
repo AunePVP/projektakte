@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import project_options %}
 {% block title %}Fragen{% endblock %}
 {% block content %}
 <h1>Frage stellen</h1>
@@ -8,10 +9,7 @@
     <button>Fragen</button>
   </div>
   <label class="small">Projekt:
-    <select name="project">
-      <option value="">alle Projekte</option>
-      {% for p in projects %}<option value="{{ p.number }}" {% if p.number == project %}selected{% endif %}>{{ p.number }} {{ p.name }}</option>{% endfor %}
-    </select>
+    <select name="project">{{ project_options(projects, project, 'alle Projekte') }}</select>
   </label>
   <span id="ask-spinner" class="htmx-indicator muted">Suche und formuliere Antwort …</span>
 </form>

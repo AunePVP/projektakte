@@ -1,13 +1,15 @@
+{% set fake = deps.ai_mode == 'fake' %}
 <table class="list">
-  <thead><tr><th class="w-m">Dienst</th><th class="w-s">Zustand</th><th class="w-m">Format</th><th class="w-s num">ms</th><th>Details</th></tr></thead>
+  <thead><tr><th class="w-m">Dienst</th><th class="w-m">Zustand</th><th class="w-m">Format</th><th class="w-s num">ms</th><th>Details</th></tr></thead>
   <tbody>
   {% for name, s in deps.services.items() %}
   <tr>
-    <td>{{ {'llm': 'Sprachmodell', 'embeddings': 'Embeddings', 'reranker': 'Reranker'}[name] }}</td>
+    <td>{{ {'llm': 'Sprachmodell', 'embeddings': 'Embeddings', 'reranker': 'Reranker'}.get(name, name) }}</td>
     <td>{% if s.ok %}<span class="pill assigned">erreichbar</span>{% else %}<span class="pill warn">nicht erreichbar</span>{% endif %}</td>
     <td>{{ s.format or '–' }}{% if s.response_format and s.response_format != s.format %} / {{ s.response_format }}{% endif %}</td>
-    <td class="num">{{ s.latency_ms if s.latency_ms is defined else '–' }}</td>
-    <td class="small">{{ s.url }}{% if s.model %} · {{ s.model }}{% endif %}{% if s.dim %} · {{ s.dim }} Dim.{% endif %}
+    <td class="num">{{ s.latency_ms|de_num(1) if s.latency_ms is defined and s.latency_ms is not none else '–' }}</td>
+    <td class="small">{% if fake %}<span class="pill busy">simuliert</span> Fake-Dienst im Demo-Betrieb – keine echte KI{% else %}{{ s.url }}{% if s.model %} · {{ s.model }}{% endif %}{% endif %}{% if s.dim %} · {{ s.dim|de_num }} Dim.{% endif %}
+      {% if s.hint and not fake %}<br><span class="muted">{{ s.hint }}</span>{% endif %}
       {% if s.error %}<br><span class="warn-text">{{ s.error }}</span>{% endif %}
       {% if s.fallback %}<br><em>Rückfall: {{ s.fallback }}</em>{% endif %}</td>
   </tr>
@@ -17,8 +19,8 @@
     <td>plMail (JMAP)</td>
     <td>{% if deps.plmail.ok %}<span class="pill assigned">erreichbar</span>{% else %}<span class="pill warn">nicht erreichbar</span>{% endif %}</td>
     <td>{{ deps.plmail.format or '–' }}</td>
-    <td class="num">{{ deps.plmail.latency_ms if deps.plmail.latency_ms is defined else '–' }}</td>
-    <td class="small">{{ deps.plmail.url }}{% if deps.plmail.accounts is defined %} · {{ deps.plmail.accounts }} Konto/Konten{% endif %}
+    <td class="num">{{ deps.plmail.latency_ms|de_num(1) if deps.plmail.latency_ms is defined and deps.plmail.latency_ms is not none else '–' }}</td>
+    <td class="small">{{ deps.plmail.url }}{% if deps.plmail.accounts is defined %} · {{ deps.plmail.accounts|plural('Konto', 'Konten') }}{% endif %}
       {% if deps.plmail.error %}<br><span class="warn-text">{{ deps.plmail.error }}</span>{% endif %}</td>
   </tr>
   {% endif %}

@@ -1,18 +1,22 @@
 """JSON API."""
 from __future__ import annotations
 
+import logging
+import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from . import db
+from . import db, inbox as inbox_queries
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .ask import ask as answer_question
 from .search import hybrid_search
 from .registry import get_project, list_projects
 
+log = logging.getLogger("projektakte.api")
 router = APIRouter(prefix="/api")
+BUSY_RETRY_AFTER = 5  # seconds
 
 
 def _settings(request: Request):
@@ -101,9 +105,7 @@ def mails(request: Request, project: str | None = None, status: str | None = Non
         rows = conn.execute(f"SELECT {MAIL_COLUMNS} FROM mails{sql_where} ORDER BY date DESC, id DESC "
                             "LIMIT ? OFFSET ?", (*args, limit, max(0, offset))).fetchall()
         items = [dict(r) for r in rows]
-        for m in items:
-            m["attachments"] = [r[0] for r in conn.execute(
-                "SELECT filename FROM documents WHERE mail_id = ? ORDER BY id", (m["id"],))]
+        inbox_queries.attachment_names(conn, items)
     return {"total": total, "count": len(items), "mails": items}
 
 
@@ -122,20 +124,22 @@ def mail(request: Request, mail_id: int) -> dict:
 
 
 @router.get("/inbox")
-def inbox(request: Request) -> dict:
-    """Assignment inbox: mails without a certain project – with or without a suggestion."""
+def inbox(request: Request, status: str | None = None, limit: int = inbox_queries.MAX_API_LIMIT,
+          offset: int = 0) -> dict:
+    """Assignment inbox: mails without a certain project – with or without a suggestion.
+
+    Suggestions first, then the newest. Paged (``limit`` at most 500, ``offset``); ``total`` is the
+    number of matching mails, ``count`` the number in this answer. ``status``: suggested | unassigned."""
     s = _settings(request)
+    if status and status not in INBOX_STATUSES:
+        raise HTTPException(400, f"Unbekannter Status: {status} (erlaubt: {', '.join(INBOX_STATUSES)})")
+    limit = max(1, min(limit, inbox_queries.MAX_API_LIMIT))
     with db.session(s.db_path) as conn:
-        rows = conn.execute(
-            f"SELECT {MAIL_COLUMNS} FROM mails WHERE deleted = 0 AND assign_status IN (?, ?) "
-            "ORDER BY (assign_status = 'suggested') DESC, date DESC", INBOX_STATUSES).fetchall()
-        items = [dict(r) for r in rows]
-        names = dict(conn.execute("SELECT number, name FROM projects").fetchall())
-        for m in items:
-            m["suggested_project_name"] = names.get(m["suggested_project"])
-            m["attachments"] = [r[0] for r in conn.execute(
-                "SELECT filename FROM documents WHERE mail_id = ? ORDER BY id", (m["id"],))]
-    return {"count": len(items), "mails": items}
+        total = inbox_queries.counts_by_status(conn)[status or ""]
+        items = inbox_queries.page_rows(conn, status=status or "", limit=limit, offset=max(0, offset))
+    for m in items:
+        m["suggested_project_name"] = m.pop("suggested_name")
+    return {"total": total, "count": len(items), "offset": max(0, offset), "mails": items}
 
 
 class AssignRequest(BaseModel):
@@ -147,13 +151,20 @@ class AssignRequest(BaseModel):
 def assign(request: Request, mail_id: int, body: AssignRequest) -> dict:
     s = _settings(request)
     user = getattr(request.state, "user", None)
-    with db.session(s.db_path) as conn:
-        try:
+    try:
+        with db.session(s.db_path) as conn:
             return decide(conn, mail_id, body.action, body.project, user=user, mode=s.assign_mode)
-        except LookupError as exc:
-            raise HTTPException(404, str(exc)) from None
-        except DecisionError as exc:
-            raise HTTPException(400, str(exc)) from None
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except DecisionError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except sqlite3.OperationalError as exc:
+        if not inbox_queries.is_db_busy(exc):
+            raise
+        log.warning("Entscheidung zu Mail %s nicht gespeichert – Datenbank belegt: %s", mail_id, exc)
+        raise HTTPException(503, "Die Datenbank ist gerade belegt (Indexierung) – die Entscheidung wurde nicht "
+                                 "gespeichert. Bitte in einigen Sekunden erneut versuchen.",
+                            headers={"Retry-After": str(BUSY_RETRY_AFTER)}) from None
 
 
 @router.get("/search")
@@ -168,7 +179,8 @@ def search(request: Request, q: str, project: str | None = None, k: int = 10) ->
                 raise HTTPException(404, f"Projekt {project} nicht gefunden")
             project = p["number"]
         res = hybrid_search(conn, request.app.state.ai, str(s.db_path), q, project=project,
-                            k=max(1, min(k, 50)), rerank_top_k=s.rerank_top_k)
+                            k=max(1, min(k, 50)), rerank_top_k=s.rerank_top_k,
+                            synonyms_file=s.synonyms_file)
     return {"query": res.query, "project": res.project, "reranked": res.reranked, "notes": res.notes,
             "hits": [h.to_dict() for h in res.hits]}
 
@@ -195,7 +207,8 @@ def ask(request: Request, body: AskRequest) -> dict:
             project = p["number"]
         result = answer_question(conn, request.app.state.ai, str(s.db_path), question, project=project,
                                  top_k=s.ask_top_k, context_chars=s.ask_context_chars,
-                                 min_rerank=s.ask_min_rerank, rerank_top_k=s.rerank_top_k)
+                                 min_rerank=s.ask_min_rerank, rerank_top_k=s.rerank_top_k,
+                                 synonyms_file=s.synonyms_file)
     return result.to_dict()
 
 

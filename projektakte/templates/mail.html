@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import project_options %}
 {% block title %}{{ m.subject or 'Mail' }}{% endblock %}
 {% block content %}
 <p class="crumbs">{% if m.project %}<a href="/projekte/{{ m.project }}">{{ m.project }} {{ m.project_name }}</a>{% else %}<a href="/eingang">Zuordnungs-Eingang</a>{% endif %} › Mail</p>
@@ -28,10 +29,7 @@
   <form method="post" action="/eingang/{{ m.id }}" class="ask-row">
     <input type="hidden" name="back" value="/mails/{{ m.id }}">
     <input type="hidden" name="action" value="assign">
-    <select name="project" required aria-label="Projekt">
-      <option value="">Projekt wählen …</option>
-      {% for p in projects %}<option value="{{ p.number }}" {% if p.number == m.project %}selected{% endif %}>{{ p.number }} {{ p.name }}</option>{% endfor %}
-    </select>
+    <select name="project" required aria-label="Projekt">{{ project_options(projects, m.project) }}</select>
     <button>Zuordnen</button>
   </form>
   <form method="post" action="/eingang/{{ m.id }}"><input type="hidden" name="back" value="/mails/{{ m.id }}"><input type="hidden" name="action" value="none"><button class="secondary">Kein Projektbezug</button></form>
