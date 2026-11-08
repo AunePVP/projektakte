@@ -137,3 +137,15 @@ Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
   sie eine Neuindexierung oder einen Neuaufbau der Mail-Tabelle überstehen.
 - Ohne Vektoren (Embedding-Dienst aus) bleiben Mails im Eingang mit dem Hinweis, dass der Vorschlag
   nachgeholt wird; sichere Zuordnungen funktionieren immer.
+
+## Schritt 9 – Hybride Suche
+
+- **Reciprocal Rank Fusion** (k = 60) statt gewichteter Score-Summen: BM25- und Kosinuswerte sind
+  nicht vergleichbar skaliert, Ränge schon. Keine Kalibrierung nötig, auch nicht beim Wechsel auf
+  die echten Embeddings.
+- **Anfrage für FTS5**: gefaltete, leicht gestemmte Inhaltswörter (ohne Stopp- und Fragewörter),
+  ODER-verknüpft mit Präfixsuche (`"rettungsweg"*`); kurze Zahlen bleiben erhalten („Auflage 7“).
+  BM25 gewichtet die Titelspalte (Datei, Projekt, Überschrift) doppelt.
+- **Reranker-Eingabe** = Titelzeile (Datei bzw. Betreff, Projekt, Überschrift) + Abschnittstext,
+  auf 2000 Zeichen gekürzt; nur die besten 30 Kandidaten (docs/ki-dienste.md).
+- **Vielfalt**: höchstens 3 Abschnitte je Dokument bzw. Mail in der Ergebnisliste.

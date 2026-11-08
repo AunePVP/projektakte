@@ -5,6 +5,15 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 9 – Hybride Suche mit Reranker
+- Volltext (FTS5/BM25, Titelspalte doppelt gewichtet) + Vektorsuche, Reciprocal Rank Fusion,
+  höchstens 3 Abschnitte je Quelle, Reranker auf die besten 30 Kandidaten (beide Antwortformate).
+- Rückfall: ohne Reranker Reihenfolge der hybriden Suche, ohne Embeddings nur Volltext – mit Hinweis
+  im Ergebnis; `/health/deps` meldet den Reranker-Ausfall samt Rückfallverhalten.
+- `GET /api/search?q=…&project=…&k=…` mit Quellenangabe je Treffer (Datei/Seite bzw. Mail/Datum).
+- Evaluationssatz als Test: Für alle 18 Fragen mit Quelle steht diese unter den ersten 5 Treffern
+  (mit den Fakes aktuell immer auf Rang 1 oder 2).
+
 ### Schritt 8 – Mails zuordnen
 - Sichere Zuordnung über bekannte Projektnummern (Betreff → Text → Anhangname); mehrere oder
   unbekannte Nummern landen mit Begründung im Zuordnungs-Eingang.

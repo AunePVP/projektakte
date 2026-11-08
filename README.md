@@ -80,6 +80,14 @@ und Tabellen), EML. Bilder (PNG/JPG/TIFF) und PDF-Seiten ohne Textebene werden n
 werden wie Dokumente indexiert. Quellordner werden nie verändert. Unveränderte Dateien
 (Größe/Änderungszeit, dann SHA-256) werden nicht erneut gelesen.
 
+### Suche
+
+Volltext (SQLite FTS5, BM25) und Vektorsuche liefern je bis zu 50 Kandidaten, die per Reciprocal
+Rank Fusion verschmolzen werden (höchstens 3 Abschnitte je Dokument/Mail). Die besten
+`RERANK_TOP_K` (30) gehen an den Reranker. Fällt der Reranker aus, bleibt die Reihenfolge der hybriden
+Suche; fällt der Embedding-Dienst aus, sucht Projektakte nur im Volltext. Jeder Treffer nennt seine
+Quelle („01 Genehmigung/Baugenehmigung.pdf, S. 2“ bzw. „Mail vom 18.06.2024 (Absender): Betreff“).
+
 ### Zuordnung der Mails
 
 1. **Sicher**: bekannte Projektnummer im Betreff, sonst im Text, sonst im Anhangnamen.
@@ -102,6 +110,7 @@ werden wie Dokumente indexiert. Quellordner werden nie verändert. Unveränderte
 | `GET /api/documents/{id}` | ein Dokument mit seinen Abschnitten (Seite, Überschrift, Text) |
 | `GET /api/mails?project=&status=&q=` | Mails (neueste zuerst), filterbar |
 | `GET /api/mails/{id}` | eine Mail mit Text und Anhängen |
+| `GET /api/search?q=&project=&k=` | Hybride Suche (Volltext + Vektor, Reranker), Treffer mit Quelle |
 | `GET /api/inbox` | Zuordnungs-Eingang: Mails ohne sichere Zuordnung, mit Vorschlag und Begründung |
 | `POST /api/mails/{id}/assign` | Entscheidung: `{"action": "confirm"}`, `{"action": "assign", "project": "BS-…"}`, `{"action": "reject"}` (Vorschlag verwerfen), `{"action": "none"}` (kein Projektbezug) |
 

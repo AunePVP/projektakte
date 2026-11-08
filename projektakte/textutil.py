@@ -60,7 +60,7 @@ def content_terms(text: str, extra_stop: frozenset[str] = frozenset()) -> list[s
     """Stemmed content words without stop words, in order, duplicates removed."""
     seen: dict[str, None] = {}
     for w in words(text):
-        if len(w) < 2 or w in STOPWORDS or w in extra_stop:
+        if (len(w) < 2 and not w.isdigit()) or w in STOPWORDS or w in extra_stop:
             continue
         seen.setdefault(stem(w), None)
     return list(seen)

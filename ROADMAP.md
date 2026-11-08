@@ -29,7 +29,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
 - [x] **8. Mails zuordnen** – sichere Zuordnung über Projektnummer; sonst Vorschlag über
   Embedding-Ähnlichkeit mit Schwellwert; Zuordnungs-Eingang `GET /api/inbox`,
   `POST /api/mails/{id}/assign`. Qualitätskriterien aus VISION.md Abschnitt 9 als Tests.
-- [ ] **9. Hybride Suche mit Reranker** – Volltext (FTS5) + Vektor kombinieren, Reranker-Client
+- [x] **9. Hybride Suche mit Reranker** – Volltext (FTS5) + Vektor kombinieren, Reranker-Client
   (beide Antwortformate, siehe docs/ki-dienste.md), `GET /api/search?q=…&project=…`;
   Evaluationssatz als Test (erwartete Quelle unter den Top 5).
 - [ ] **10. Fragen beantworten** – `POST /api/ask` mit Projekt optional: Retrieval → Prompt mit

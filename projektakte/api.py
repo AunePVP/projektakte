@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from . import db
 from .assign import INBOX_STATUSES, DecisionError, decide
+from .search import hybrid_search
 from .registry import get_project, list_projects
 
 router = APIRouter(prefix="/api")
@@ -152,3 +153,20 @@ def assign(request: Request, mail_id: int, body: AssignRequest) -> dict:
             raise HTTPException(404, str(exc)) from None
         except DecisionError as exc:
             raise HTTPException(400, str(exc)) from None
+
+
+@router.get("/search")
+def search(request: Request, q: str, project: str | None = None, k: int = 10) -> dict:
+    s = _settings(request)
+    if not q.strip():
+        raise HTTPException(400, "Suchbegriff fehlt")
+    with db.session(s.db_path) as conn:
+        if project:
+            p = get_project(conn, project)
+            if not p:
+                raise HTTPException(404, f"Projekt {project} nicht gefunden")
+            project = p["number"]
+        res = hybrid_search(conn, request.app.state.ai, str(s.db_path), q, project=project,
+                            k=max(1, min(k, 50)), rerank_top_k=s.rerank_top_k)
+    return {"query": res.query, "project": res.project, "reranked": res.reranked, "notes": res.notes,
+            "hits": [h.to_dict() for h in res.hits]}
