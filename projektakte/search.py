@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import date
 
@@ -249,16 +250,33 @@ def default_synonyms_file() -> str:
     return getattr(load_settings(), "synonyms_file", "") or ""
 
 
+MIN_CALL_SECONDS = 1.0  # less time left than this: skip the AI call instead of starting it
+
+
+def time_left(deadline: float | None, timeout: float) -> float | None:
+    """Timeout for the next AI call: the client's own (None) without a deadline, otherwise at most the
+    remaining time, 0 when too little is left to be worth a call."""
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining < MIN_CALL_SECONDS:
+        return 0
+    return min(timeout, remaining)
+
+
 def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, project: str | None = None,
                   k: int = 10, rerank_top_k: int = 30, use_reranker: bool = True,
-                  synonyms_file: str | None = None) -> SearchResult:
+                  synonyms_file: str | None = None, deadline: float | None = None) -> SearchResult:
     """Full text + vectors (RRF), then the reranker on the best candidates. Falls back gracefully:
     no embeddings → full text only; reranker down → order of the hybrid search.
 
     The full-text part expands abbreviations and synonyms (built-in list plus ``synonyms_file``,
     default: setting SYNONYMS_FILE). Reference codes in the query (project number, file number,
     invoice number) are also searched literally; those hits always reach the reranker, and for a query
-    of reference codes alone they come first (a cross-encoder judges topics, not codes)."""
+    of reference codes alone they come first (a cross-encoder judges topics, not codes).
+
+    ``deadline`` (``time.monotonic()`` value): the AI calls get at most the remaining time; without
+    time left the search falls back to full text / hybrid order instead of waiting."""
     result = SearchResult(query=query, project=project)
     synonyms = load_synonyms(default_synonyms_file() if synonyms_file is None else synonyms_file)
     identifiers = find_identifiers(query)
@@ -266,9 +284,12 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
     codes_only = bool(identifiers) and not query_terms(strip_identifiers(query))
     fts = fts_search(conn, query, project=project, k=CANDIDATES, expand=True, synonyms=synonyms)
     vec: list[tuple[int, float]] = []
-    if ai is not None:
+    embed_timeout = time_left(deadline, ai.embed.timeout) if ai is not None else None
+    if ai is not None and embed_timeout == 0:
+        result.notes.append("Zeitbudget der Frage erschöpft – nur Volltextsuche")
+    elif ai is not None:
         try:
-            qvec = ai.embed.embed_query(query)
+            qvec = ai.embed.embed_query(query, timeout=embed_timeout)
             vec = VECTOR_INDEX.search(conn, vector_key, qvec, project=project, k=CANDIDATES)
         except AIServiceError as exc:
             log.warning("Vektorsuche nicht verfügbar, nur Volltext: %s", exc)
@@ -292,9 +313,12 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
         candidates.append(h)
         if len(candidates) >= rerank_top_k:
             break
-    if candidates and use_reranker and ai is not None:
+    rerank_timeout = time_left(deadline, ai.rerank.timeout) if ai is not None else None
+    if candidates and use_reranker and ai is not None and rerank_timeout == 0:
+        result.notes.append("Zeitbudget der Frage erschöpft – Reihenfolge der hybriden Suche")
+    elif candidates and use_reranker and ai is not None:
         try:
-            scores = ai.rerank.rerank(query, [rerank_text(h) for h in candidates])
+            scores = ai.rerank.rerank(query, [rerank_text(h) for h in candidates], timeout=rerank_timeout)
             for h, s in zip(candidates, scores):
                 h.rerank = s
             order = sorted(range(len(candidates)), key=lambda i: (-scores[i], i))

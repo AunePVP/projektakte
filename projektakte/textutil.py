@@ -56,6 +56,9 @@ QUERY_FILLER = frozenset(
     festlegung festgehalten festgelegt vereinbart beschlossen besprochen notiert dokumentiert protokolliert
     festlegungen angabe angaben thema themen punkt punkte details detail infos info sache situation
     art sorte typ frau herr herrn dr dipl ing jemand irgendwas irgendwelche
+    kurz kurze kurzen kurzer kurzes knapp knappe knappen grob mal einmal gern gerne schnell eben
+    mir mich dir dich gib gebt zeig zeige zeigen erzahl erzahle erzahlt erzahlen nenn nenne nennen
+    ruckmeldung ruckmeldungen
     ihren ihrem ihrer ihres seinen seinem seiner seines unsere unseren unserem unserer unseres meinen
     meinem meiner meines eure euren eurem
     """.split()
@@ -92,7 +95,7 @@ _ZU_INFIX = re.compile(r"^(ab|an|auf|aus|bei|ein|fest|frei|her|hin|mit|nach|vor|
 # feminine forms of persons: Prüfingenieurin → Prüfingenieur, Ansprechpartnerinnen → Ansprechpartner
 def _keeps_final_s(word: str) -> bool:
     return word.endswith(("haus", "ss", "os")) or (word.endswith("us") and not word.endswith("aus"))
-_FEMININE = re.compile(r"^(\w{4,}(?:er|eur|rat|ent|ant|ist|or|ar|at))in(?:nen)?$")
+_FEMININE = re.compile(r"^(\w{4,}(?:er|eur|rat|ent|ant|ist|or|ar|at|kt|eg|og))in(?:nen)?$")
 
 
 @lru_cache(maxsize=131072)
@@ -392,6 +395,13 @@ Feueralarm = Brandalarm = Alarm
 benachrichtigen = alarmieren = verständigen
 Inbetriebnahme = Nutzungsaufnahme
 Mitarbeiter = Beschäftigte = Personal
+anfangen = beginnen = Beginn = starten
+aufmachen = eröffnen = Eröffnung
+Löschfahrzeug = Einsatzfahrzeug = Feuerwehrfahrzeug
+ansaugen -> Saugstelle
+ausschreiben -> Leistungsverzeichnis, Ausschreibung
+Ausschreibung -> Leistungsverzeichnis
+Bewohner -> Pflegeplatz
 """
 
 
@@ -518,7 +528,13 @@ def load_synonyms(path: str | None = None) -> Synonyms:
     except OSError:
         log.warning("Synonymdatei nicht gefunden: %s", path)
         return base
-    return merge_synonyms(base, _file_synonyms(path, mtime))
+    return _merged_synonyms(path, mtime)
+
+
+@lru_cache(maxsize=16)
+def _merged_synonyms(path: str, mtime: float) -> Synonyms:
+    """One object per file version – the word caches keyed by it stay warm."""
+    return merge_synonyms(builtin_synonyms(), _file_synonyms(path, mtime))
 
 
 # --------------------------------------------------------------------------- question analysis
@@ -870,9 +886,16 @@ def named_roles(question: str) -> list[QueryTerm]:
     return [t for t in query_terms(question) if role_key(t)]
 
 
-_SUMMARY_QUESTION = re.compile(r"\bfass\w*\b.*\bzusammen\b|\b(zusammenfass\w*|überblick|übersicht|worum\s+geht|"
-                               r"beschreib\w*|kurzbeschreibung)\b", re.I)
-SUMMARY_WORDS = re.compile(r"^(fass\w*|zusammen\w*|uberblick|ubersicht|worum|beschreib\w*|kurzbeschreibung|geht)$")
+_SUMMARY_QUESTION = re.compile(
+    r"\bfass\w*\b.*\bzusammen\b|\b(zusammenfass\w*|zusammengefasst|überblick\w*|übersicht\w*|worum\s+geht|"
+    r"um\s+was\s+geht|beschreib\w*|kurzbeschreibung|steckbrief)\b|"
+    r"^\W*erzähl\w*\b|"  # "Erzähl mir was über das Projekt"
+    r"\bwas\s+(ist|sind)\s+(das|dies)\s+für\b|"  # "Was ist das für ein Projekt?"
+    # "Was wird hier gebaut?", "Was wird beim Hotel Seeblick gebaut?" – not "Was wird als Rettungsweg gebaut?"
+    r"\bwas\s+(wird|werden|soll|ist)\s+(?:(?:hier|dort|da|denn|eigentlich|überhaupt|genau)\s+)*"
+    r"(?:(?:bei|beim|in|im|am|an|auf|für)\s+(?:\S+\s+){1,4}?)?gebaut\s*[?.!]*\s*$", re.I)
+SUMMARY_WORDS = re.compile(r"^(fass\w*|zusammen\w*|uberblick\w*|ubersicht\w*|worum|beschreib\w*|kurzbeschreibung|"
+                           r"steckbrief|geht|erzahl\w*|gebaut)$")
 
 
 def is_summary_question(question: str) -> bool:
@@ -998,6 +1021,58 @@ def split_sentences(line: str) -> list[str]:
 
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 
+# Signature lines at the end of a mail or letter: "Brandoberinspektor Uwe Kessler", "Dipl.-Ing. Sabine
+# Wendehals", "Benedikt Sauer, Wohnbau Stadtpark eG", "Feuerwehr Musterstadt, Vorbeugender Brandschutz",
+# "Prüfingenieurin für Brandschutz", "Ihre Papeterie".
+_SIG_RANK = (r"(?:Dipl\.-Ing\.(?:\s*\(FH\))?|Dr\.|Prof\.|[A-ZÄÖÜ][a-zäöüß]*(?:meister|meisterin|inspektor|inspektorin|"
+             r"rat|rätin|direktor|direktorin|führer|führerin))")
+_SIG_PERSON = re.compile(r"^(?!(?:Kein|Keine|Keinen|Die|Der|Das|Den|Dem|Ein|Eine|Einen|Alle|Gegen|Mit|Ohne|Bei|Im|Am|"
+                         r"Zum|Zur|Nach|Vor|Für|Laut|Siehe|Neue|Neuer|Neues|Weitere|Nächste|Nächster)\b)"
+                         r"(?:" + _SIG_RANK + r"\s+)*[A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜ][a-zäöüß]+)?"
+                         r"(?:\s+[A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜ][a-zäöüß]+)?){1,2}(?:\s*,\s*[^.!?:;]{2,60}\.?)?$")
+_SIG_ORG = re.compile(r"^[^.!?:;]{0,60}\b(GmbH|gGmbH|mbH|eG|AG|KG|e\.\s?V\.|Partner|Architekt\w*|Ingenieurbüro\w*|"
+                      r"Ingenieurgesellschaft|Feuerwehr|Brandschutzdienststelle|Jugendamt|Stadt|Amt|Bauaufsicht|"
+                      r"Bauordnung\w*|Prüfingenieur\w*|Prüfsachverständig\w*|Abteilung|Büro|Atelier|Gefahrenvorbeugung|"
+                      r"Vorbeugender\s+Brandschutz)\b[^.!?:;]{0,60}$|^Ihre?\s+[A-ZÄÖÜ][\w&.\- ]{1,40}$")
+_CLOSING_LINE = re.compile(r"^(mit\s+freundlichen\s+grüßen|freundliche\s+grüße|viele\s+grüße|beste\s+grüße|herzliche\s+grüße|"
+                           r"liebe\s+grüße|gruß\b|grüße\b|mfg\b)", re.I)
+
+
+def is_signature_line(line: str) -> bool:
+    """Does a line look like (part of) a signature – a name with rank/title or an organisation?"""
+    line = line.strip()
+    if not line or len(line.split()) > 9 or re.search(r"\d{3,}|@|https?:", line):
+        return False
+    return bool(_SIG_PERSON.match(line) or _SIG_ORG.match(line))
+
+
+def signature_start(lines: list[str]) -> int:
+    """Index of the first signature line of a text's lines (len(lines) if there is none): the lines
+    after a closing ("Mit freundlichen Grüßen"), or name/organisation lines that end the text after at
+    least one sentence."""
+    for i, line in enumerate(lines):
+        if _CLOSING_LINE.match(line.strip()):
+            return i + 1 if i + 1 < len(lines) else len(lines)
+    end = len(lines)
+    while end > 1 and is_signature_line(lines[end - 1]):
+        end -= 1
+    if end < len(lines) and not re.search(r"[.!?:;]\s*$|\?", "\n".join(lines[:end])):
+        return len(lines)  # no sentence before: a title block, not a signature
+    return end
+
+
+def split_signature(sentences: list[str]) -> tuple[list[str], str]:
+    """A signature written into the last sentence line ("… behalten. Benedikt Sauer, Wohnbau Stadtpark
+    eG"): (sentences without it, the signature)."""
+    if len(sentences) >= 2 and is_signature_line(sentences[-1]) and not sentences[-1].endswith(("?", "!")):
+        return sentences[:-1], sentences[-1]
+    return sentences, ""
+
+
+# what the reader puts in front of a quote ("BS-… Name – laut Mail von X vom …:", "Laut Baugenehmigung (S. 2),
+# Auflage 3:") names the source, not the statement – it must not make a signature line the "best" passage
+_ANSWER_LEAD = re.compile(r"(?:\b[A-Z]{1,4}-\d{4}-\d{3,4}\b[^–\n]{0,80}?–\s*)?\b[Ll]aut\s+[^:!?\n]{1,140}?:\s")
+
 
 _PASSAGE_NOISE = re.compile(r"^(Betreff|Von|An|Cc|Datum|Gesendet):\s|^(sehr\s+geehrte|hallo|guten\s+tag|liebe[rs]?\s)"
                             r"[^.!?]{0,60}[,!]?$|^(mit\s+freundlichen|viele|beste|freundliche)\s+grüße", re.I)
@@ -1008,44 +1083,76 @@ def relevant_passage(text: str, question: str = "", answer: str = "", max_chars:
     """The passage of ``text`` that matters for a question/answer, as clean text (no markdown).
 
     Sentences are scored by the words and numbers they share with the answer (the statement quoted
-    from this source) and by the question words they cover; the best sentence is taken with the
-    following sentences (and a little of what precedes it) as long as they fit into ``max_chars``.
-    Mail header lines and greetings are left out. A passage that does not start the text begins with
-    "… "."""
-    lines = [ln for ln in plain_lines(text) if not _PASSAGE_NOISE.match(ln)] or plain_lines(text)
-    sents: list[tuple[int, str]] = [(li, s) for li, line in enumerate(lines) for s in split_sentences(line)]
+    from this source, without the "Laut <Quelle>:" lead) and by the question words they cover; the
+    best sentence is taken with the following sentences (and a little of what precedes it) as long as
+    they fit into ``max_chars``. Mail header lines and greetings are left out; signature lines (after
+    the closing, or a name/organisation ending the text) and the mail subject only count when the
+    answer quotes them ("Wer hat … unterschrieben?") and never extend a passage. A passage that does
+    not start the text begins with "… "."""
+    all_lines = plain_lines(text)
+    kept = [(i, ln) for i, ln in enumerate(all_lines) if not _PASSAGE_NOISE.match(ln)] or list(enumerate(all_lines))
+    lines = [ln for _, ln in kept]
+    sig_all = signature_start(all_lines)  # with the closing line, which the passage leaves out
+    sig_from = next((k for k, (i, _) in enumerate(kept) if i >= sig_all), len(kept))
+    sents: list[tuple[int, str, bool]] = []
+    subject = next((ln for ln in all_lines[:3] if ln.startswith("Betreff: ")), None)
+    if subject and answer and lines and lines[0] != subject:  # quoted only when the answer cites it
+        lines = [subject] + lines
+        sig_from += 1
+        sents.append((0, subject, True))
+    for li, line in enumerate(lines):
+        if li == 0 and line is subject:
+            continue
+        parts = split_sentences(line)
+        signature = ""
+        if li == sig_from - 1:
+            parts, signature = split_signature(parts)
+        sents += [(li, x, li >= sig_from) for x in parts]
+        if signature:
+            sents.append((li, signature, True))
     if not sents:
         return ""
     q_terms = query_terms(question) if question.strip() else []
     q_total = sum(t.weight for t in q_terms)
+    answer = _ANSWER_LEAD.sub(" ", answer or "")
     a_terms = set(content_terms(answer, QUESTION_WORDS)) if answer.strip() else set()
     a_numbers = set(_NUMBER.findall(answer)) if answer else set()
 
-    def score(sent: str) -> float:
+    def score(sent: str, signature: bool) -> float:
         terms = text_terms(sent)
         val = 0.0
+        own = set(content_terms(sent, QUESTION_WORDS))
         if q_total:
             val += sum(t.weight * query_term_credit(t, terms) for t in q_terms) / q_total
         if a_terms:
-            own = set(content_terms(sent, QUESTION_WORDS))
             if own:
                 val += 2.0 * len(own & a_terms) / len(own)
             val += 0.5 * len(a_numbers & set(_NUMBER.findall(sent)))
+        if signature and not (own and a_terms and len(own & a_terms) >= 0.6 * len(a_terms)):
+            val *= 0.25  # a name under the text (or the subject) is no statement – unless the answer quotes it
         return val
 
-    scores = [score(s) for _, s in sents]
+    def quoted(sent: str) -> bool:
+        own = set(content_terms(sent, QUESTION_WORDS))
+        return bool(own) and len(own & a_terms) >= 0.7 * len(own)
+
+    scores = [score(s, sig) for _, s, sig in sents]
     best = max(range(len(sents)), key=lambda i: (scores[i], -i))
     if scores[best] <= 0:
         best = 0
+    while best > 0 and a_terms and not sents[best][2] and not sents[best - 1][2] and quoted(sents[best - 1][1]):
+        best -= 1  # the answer quotes several sentences: start with the first of them
     lo = hi = best
     size = len(sents[best][1])
     lead = 0
     while True:  # following sentences first (they continue the statement), then a little before
-        if hi + 1 < len(sents) and size + 1 + len(sents[hi + 1][1]) <= max_chars:
+        if hi + 1 < len(sents) and size + 1 + len(sents[hi + 1][1]) <= max_chars and (
+                sents[best][2] or not sents[hi + 1][2]):
             hi += 1
             size += 1 + len(sents[hi][1])
             continue
-        if lo > 0 and size + 1 + len(sents[lo - 1][1]) <= max_chars and lead + len(sents[lo - 1][1]) <= PASSAGE_LEAD:
+        if lo > 0 and size + 1 + len(sents[lo - 1][1]) <= max_chars and lead + len(sents[lo - 1][1]) <= PASSAGE_LEAD \
+                and (sents[best][2] or not sents[lo - 1][2]):
             lo -= 1
             size += 1 + len(sents[lo][1])
             lead += len(sents[lo][1])
@@ -1053,13 +1160,13 @@ def relevant_passage(text: str, question: str = "", answer: str = "", max_chars:
         break
     parts: list[str] = []
     for i in range(lo, hi + 1):
-        li, sent = sents[i]
+        li, sent, _ = sents[i]
         if parts:
             parts.append("\n" if sents[i - 1][0] != li else " ")
         parts.append(sent)
     passage = "".join(parts).strip()
     if len(passage) > max_chars:  # one very long sentence: cut at a word boundary
         passage = passage[:max_chars].rsplit(" ", 1)[0] + " …"
-    if lo > 0 or lines[0] != plain_lines(text)[0]:
+    if lo > 0 or lines[0] != all_lines[0]:
         passage = "… " + passage
     return passage

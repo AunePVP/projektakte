@@ -27,18 +27,25 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import time
 from dataclasses import dataclass, field
 
 from .ai import AIServiceError
-from .search import Hit, hybrid_search, merge_adjacent
+from .search import MIN_CALL_SECONDS, time_left, Hit, hybrid_search, load_hits, merge_adjacent
 from .textutil import (
+    SUMMARY_WORDS,
+    content_terms,
     de_date,
     is_enumeration_question,
     is_project_question,
     is_summary_question,
     is_temporal_question,
+    fold,
     named_roles,
+    query_terms,
     relevant_passage,
+    role_key,
+    strip_identifiers,
 )
 
 log = logging.getLogger("projektakte.ask")
@@ -113,6 +120,8 @@ _NF_WEAK = re.compile(
 # a refusal that goes on with a fact in the same sentence: "Die Quellen nennen keinen Termin, die
 # Abnahme ist aber für März vorgesehen [2]."
 _CONTRAST = re.compile(r"\b(aber|jedoch|allerdings|lediglich|nur|dafür)\b", re.I)
+# clauses of one sentence: "Die Abnahme ist für März vorgesehen [2]; ein genauer Tag ist nicht genannt."
+_CLAUSE_SEP = re.compile(r"\s*;\s*|\s+[–—-]\s+")
 _SENTENCE_END = re.compile(r"(?<!\b[Nn]r)(?<!\bz\.\sB)(?<!\bbzw)(?<!\bca)(?<!\d)[.!?](?=\s|$)")
 
 
@@ -222,9 +231,24 @@ def is_not_found(answer: str, n_sources: int) -> bool:
     if m:
         if rest_cited:
             return False
-        return not (first_cited and _CONTRAST.search(first[m.end():]))
+        if first_cited and _CONTRAST.search(first[m.end():]):
+            return False
+        return not _cited_clause_besides(first, m, n_sources)
     if _NF_INFO.search(first) or _NF_WEAK.search(first):
         return not (first_cited or rest_cited)
+    return False
+
+
+def _cited_clause_besides(sentence: str, refusal: re.Match, n_sources: int) -> bool:
+    """Does a clause of the sentence other than the refusal itself carry a citation? ("Die Quellen nennen
+    kein genaues Datum; laut Protokoll ist die Abnahme für März vorgesehen [2].")"""
+    start = 0
+    for sep in list(_CLAUSE_SEP.finditer(sentence)) + [None]:
+        end = sep.start() if sep else len(sentence)
+        overlaps = start < refusal.end() and refusal.start() < end
+        if not overlaps and cited_numbers(sentence[start:end], n_sources):
+            return True
+        start = sep.end() if sep else end
     return False
 
 
@@ -264,19 +288,22 @@ def diversify_projects(hits: list[Hit], k: int) -> list[Hit]:
     return (first + rest)[:k]
 
 
-def prefer_recent(hits: list[Hit], k: int, recent: int = 2, extra: list[Hit] | None = None) -> list[Hit]:
+def prefer_recent(hits: list[Hit], k: int, recent: int = 2, extra: list[Hit] | None = None,
+                  projects: set[str | None] | None = None) -> list[Hit]:
     """For questions about the latest state: the k-``recent`` best hits plus the newest dated hits
     among the remaining candidates (a status mail may rank below older documents). ``extra`` are
     further candidates of the same project(s) that did not reach the relevance threshold – the
-    newest mail ("Was gibt es Neues?") often shares no word with the question."""
+    newest mail ("Was gibt es Neues?") often shares no word with the question. With ``projects``
+    the newest hits are taken from those projects only (the latest state of the asked project, not a
+    newer document of another one)."""
     recent = min(recent, k // 2)
     ids = {h.chunk_id for h in hits}
     pool = hits + [h for h in (extra or []) if h.chunk_id not in ids]
     if recent <= 0 or len(pool) <= k:
         return pool[:k]
     chosen = hits[: k - recent]
-    chosen += sorted((h for h in pool if h not in chosen and h.local_date), key=lambda h: h.local_date,
-                     reverse=True)[:recent]
+    chosen += sorted((h for h in pool if h not in chosen and h.local_date and (not projects or h.project in projects)),
+                     key=lambda h: h.local_date, reverse=True)[:recent]
     for h in pool:  # fill up by rank
         if len(chosen) >= k:
             break
@@ -292,26 +319,55 @@ def _main_projects(hits: list[Hit], project: str | None) -> set[str | None]:
     return {hits[0].project} if hits else set()
 
 
+def _search_deadline(deadline: float | None, llm_reserve: float) -> float | None:
+    """Searches may use the budget except the part kept for the language model."""
+    return None if deadline is None else deadline - llm_reserve
+
+
+def _time_for_more(deadline: float | None, llm_reserve: float) -> bool:
+    """Is there time for an extra search (overview, parties) before the language model?"""
+    return deadline is None or deadline - llm_reserve - time.monotonic() >= MIN_CALL_SECONDS * 5
+
+
 def _context(hits: list[Hit], question: str = "") -> list[dict]:
     return [_source_dict(i, h, question) for i, h in enumerate(hits, start=1)]
 
 
 def _summary_hits(conn: sqlite3.Connection, ai, vector_key: str, hits: list[Hit], project: str | None,
-                  rerank_top_k: int, synonyms_file: str | None) -> list[Hit]:
+                  rerank_top_k: int, synonyms_file: str | None, *, topic: bool = False, top_k: int = 6,
+                  deadline: float | None = None) -> list[Hit]:
     """Overview passages for "Fasse … zusammen"/"Worum geht es …": the description of the project and
-    the overall assessment, put in front of the question's own hits."""
+    the overall assessment, put in front of the question's own hits – behind the best of them when
+    the question has a topic of its own ("Fasse zusammen, was die Feuerwehr fordert")."""
     projects = _main_projects(hits, project) - {None}
     if len(projects) != 1:
         return hits
     (number,) = projects
     extra = hybrid_search(conn, ai, vector_key, SUMMARY_QUERY, project=number, k=4, rerank_top_k=rerank_top_k,
-                          synonyms_file=synonyms_file).hits
+                          synonyms_file=synonyms_file, deadline=deadline).hits
     seen = {h.chunk_id for h in extra}
-    return extra + [h for h in hits if h.chunk_id not in seen]
+    own = [h for h in hits if h.chunk_id not in seen]
+    if topic:
+        keep = max(1, top_k // 2)
+        return own[:keep] + extra + own[keep:]
+    return extra + own
+
+
+def has_topic(conn: sqlite3.Connection, question: str) -> bool:
+    """Does an overview question name a topic besides the project ("Fasse zusammen, was die Feuerwehr
+    fordert" – not "Fasse das Projekt Kita Regenbogen zusammen")?"""
+    names: set[str] = set()
+    try:
+        for row in conn.execute("SELECT number, name FROM projects"):
+            names.update(content_terms(f"{row[0]} {row[1] or ''}"))
+    except sqlite3.Error:
+        pass
+    return any(not SUMMARY_WORDS.match(t.word) and not SUMMARY_WORDS.match(t.term) and t.term not in names
+               and not t.term.isdigit() for t in query_terms(strip_identifiers(question)))
 
 
 def _role_hits(conn: sqlite3.Connection, ai, vector_key: str, question: str, hits: list[Hit], project: str | None,
-               rerank_top_k: int, synonyms_file: str | None) -> list[Hit]:
+               rerank_top_k: int, synonyms_file: str | None, deadline: float | None = None) -> list[Hit]:
     """For a question naming a party ("Was hat die Architektin geschrieben?", "Hat der Bauherr
     zugestimmt?"): one passage of the project that says who that is ("Bauherr: …, vertreten durch",
     "Teilnehmer: Clara Meier (Architektur)", "Prüfingenieur: …") – so the model can tell whose mail is
@@ -322,15 +378,78 @@ def _role_hits(conn: sqlite3.Connection, ai, vector_key: str, question: str, hit
     (number,) = projects
     have = {h.chunk_id for h in hits}
     out: list[Hit] = []
+    communication = bool(_COMMUNICATION_Q.search(question))
     for role in named_roles(question)[:2]:
         found = hybrid_search(conn, ai, vector_key, role.word, project=number, k=3, rerank_top_k=min(10, rerank_top_k),
-                              synonyms_file=synonyms_file).hits
+                              synonyms_file=synonyms_file, deadline=deadline).hits
         for h in found:
             if h.chunk_id not in have and (h.rerank is None or h.rerank > 0):
                 out.append(h)
                 have.add(h.chunk_id)
                 break
+        if communication:  # "Was wollte der Bauherr wissen?" – the party's own newest mails
+            people = _role_people([h.text for h in hits + out + found], role_key(role) or role.term)
+            for h in _mails_of(conn, number, people, have):
+                out.append(h)
+                have.add(h.chunk_id)
     return out
+
+
+_COMMUNICATION_Q = re.compile(r"\b(geschrieben|schreibt|schrieb|gesagt|sagt|sagte|mitgeteilt|teilt|gefragt|fragt|fragte|"
+                              r"wollte|wollten|will|möchte|wünscht|gewünscht|gefordert|fordert|verlangt|geantwortet|"
+                              r"antwortet|gemeldet|meldet|berichtet|bittet|gebeten|empfiehlt|empfohlen|vorgeschlagen|"
+                              r"schlägt|geschickt|schickt)\b", re.I)
+_NAME = r"(?:(?:Dipl\.-Ing\.|Dr\.|Prof\.)\s+)?([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,2})"
+_PERSON_ROLE = re.compile(_NAME + r"\s+\(([^()\n]{2,40})\)")  # "Clara Meier (Architektur)"
+_ROLE_LINE = re.compile(r"^\s*([A-ZÄÖÜ][\wäöüß\-]+)[^:\n]{0,30}:\s+([^\n]+)$", re.M)  # "Bauherr: …, vertreten durch …"
+
+
+def _role_people(texts: list[str], key: str) -> set[str]:
+    """Surnames of the people the passages name for a role: 'Clara Meier (Architektur)', 'Bauherr: Wohnbau
+    Stadtpark eG, vertreten durch Benedikt Sauer', 'Prüfingenieur: Dipl.-Ing. Sabine Wendehals'."""
+    def is_role(label: str) -> bool:
+        folded = fold(label.split()[0]) if label.split() else ""
+        return folded.startswith(key) or (key == "feuerwehr" and folded.startswith("brandschutzdienststell"))
+
+    out: set[str] = set()
+    for text in texts:
+        for m in _PERSON_ROLE.finditer(text):
+            if is_role(m.group(2)):
+                out.add(m.group(1).split()[-1])
+        for m in _ROLE_LINE.finditer(text):
+            if not is_role(m.group(1)):
+                continue
+            rest = m.group(2)
+            v = re.search(r"vertreten\s+durch\s+" + _NAME, rest)
+            p = v or re.match(_NAME, rest.strip())
+            if p and not re.search(r"\b(GmbH|gGmbH|mbH|eG|AG|KG|Stadt|Amt|Büro)\b", p.group(0)):
+                out.add(p.group(1).split()[-1])
+    return out
+
+
+def _mails_of(conn: sqlite3.Connection, project: str, people: set[str], have: set[int], limit: int = 2) -> list[Hit]:
+    """The newest mails of the project written by these people (first chunk of each)."""
+    if not people:
+        return []
+    cond = " OR ".join("m.sender_name LIKE ?" for _ in people)
+    try:
+        rows = conn.execute(
+            f"SELECT c.id, c.mail_id FROM chunks c JOIN mails m ON m.id = c.mail_id WHERE c.project = ? "
+            f"AND c.doc_id IS NULL AND ({cond}) ORDER BY m.date DESC, c.ord ASC LIMIT 20",
+            [project, *(f"%{p}%" for p in sorted(people))]).fetchall()
+    except sqlite3.Error:
+        return []
+    ids: list[int] = []
+    mails: set[int] = set()
+    for chunk_id, mail_id in rows:
+        if mail_id in mails or chunk_id in have:
+            continue
+        mails.add(mail_id)
+        ids.append(chunk_id)
+        if len(ids) >= limit:
+            break
+    found = load_hits(conn, ids)
+    return [found[i] for i in ids if i in found]
 
 
 def llm_error_note(exc: Exception) -> str:
@@ -349,14 +468,19 @@ def llm_error_note(exc: Exception) -> str:
 
 def ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, project: str | None = None,
         top_k: int = 6, context_chars: int = 8000, min_rerank: float = 0.01,
-        rerank_top_k: int = 30, synonyms_file: str | None = None) -> AskResult:
+        rerank_top_k: int = 30, synonyms_file: str | None = None, deadline_s: float = 0) -> AskResult:
+    """``deadline_s`` (ASK_DEADLINE, 0 = off) caps the whole question: every AI call gets at most the
+    remaining time, extra searches (overview, parties) only run while enough time is left for the
+    language model, and without time left the found passages come back like with an LLM outage."""
+    deadline = time.monotonic() + deadline_s if deadline_s and deadline_s > 0 else None
+    llm_reserve = min(ai.llm.timeout, deadline_s / 2) if deadline and ai is not None else 0
     across_projects = project is None and is_project_question(question)
     enumeration = project is None and is_enumeration_question(question)
     temporal = is_temporal_question(question)
     summary = is_summary_question(question) and not across_projects
     candidates = max(rerank_top_k, ENUMERATION_RERANK_TOP_K) if across_projects else rerank_top_k
     res = hybrid_search(conn, ai, vector_key, question, project=project, k=candidates,
-                        rerank_top_k=candidates, synonyms_file=synonyms_file)
+                        rerank_top_k=candidates, synonyms_file=synonyms_file, deadline=_search_deadline(deadline, llm_reserve))
     result = AskResult(question=question, project=project, answer="", found=False, status="not_found",
                        notes=list(res.notes))
     hits = res.hits
@@ -374,8 +498,10 @@ def ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, project
             log.info("Keine Fundstelle erreicht ASK_MIN_RERANK=%s", min_rerank)
             result.notes.append(WEAK_HITS_NOTE)
         return result
-    if summary:
-        hits = _summary_hits(conn, ai, vector_key, hits or res.hits, project, rerank_top_k, synonyms_file)
+    if summary and _time_for_more(deadline, llm_reserve):
+        hits = _summary_hits(conn, ai, vector_key, hits or res.hits, project, rerank_top_k, synonyms_file,
+                             topic=has_topic(conn, question), top_k=top_k,
+                             deadline=_search_deadline(deadline, llm_reserve))
     hits = merge_adjacent(hits)
     if across_projects:
         k = max(top_k, min(2 * top_k, ENUMERATION_MAX_SOURCES))
@@ -383,25 +509,31 @@ def ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, project
     elif temporal:
         main = _main_projects(hits or res.hits, project)
         extra = merge_adjacent([h for h in weak if h.project in main])
-        hits = prefer_recent(hits, top_k, extra=extra)
+        hits = prefer_recent(hits, top_k, extra=extra, projects=main if latest_of_one_project else None)
     else:
         hits = hits[:top_k]
     if not hits:
         result.answer = NOT_FOUND_TEXT
         result.context = _context(merge_adjacent(res.hits)[:MISS_CONTEXT], question)
         return result
-    if not across_projects:
+    if not across_projects and _time_for_more(deadline, llm_reserve):
         hits = merge_adjacent(hits + _role_hits(conn, ai, vector_key, question, hits, project, rerank_top_k,
-                                                synonyms_file))
+                                                synonyms_file, deadline=_search_deadline(deadline, llm_reserve)))
     prompt, used = build_prompt(question, hits, context_chars)
     result.context = _context(used, question)
     if enumeration:
         n_projects = len({h.project for h in used if h.project})
         result.notes.append(f"Aufzählung über Projekte: berücksichtigt sind die besten Fundstellen aus "
                             f"{n_projects} Projekten – eine vollständige Liste liefert die Suche.")
+    llm_timeout = time_left(deadline, ai.llm.timeout)
+    if llm_timeout == 0:
+        log.warning("Zeitbudget der Frage (ASK_DEADLINE) vor dem Sprachmodell erschöpft")
+        result.answer, result.found, result.status = LLM_DOWN_TEXT, None, "llm_unavailable"
+        result.notes.append("Die Suche hat das Zeitbudget der Frage aufgebraucht – hier die Fundstellen.")
+        return result
     try:
         chat = ai.llm.chat([{"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt}])
+                            {"role": "user", "content": prompt}], timeout=llm_timeout)
     except AIServiceError as exc:
         log.warning("Sprachmodell nicht erreichbar: %s", exc)
         result.answer, result.found, result.status = LLM_DOWN_TEXT, None, "llm_unavailable"

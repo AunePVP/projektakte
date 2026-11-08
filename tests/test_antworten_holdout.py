@@ -21,7 +21,7 @@ from projektakte.indexer import run_index
 
 from .conftest import fake_settings
 
-REGRESSION_FLOOR = 0.55  # share of answerable questions reached in round 2 (16 of 28) – not the target
+REGRESSION_FLOOR = 0.64  # share of answerable questions reached in round 3 (18 of 28) – not the target
 
 pytestmark = pytest.mark.skipif(not holdout_path().exists(), reason="tests/eval_holdout.json fehlt")
 
@@ -46,10 +46,11 @@ def _numbers(s: dict) -> str:
 
 def test_unanswerable_questions_are_never_answered_as_confirmed(summary):
     assert summary["unanswerable"] and summary["refused"] >= TARGET_REFUSED, _numbers(summary)
+    assert summary["answered_wrongly"] == 0, _numbers(summary)  # coverage is never bought with wrong answers
 
 
 @pytest.mark.xfail(strict=False, reason="Ziel ≥ 80 % für beantwortbare Fragen mit der Fake-KI noch nicht erreicht "
-                                        "(Stand Runde 2: 16 von 28 = 0,57) – die echte Zahl steht in der Meldung")
+                                        "(Stand Runde 3: 18 von 28 = 0,64) – die echte Zahl steht in der Meldung")
 def test_answerable_questions_reach_the_target(summary):
     assert summary["answerable"] and summary["correct"] >= TARGET_CORRECT, _numbers(summary)
 

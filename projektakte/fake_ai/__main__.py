@@ -18,6 +18,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--chat-quirk", choices=["length", "reasoning_only", "unterminated_think"],
                     help="Verhalten echter Server nachstellen (abgeschnittene Antwort, nur Denkschritte)")
     ap.add_argument("--no-models", action="store_true", help="GET /v1/models antwortet mit 404")
+    ap.add_argument("--synonyms-file", help="Synonymdatei für Reranker und Chat (Standard: SYNONYMS_FILE)")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args(argv)
     opts = {
@@ -28,6 +29,7 @@ def main(argv: list[str] | None = None) -> None:
         "verbose": a.verbose,
         "chat_quirk": a.chat_quirk,
         "models_404": a.no_models,
+        "synonyms_file": a.synonyms_file,
     }
     if a.model:
         opts["models"] = a.model

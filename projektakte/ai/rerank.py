@@ -91,8 +91,10 @@ class RerankClient:
             except HTTPStatusError as exc:
                 if self.forced or exc.status not in (400, 404, 413, 415, 422):
                     raise
-            except AIServiceError:
-                if self.forced:
+            except AIServiceError as exc:
+                # only an unexpected answer shape means "server swapped, detect again"; a timeout or an
+                # unreachable server would otherwise be waited for twice
+                if self.forced or "Antwort" not in str(exc):
                     raise
         errors = []
         for fmt in FORMATS:

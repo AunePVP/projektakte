@@ -7,24 +7,31 @@ models, not like a lookup table for an evaluation set:
   German compounds) onto 256 dimensions, L2-normalised – lexically similar texts end up close;
 * reranker: weighted share of the question's topic words found in the document, with word forms,
   compounds (by their head: a "Löschwasserteich" is a Teich, "Löschwasser" alone counts half) and
-  fire-safety synonyms/abbreviations (BMA ↔ Brandmeldeanlage); filler words such as "Projekt" or
-  "vorgesehen" do not count. A query that consists of reference codes (project number, file
-  number) is judged by whether the document contains them literally;
+  fire-safety synonyms/abbreviations (BMA ↔ Brandmeldeanlage, plus SYNONYMS_FILE); filler words such
+  as "Projekt" or "vorgesehen" do not count, and a matching number alone is no relevance
+  ("<script>alert(1)</script>" scores 0). A query that consists of reference codes (project number,
+  file number) is judged by whether the document contains them literally;
 * chat: an extractive reader that fails closed. It splits the numbered sources into sentences
-  (headings, greetings, signatures, participant lists and questions are never quoted, table rows
-  are read as "Spalte: Wert"), scores them by the question's topic words (IDF-weighted over the
-  given sources; project names and numbers do not count) and answers with the best sentence(s) as
-  "Laut <Quelle>: … [n]". A question that asks for a value (date, amount, number, cost, duration,
-  name, norm, class, colour, …) is only answered by a sentence that contains such a value for the
-  asked topic; otherwise – and whenever no sentence covers the topic – it says "Nicht gefunden.".
-  Questions about the latest state use the newest dated source, "Was hat X geschrieben?" the sources
-  written by X, decision questions ("Hat … zugestimmt?") the sources that state the decision,
-  summaries several sources, and questions over several projects get one finding per project.
+  (headings, greetings, courtesy phrases, signatures, role lines, participant lists, questions and
+  the premise of a question are never quoted as facts, table rows are read as "Spalte: Wert") and
+  scores them by the question's topic words (IDF-weighted over the given sources; project names and
+  numbers do not count); it answers with the best sentence(s) as "Laut <Quelle>: … [n]" (a sentence
+  starting with a pronoun takes the one before it). A question that asks for a value (date, amount,
+  number, cost, duration, name, norm, class, colour, …) is only answered by a sentence that contains
+  such a value for the asked topic – a length must be the asked dimension of the asked thing ("Wie
+  breit …?" is not answered by "in 60 cm Höhe"), "Wann wurde … abgenommen?" needs the date of the
+  event, not an obligation or a plan; otherwise – and whenever no sentence covers the topic – it says
+  "Nicht gefunden.". A question naming a project is answered from that project only. Questions about
+  the latest state use the newest dated source, "Was hat X geschrieben?" the sources written by X,
+  decision questions ("Hat … zugestimmt?") the sources that state the decision, "Wer hat …
+  unterschrieben?" the signature, overview questions several sources, and questions over several
+  projects get one finding per project.
 """
 from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
 from dataclasses import dataclass, field, replace
 from datetime import date
@@ -33,6 +40,7 @@ from ..textutil import (
     TEMPORAL_WORDS,
     ROLE_WORDS,
     QueryTerm,
+    Synonyms,
     attribute_head,
     content_terms,
     find_identifiers,
@@ -42,12 +50,15 @@ from ..textutil import (
     is_project_question,
     is_summary_question,
     is_temporal_question,
+    load_synonyms,
     SUMMARY_WORDS,
     query_term_credit,
     query_term_in,
     query_terms,
     role_key,
+    signature_start,
     split_sentences,
+    split_signature,
     stem,
     strip_identifiers,
     text_terms,
@@ -87,19 +98,31 @@ def embed_text(text: str) -> list[float]:
     return [x / norm for x in vec]
 
 
+# --------------------------------------------------------------------------- synonyms
+def active_synonyms(path: str | None = None) -> Synonyms:
+    """Built-in synonyms plus the synonym file – ``path`` or SYNONYMS_FILE, the same file the app's
+    full-text search uses (``AI_MODE=fake`` runs in the app's process; ``python -m projektakte.fake_ai``
+    takes ``--synonyms-file``). Re-read when the file changes."""
+    return load_synonyms(path if path is not None else (os.environ.get("SYNONYMS_FILE") or None))
+
+
 # --------------------------------------------------------------------------- reranker
 IDENTIFIER_BONUS = 0.1  # a question with topic words: the named project/file number only breaks ties
+_MARKUP = re.compile(r"<[^<>]{0,200}>|\bjavascript:", re.I)
 
 
-def rerank_score(query: str, doc: str) -> float:
+def rerank_score(query: str, doc: str, synonyms: Synonyms | None = None) -> float:
     """Weighted share of the question's topic words in the document (+ a small density bonus).
 
     Like a cross-encoder it judges the topic. Reference codes (project numbers, file numbers) are
     no topic: with topic words they only add a small bonus; a query of reference codes alone
-    ("BS-2024-0233", "63-0137/24") is scored by the share of codes the document contains literally."""
+    ("BS-2024-0233", "63-0137/24") is scored by the share of codes the document contains literally.
+    A number is no topic either: when none of the query's words matches, a matching digit does not
+    make the document relevant ("<script>alert(1)</script>" scores 0 – markup is ignored)."""
     idents = find_identifiers(query)
     ident_share = sum(1 for i in idents if identifier_in(i, doc)) / len(idents) if idents else 0.0
-    q = query_terms(strip_identifiers(query), drop=TEMPORAL_WORDS)  # "letzter Stand" shapes the question
+    syn = synonyms if synonyms is not None else active_synonyms()
+    q = query_terms(strip_identifiers(_MARKUP.sub(" ", query)), syn, drop=TEMPORAL_WORDS)  # "letzter Stand" shapes
     # a short number only counts next to real topic words ("Auflage 7"), never on its own ("1")
     if all(t.word.isdigit() and len(t.word) <= 2 for t in q):
         q = []
@@ -108,6 +131,10 @@ def rerank_score(query: str, doc: str) -> float:
     doc_terms = text_terms(doc)
     total = sum(t.weight for t in q)
     credits = [query_term_credit(t, doc_terms) for t in q]
+    words_ = [(t, c) for t, c in zip(q, credits) if not t.word.isdigit()]
+    if words_ and not any(c > 0 for t, c in words_ if len(t.word) >= 3):
+        # no topic word matched – a matching number alone ("alert(1)" ↔ "Prüfbericht Nr. 1") is no relevance
+        return round(IDENTIFIER_BONUS * ident_share, 6)
     coverage = sum(t.weight * c for t, c in zip(q, credits)) / total
     hits = sum(1 for c in credits if c >= 1.0)
     dens = min(1.0, hits / (1 + len(doc_terms) / 40))  # tie-breaker: denser documents win
@@ -262,10 +289,16 @@ def _has_type(kind: str, u: "Unit", q: "Question", names: frozenset[str]) -> boo
         return _count_near_topic(u, q)
     if kind == "quantity":
         return any(_has_type(k, u, q, names) for k in QUANTITY_TYPES) and _value_near_topic(u, q)
-    if kind in ("measure", "duration", "money", "weight", "temperature", "multiple"):
+    if kind == "measure":
+        return bool(VALUE_PATTERNS[kind].search(text)) and _value_near_topic(u, q) and _dimension_ok(u, q)
+    if kind in ("duration", "money", "weight", "temperature", "multiple"):
         return bool(VALUE_PATTERNS[kind].search(text)) and _value_near_topic(u, q)
     if kind == "date":
+        if q.past_event and _NOT_DONE.search(u.text):
+            return False  # "… ist vor der Abnahme vorzulegen", "… ist für den 18.06. geplant" – not done
         return bool(VALUE_PATTERNS["date"].search(strip_identifiers(text)))
+    if kind == "relative":
+        return _relative_time(u, q)
     if kind == "name":
         return _has_name(text, names)
     if kind == "agent":
@@ -303,11 +336,34 @@ def _is_number(tok: str) -> bool:
 _NOT_A_COUNT_BEFORE = frozenset("din en iso nr auflage position pos top kw vom am bis abs teil teile".split())
 
 
+_PIECES = re.compile(r"\b(Stück|Stk\.?)\s*(\d+)\b|\b(\d+)\s*(Stück|Stk)\b")
+_NOT_A_COUNT_AFTER = re.compile(r"^\s*(Jahre|Jahren|Monate|Monaten|Wochen|Tage|Tagen|Stunden|Minuten|mal\b)")
+
+
+def _plain_counts(text: str) -> list[str]:
+    """Numbers in a text that can be a count: no date, measure, frequency ('alle zwei Jahre'), norm."""
+    text = VALUE_PATTERNS["date"].sub(" ", strip_identifiers(text))
+    out = []
+    spans = [(m.group(0), m.start(), m.end()) for m in _TOKEN.finditer(text)]
+    for i, (tok, start, end) in enumerate(spans):
+        if not _is_number(tok) or (i > 0 and fold(spans[i - 1][0]) in _NOT_A_COUNT_BEFORE | {"alle", "je"}):
+            continue
+        if tok[:1].isdigit() and start > 0 and text[start - 1].isalpha():
+            continue  # part of a code: "ASR A2.2", "T30", "F90"
+        rest = text[end:].lstrip()
+        if (tok[:1].isdigit() and ((_MEASURE_UNIT.match(rest) and not rest.startswith("%")) or text[end:end + 1] in "-/")) \
+                or _NOT_A_COUNT_AFTER.match(rest):
+            continue  # "2,10 m", "alle zwei Jahre" – but "5 % der Beschäftigten" is a share
+        out.append(tok)
+    return out
+
+
 def _count_near_topic(u: "Unit", q: "Question") -> bool:
     """A number counting the asked thing: '240 Einstellplätzen', 'fünf Gruppen', 'Kinder: 95',
-    'insgesamt 95 Kindern', 'dreigeschossiger Bau' – not a measure ('2,10 m'), a norm ('DIN EN 81-72'),
-    a date or a number next to something else."""
-    if _label_matches_topic(u, q) and re.search(r"\d|\b(" + _COUNTWORD_RX + r")\b", u.text, re.I):
+    'insgesamt 95 Kindern', 'dreigeschossiger Bau', 'Rauchwarnmelder …, Stück 24' – not a measure
+    ('2,10 m'), a norm ('DIN EN 81-72'), a frequency ('alle zwei Jahre'), a date or a number next to
+    something else."""
+    if _label_matches_topic(u, q) and _plain_counts(u.text):
         return True
     text = VALUE_PATTERNS["date"].sub(" ", strip_identifiers(u.text))
     spans = [(m.group(0), m.end()) for m in _TOKEN.finditer(text)]
@@ -315,6 +371,9 @@ def _count_near_topic(u: "Unit", q: "Question") -> bool:
     near = _topic_positions(u, q, tokens)
     if not near:
         return False
+    for clause in re.split(r";|\s–\s", text):  # "Funkvernetzter Rauchwarnmelder nach DIN 14676, Stück 24."
+        if _PIECES.search(clause) and _topic_positions(u, q, _TOKEN.findall(clause)):
+            return True
     for i, (tok, end) in enumerate(spans):
         low = fold(tok)
         if not tok[:1].isdigit():
@@ -351,6 +410,94 @@ def _value_near_topic(u: "Unit", q: "Question") -> bool:
     return False
 
 
+def _relative_time(u: "Unit", q: "Question") -> bool:
+    """'vor Nutzungsaufnahme', 'sobald …' – a time given by another event; never by the asked event
+    itself ('Die Laufkarten sind vor der Abnahme vorzulegen' does not say when the Abnahme is)."""
+    for m in VALUE_PATTERNS["relative"].finditer(u.text):
+        event = m.group(4)
+        if event and any(query_term_in(t, text_terms(event)) for t in q.terms if not t.term.isdigit()):
+            continue
+        return True
+    return False
+
+
+def _dimension_ok(u: "Unit", q: "Question") -> bool:
+    """For 'Wie breit/hoch/lang/tief …?': a length in the sentence must be that dimension of the asked
+    thing – 'in 60 cm Höhe' is no width, 'Rauchabschnitte von höchstens 30 m Länge' no length of the
+    corridor, 'Stichflur 3. OG: 17 m' says no width. Other measures (Pa, m³/h, m²) are left alone."""
+    if not q.dimension:
+        return True
+    text = u.text
+    lengths = list(_LENGTH_VALUE.finditer(text))
+    if not lengths:  # "Wie tief ist der Teich?" is not answered by "200 m³"; "Wie hoch ist der Überdruck?" by Pa
+        return q.dimension == "hohe"
+    rest = _LENGTH_VALUE.sub(" ", text)
+    if VALUE_PATTERNS["measure"].search(rest):
+        return True  # the sentence also has another measure ("15 bis 50 Pa")
+    tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN.finditer(text)]
+    label_dim = _dimension_of(fold(u.label or "").split()[-1]) if u.label else None
+    in_sentence = {d for tok, _, _ in tokens if not tok[:1].isdigit()
+                   for d in [_dimension_of(fold(tok), noun=tok[:1].isupper())] if d}
+    if label_dim:
+        in_sentence.add(label_dim)
+    for m in lengths:
+        dims, owner = set(), None
+        after = [t for t in tokens if t[1] >= m.end()][:4]
+        for j, (tok, _, _) in enumerate(after):
+            f = fold(tok)
+            if f == "uber":  # "0,5 m über Dach"
+                if j + 1 < len(after) and fold(after[j + 1][0]) in _ABOVE:
+                    dims.add("hohe")
+                break
+            if f in _DIM_SKIP:
+                continue
+            d = _dimension_of(f, noun=tok[:1].isupper())
+            if d:
+                dims.add(d)
+            break
+        before = [t for t in tokens if t[2] <= m.start()]
+        for tok, start, end in reversed(before[-4:]):
+            if re.search(r"[,;()]", text[end:m.start()]) and not re.fullmatch(r"\s*:?\s*", text[end:m.start()]):
+                break
+            f = fold(tok)
+            if f in _DIM_SKIP:
+                continue
+            d = _dimension_of(f, noun=tok[:1].isupper())
+            if d:
+                dims.add(d)
+                if f not in _DIM_WORDS:  # compound: "Einfahrtshöhe von 2,10 m" belongs to the Einfahrt
+                    head = next(h for h in _DIM_NOUNS if f.endswith(h))
+                    owner = f[: -len(head)]
+                    owner = owner[:-1] if owner.endswith("s") and len(owner) > 4 else owner
+            break
+        if not dims and label_dim:
+            dims.add(label_dim)
+            label = fold(u.label or "").split()[-1]
+            if label not in _DIM_WORDS:
+                head = next((h for h in _DIM_NOUNS if label.endswith(h)), None)
+                owner = label[: -len(head)] if head else None
+        if dims and owner is None:  # "Rauchabschnitte von höchstens 30 m Länge" belongs to the Rauchabschnitte
+            prev = [t for t in before if fold(t[0]) not in _DIM_SKIP or fold(t[0]) == "von"][-2:]
+            if len(prev) == 2 and fold(prev[1][0]) == "von" and prev[0][0][:1].isupper():
+                owner = fold(prev[0][0])
+        if owner and owner in _MEASURE_NOUNS:
+            owner = None
+        if dims:
+            if q.dimension in dims and (owner is None or _owner_is_topic(owner, q)):
+                return True
+        elif q.dimension in in_sentence:  # "Länge des notwendigen Flurs im Obergeschoss (38 m statt 30 m)"
+            return True
+    return False
+
+
+_ABOVE = frozenset("dach gelande gelandeoberflache fussboden fussbodenoberkante okf oberkante".split())
+
+
+def _owner_is_topic(owner: str, q: "Question") -> bool:
+    topic = [t for t in q.terms if not t.term.isdigit()] or q.project_words
+    return not topic or any(query_term_in(t, text_terms(owner)) for t in topic)
+
+
 # --------------------------------------------------------------------------- chat: reading sources
 _MAIL_HEADER = re.compile(r"^(Betreff|Von|An|Cc|Datum|Gesendet):\s", re.I)
 _SALUTATION = re.compile(r"^(sehr\s+geehrte[rs]?|hallo|guten\s+(tag|morgen|abend)|liebe[rs]?|hi|moin|servus)\b"
@@ -367,7 +514,9 @@ _INDIRECT_QUESTION = re.compile(
 _REQUEST = re.compile(r"^(bitte|können\s+sie|könnten\s+sie|wir\s+bitten|ich\s+bitte)\b", re.I)
 # formal lead-ins that carry no content: "Zum Bauvorhaben … nehmen wir wie folgt Stellung: …"
 _PREAMBLE = re.compile(r"^[^:]{0,120}?\b(nehmen|nimmt)\s+\w+\s+wie\s+folgt\s+Stellung\s*:\s*|"
-                       r"^[^:]{0,80}?\bwie\s+folgt\s*:\s*", re.I)
+                       r"^[^:]{0,80}?\bwie\s+folgt\s*:\s*|"
+                       r"^(zum|zu|für|betrifft|betreff|bzgl\.?|bezüglich)\s+(dem\s+|das\s+)?(projekt|bauvorhaben\s+)?\s*"
+                       r"[A-Z]{1,4}-\d{4}-\d{3,4}\b[^:]{0,60}:\s*", re.I)
 
 
 @dataclass
@@ -391,11 +540,16 @@ class Unit:
 _ORDINAL_BREAK = re.compile(r"\b(im|am|vom|zum|zur|bis|ab|der|des|dem|den|die|das|ins|beim)\s+\d{1,2}\.$", re.I)
 
 
+# PDF lines with several fields in columns: "Aktenzeichen: BO-233/24    Ihr Zeichen: BS-2024-0233"
+_COLUMN_GAP = re.compile(r"[ \t]{3,}(?=[A-ZÄÖÜ][^:\n]{0,40}:\s)")
+
+
 def _lines(text: str) -> list[str]:
-    """Lines with PDF line breaks after ordinals rejoined ('im 3.' + 'Obergeschoss …')."""
+    """Lines with PDF line breaks after ordinals rejoined ('im 3.' + 'Obergeschoss …'), fields in
+    columns split, runs of spaces collapsed."""
     out: list[str] = []
-    for raw in text.split("\n"):
-        line = raw.strip()
+    for raw in _COLUMN_GAP.sub("\n", text).split("\n"):
+        line = re.sub(r"[ \t]{2,}", " ", raw.strip())
         if not line:
             continue
         if out and (_ORDINAL_BREAK.search(out[-1]) or out[-1].endswith(("-", ","))) and line[:1].isalpha():
@@ -405,8 +559,13 @@ def _lines(text: str) -> list[str]:
     return out
 
 
+# a short line with a value is data, not a heading: "Gesamtbetrag 312,40 Euro", "Toner schwarz, 2 Stück"
+_DATA_LINE = re.compile(r"\d[\d.,]*\s*(€|Euro\b|EUR\b|Stück\b|Stk\b|Pakete\b|m²|m³|%)|(€|EUR)\s*\d")
+
+
 def _is_heading_like(line: str) -> bool:
-    return len(line.split()) <= 6 and not re.search(r"[.!?:;]$", line) and ":" not in line
+    return len(line.split()) <= 6 and not re.search(r"[.!?:;]$", line) and ":" not in line \
+        and not _DATA_LINE.search(line)
 
 
 def _table_row(line: str) -> list[str] | None:
@@ -421,17 +580,35 @@ def _header_row(cells: list[str]) -> bool:
     return all(c and len(c) <= 30 and not any(ch.isdigit() for ch in c) for c in cells)
 
 
+# phrases of politeness that say nothing about the project ("Danke für die Nachfrage.", "Ich sehe mir das
+# bis Ende der Woche an und melde mich …") – never quoted as an answer
+_COURTESY = re.compile(
+    r"^(vielen\s+|herzlichen\s+|besten\s+)?dank\w*(\s+(für|ihnen|dir|euch)\b[^,;:]*)?[.!]?$|"
+    r"\b(ich|wir)\s+(sehe|sehen|schaue|schauen)\s+(mir|uns)\s+"
+    r"(das|die\s+sache)\b|\bmelde\w*\s+(mich|uns)\s+(\w+\s+){0,4}?(zurück|wieder|bei\s+ihnen|mit\b|sobald|bis)|"
+    r"\bfür\s+(rück)?fragen\s+(stehe|stehen)\b|\bstehe\w*\s+(ich|wir)?\s*(gern|gerne)?\s*zur\s+verfügung\b|"
+    r"^(ich|wir)\s+hoffe\w*\b|\bschönes\s+wochenende\b|^(bis\s+bald|bis\s+dann)\b", re.I)
+# "… ist nur 5,5 m² groß. Reicht das?" – the sentence before such a question is its premise, no fact
+_PREMISE_QUESTION = re.compile(r"^(reicht|reichen|passt|passen|ist|sind|geht|genügt|genügen|funktioniert|klappt|kann|"
+                               r"können|darf|dürfen|spricht|wäre|wären|müssen|muss|brauchen|braucht)\b.*\b(das|dies|es|so)\b",
+                               re.I)
+
+
 def read_units(src: Source) -> list[Unit]:
-    """Quotable sentences of a source (see module docstring for what is left out)."""
+    """Quotable sentences of a source (see module docstring for what is left out).
+
+    The signature (lines after the closing, or a name/organisation ending the text) is no statement;
+    it becomes one unit of kind "signature" that only answers "Wer hat … unterschrieben?"."""
     units: list[Unit] = []
     context = ""
     lines = _lines(src.text)
+    if src.kind == "mail":
+        lines = [ln for ln in lines if not _MAIL_HEADER.match(ln)]
+    sig_from = signature_start(lines)
+    signature = lines[sig_from:]
     in_table = False
-    for li, line in enumerate(lines):
-        if src.kind == "mail" and _MAIL_HEADER.match(line):
-            continue
+    for li, line in enumerate(lines[:sig_from]):
         if _CLOSING.match(line):
-            src.signature = " ".join(lines[li + 1:])  # signature: never quoted, but names the sender's role
             if src.kind != "mail" and re.match(r"(im\s+auftrag|i\.\s?a\.)", line, re.I) and li + 1 < len(lines):
                 signer = lines[li + 1].strip()  # "Im Auftrag / Jens Pfeiffer" under a permit
                 if re.fullmatch(_PERSON, signer):
@@ -467,7 +644,13 @@ def read_units(src: Source) -> list[Unit]:
         m = _LABEL.match(line)
         if m and len(m.group(1).split()) <= 5:
             label, line = m.group(1).strip(), line[m.end():].strip()
-        for sent in split_sentences(line):
+        sentences = split_sentences(line)
+        if li == sig_from - 1:  # "… behalten. Benedikt Sauer, Wohnbau Stadtpark eG"
+            sentences, own_signature = split_signature(sentences)
+            if own_signature:
+                signature = [own_signature] + signature
+        line_units: list[Unit] = []
+        for sent in sentences:
             if len(sent) <= 2:
                 continue
             sent = sent[0].upper() + sent[1:]
@@ -480,16 +663,43 @@ def read_units(src: Source) -> list[Unit]:
             elif lab and fold(lab) in ("bauvorhaben", "objekt", "grundstuck") and (
                     fold(lab) == "grundstuck" or (src.project_name and fold(sent).startswith(fold(src.project_name)))):
                 kind = "meta"  # "Bauvorhaben: Industriehalle Nordring, Nordring 88" names, it does not say
+            elif lab and _is_role_label(lab) and re.match(_PERSON + r"|[A-ZÄÖÜ]\w+.*\b(GmbH|eG|AG|mbH|KG)\b", sent):
+                kind = "role"  # "Bauherr: Wohnbau Stadtpark eG, vertreten durch …" says who, not what
             elif sent.endswith("?") or _INDIRECT_QUESTION.search(sent):
                 kind = "question"  # a question in a source is no answer (unless one asks what was asked)
+            elif _COURTESY.search(sent):
+                kind = "courtesy"
             elif _REQUEST.match(sent):
                 kind = "request"
-            units.append(Unit(src, len(units), li, sent, lab, context, kind=kind))
+            line_units.append(Unit(src, len(units) + len(line_units), li, sent, lab, context, kind=kind))
+        for a, b in zip(line_units, line_units[1:]):
+            if a.kind == "fact" and b.kind == "question" and _PREMISE_QUESTION.match(b.text):
+                a.kind = "premise"
+        units += line_units
+    signature = [x for x in signature if not _CLOSING.match(x)]
+    if signature:
+        src.signature = " ".join(signature)  # never quoted as a statement, but names the sender's role
+        units.append(Unit(src, len(units), sig_from, ", ".join(signature[:2]), "Unterschrift", context,
+                          kind="signature"))
+    if src.kind == "mail" and src.name:  # the subject: evidence that someone wrote in this project
+        subject = re.sub(r"^((AW|RE|WG|FW|Fwd)\s*:\s*)+", "", src.name, flags=re.I)
+        if src.project:
+            subject = re.sub(re.escape(src.project) + r"\s*", "", subject)
+        if src.project_name:
+            subject = re.sub(re.escape(src.project_name), "", subject)
+        subject = re.sub(r"^[\s:–\-()]+|[\s:–\-()]+$", "", subject)
+        if len(subject) > 3:
+            units.append(Unit(src, len(units), -1, subject, "Betreff", "", kind="subject"))
     for u in units:
         u.terms = text_terms(f"{u.label or ''} {u.text}")
         u.ctx_terms = text_terms(f"{src.header} {u.context}")
         u.label_terms = text_terms(u.label or "")
     return units
+
+
+def _is_role_label(label: str) -> bool:
+    folded = fold(label.split()[0]) if label.split() else ""
+    return any(folded.startswith(r) for r in ROLE_WORDS) or folded.startswith("brandschutzplanung")
 
 
 # --------------------------------------------------------------------------- chat: the question
@@ -500,7 +710,7 @@ _NEED_RULES = (
     (("date",), re.compile(r"\ban\s+welchem\s+tag\b|\bwelche[nmrs]?\s+(datum|termin|zeitpunkt|tag|monat|woche)\b", re.I)),
     (("frequency",), re.compile(r"\bwie\s+(oft|häufig|regelmäßig)\b|\bin\s+welchen\s+abständen\b", re.I)),
     (("money",), re.compile(r"\b(kostet|kosten|teuer|preis\w*|honorar\w*|miete|mieten|mietpreis\w*|gebühr\w*|"
-                            r"\w+kosten|\w+miete)\b", re.I)),
+                            r"\w+kosten|\w+miete|\w*betrag|\w*beträge|\w*summe)\b", re.I)),
     (("count",), re.compile(r"\bwie\s*viele\b|\b(anzahl|zahl)\b", re.I)),
     (("quantity",), re.compile(r"\bwie\s*viel\b(?!e)", re.I)),
     (("duration", "measure"), re.compile(r"\bwie\s+lange?\b|\bdauer\b", re.I)),
@@ -516,14 +726,54 @@ _NEED_RULES = (
     (("color",), re.compile(r"\bfarbe\w*\b", re.I)),
     (("language",), re.compile(r"\bsprache[n]?\b", re.I)),
     (("name",), re.compile(r"^\s*wer\s+(ist|sind|war|waren)\s+(der|die|das|unser\w*|ihr\w*)?\s*[A-ZÄÖÜ]", re.I)),
+    # "Welcher Prüfsachverständige nimmt … ab?" asks for the person, not for the role word
+    (("name",), re.compile(r"\bwelche[rsnm]?\s+(\w+\s+)?(prüfsachverständig\w*|sachverständig\w*|sachkundig\w*|"
+                           r"prüfingenieur\w*|prüfer\w*|errichter\w*|architekt\w*|fachplaner\w*|planer\w*|"
+                           r"ingenieur\w*|person\w*|mitarbeiter\w*|ansprechpartner\w*|brandschutzbeauftragt\w*|"
+                           r"bauleiter\w*)\b", re.I)),
     (("agent",), re.compile(r"^\s*(wer|von\s+wem|durch\s+wen)\b|\b(von|durch)\s+wem\b|\bwen\b", re.I)),
 )
 # words that name the asked attribute; they are answered by a value, not by the word itself
 _ATTRIBUTE_WORDS = frozenset(stem(fold(w)) for w in """
     kosten preis preise honorar miete gebühr gebühren anzahl zahl datum termin zeitpunkt temperatur gewicht
     farbe hersteller firma unternehmen lieferant anbieter norm normen richtlinie vorschrift kategorie klasse
-    sprache sprachen name höhe breite länge tiefe größe dauer menge fläche
+    sprache sprachen name höhe breite länge tiefe größe dauer menge fläche betrag summe
     """.split())
+# "Wann wurde die BMA abgenommen?" asks when something happened: a date of the event, not an obligation
+# ("ist vor der Abnahme vorzulegen") or a plan ("ist für März vorgesehen")
+_PAST_AUX = re.compile(r"\b(wurde|wurden|war|waren|worden)\b", re.I)
+_PERFECT_AUX = re.compile(r"\b(hat|haben|hatte|hatten|ist|sind)\b", re.I)
+_FUTURE_Q = re.compile(r"\b(wird|werden|soll|sollen|sollte|muss|müssen|geplant|vorgesehen|voraussichtlich|"
+                       r"bald|demnächst|künftig)\b", re.I)
+_SEP_FOLDED = r"(?:ab|an|auf|aus|bei|dar|durch|ein|fest|frei|her|hin|mit|nach|nieder|sicher|bereit|vor|weg|zuruck|zusammen|um|uber)"
+_ZU_INFINITIVE = re.compile(r"^" + _SEP_FOLDED + r"zu\w{3,}en$")
+_PARTICIPLE_FORM = re.compile(r"^" + _SEP_FOLDED + r"?ge\w{2,}(t|et|en)$|^\w{3,}iert$|"
+                              r"^(be|er|ver|zer|ent|emp|uber|unter|miss|hinter|wider)\w{2,}(t|en)$")
+_WHEN_Q = re.compile(r"^\s*(wann|seit\s+wann|an\s+welchem\s+(tag|datum)|welche[nmrs]?\s+(datum|tag|zeitpunkt))\b", re.I)
+_SEP = r"(?:ab|an|auf|aus|bei|dar|durch|ein|fest|frei|her|hin|mit|nach|nieder|sicher|bereit|vor|weg|zurück|zusammen|um|über)"
+# not done (yet): an obligation, a plan or an announcement
+_NOT_DONE = re.compile(
+    r"\b(muss|müssen|soll|sollen|sollte|sollten|geplant|vorgesehen|voraussichtlich|beabsichtigt|angesetzt|terminiert|"
+    r"anvisiert|erforderlich|notwendig|vorzusehen|vorzulegen)\b|"
+    r"\b(ist|sind|war|waren)\b(?:\s+\S+){0,14}?\s+(?:zu\s+[a-zäöüß]\w{2,}(?:en|ern|eln)|" + _SEP + r"zu[a-zäöüß]{3,}(?:en|ern|eln))\b|"
+    r"\b(wird|werden)\s+(?:\S+\s+){0,6}?(am|im|ab|bis|zum|zur|in\s+KW|nach)\s+(\d|KW|Januar|Februar|März|April|Mai|"
+    r"Juni|Juli|August|September|Oktober|November|Dezember)", re.I)
+# dimensions of a length – "Wie breit ist die Treppe?" is not answered by "in 60 cm Höhe"
+_DIM_ADJ = {"breit": "breite", "schmal": "breite", "hoch": "hohe", "hoh": "hohe", "niedrig": "hohe", "lang": "lange",
+            "lange": "lange", "tief": "tiefe"}
+_DIM_WORDS = {"breite": "breite", "breit": "breite", "schmal": "breite", "hohe": "hohe", "hoch": "hohe",
+              "lange": "lange", "lang": "lange", "entfernung": "lange", "weite": "lange", "abstand": "lange",
+              "tiefe": "tiefe", "tief": "tiefe"}
+_DIM_NOUNS = ("breite", "hohe", "lange", "tiefe", "entfernung")
+_DIM_SKIP = frozenset("""mindestens hochstens maximal max ca etwa rund je jeweils nur insgesamt circa knapp genau lichte lichten
+    lichter lichtes nutzbare nutzbaren nutzbarer freie freien freier gesamte gesamten von mit einer einem eines ein eine
+    der die das des dem den bei auf""".split())
+_MEASURE_NOUNS = frozenset("mass masse mindestmass hochstmass wert werte grenzwert hochstwert mindestwert".split())
+_LENGTH_VALUE = re.compile(r"\d+(?:[.,]\d+)?(?:\s*(?:[–-]|bis)\s*\d+(?:[.,]\d+)?)?\s*(?:m|cm|mm|km)(?![\w²³/])")
+_CIRCUMSTANCE = re.compile(r"\b(bei|im)\s+(einem\s+|einer\s+)?(Brand|Feuer|Brandfall|Notfall|Ernstfall|Alarm|Feueralarm|"
+                           r"Brandalarm|Alarmfall)\b", re.I)
+_SIGNER_Q = re.compile(r"\b(unterschrieben|unterschreibt|unterzeichnet\w*|signiert|gezeichnet|unterschrift\w*)\b|"
+                       r"\bvon\s+wem\s+(stammt|stammen|ist|kommt)\b|\bwer\s+hat\b.*\b(verfasst|aufgestellt|erstellt)\b", re.I)
 _DECISION_Q = re.compile(r"\b(zugestimmt|zustimm\w*|stimmt\w*\b.*\bzu\b|zustimmung|abgelehnt|ablehn\w*|lehnt\w*\b.*\bab\b|"
                          r"ablehnung|genehmigt|genehmigen|freigegeben|freigeben|freigabe|zugelassen|zulassen|"
                          r"einverstanden|akzeptiert|akzeptier\w*|mitgetragen|erlaubt|entschieden|entscheid\w*)\b", re.I)
@@ -581,6 +831,11 @@ class Question:
     prefer: str | None = None  # preferred value type when several are accepted ("wie lange" → duration)
     manner: bool = False  # "Wie wird/werden … <verb>?" – asks for the way something is done
     yesno: bool = False  # "Hat …?", "Ist …?", "Wurde …?"
+    past_event: bool = False  # "Wann wurde … abgenommen?" – the date it happened
+    completion: bool = False  # "Ist die Anlage schon abgenommen?" – was it done?
+    dimension: str | None = None  # asked dimension of a length ("breite", "hohe", "lange", "tiefe")
+    signer: bool = False  # "Wer hat … unterschrieben?"
+    project_words: list[QueryTerm] = field(default_factory=list)  # words naming the project ("Tiefgarage")
 
 
 def _project_names(sources: list[Source]) -> dict[str, set[str]]:
@@ -611,22 +866,33 @@ def _is_role(t: QueryTerm) -> bool:
     return role_key(t) is not None
 
 
-def analyse_question(question: str, sources: list[Source]) -> Question:
+def analyse_question(question: str, sources: list[Source], synonyms: Synonyms | None = None) -> Question:
     shaping = {stem(fold(m.group(1))) for m in _WIE_ADJ.finditer(question)}  # "wie lange", "wie hoch"
-    all_terms = query_terms(question, drop=frozenset(TEMPORAL_WORDS))
+    all_terms = query_terms(question, synonyms if synonyms is not None else active_synonyms(),
+                            drop=frozenset(TEMPORAL_WORDS))
+    # "bei einem Brand", "im Brandfall": the circumstance, not the topic, of a fire-safety question
+    circumstance = {stem(fold(m.group(3))) for m in _CIRCUMSTANCE.finditer(question)}
+    all_terms = [replace(t, weak=True) if t.term in circumstance else t for t in all_terms]
     enumeration = is_enumeration_question(question)
     folded_q = fold(question)
     named: set[str] = set()
     project_terms: set[str] = set()
+    matches: dict[str, tuple[int, set[str]]] = {}
     for project, names in _project_names(sources).items():
         number_words = set(words(project))
+        score, hits = 0, set()
         if fold(project) in folded_q:  # the full project number, e.g. "BS-2024-0137"
-            named.add(project)
-            project_terms.update(t.term for t in all_terms if t.term in number_words or t.word in number_words)
-        hits = [t.term for t in all_terms if _names_project(t, names)]
-        if hits:
-            named.add(project)
-            project_terms.update(hits)
+            score += 10
+            hits.update(t.term for t in all_terms if t.term in number_words or t.word in number_words)
+        found = {t.term for t in all_terms if _names_project(t, names)}
+        score += len(found)
+        if score:
+            matches[project] = (score, hits | found)
+    if matches:  # "die Tiefgarage des Bürogebäudes Hafenkante": Hafenkante (2 words), not "Tiefgarage Marktplatz"
+        top = max(score for score, _ in matches.values())
+        named = {p for p, (score, _) in matches.items() if score == top}
+        for p in named:
+            project_terms.update(matches[p][1])
     types: set[str] = set()
     prefer = None
     for kinds, rx in _NEED_RULES:
@@ -641,9 +907,15 @@ def analyse_question(question: str, sources: list[Source]) -> Question:
         types.discard("quantity")
     terms: list[QueryTerm] = []
     attrs: list[QueryTerm] = []
+    # numbers of a value in a yes/no question ("Reicht ein Vorraum von 5,5 m²?") are the premise to check, not
+    # the topic (in "In welchem Projekt ist der Teich 200 m³ groß?" they are)
+    value_digits = {d for k in ("measure", "money", "duration", "weight", "temperature")
+                    for m in VALUE_PATTERNS[k].finditer(question) for d in re.findall(r"\d+", m.group(0))}
     for t in all_terms:
         if not enumeration and t.term in project_terms:
             continue  # project names identify the project – they are no answer to the question
+        if t.term.isdigit() and t.term in value_digits and not _W_QUESTION.match(question):
+            continue
         head = attribute_head(t.word) if t.noun else None
         if t.term in shaping or t.word in shaping:
             attrs.append(replace(t, weak=True))
@@ -671,6 +943,20 @@ def analyse_question(question: str, sources: list[Source]) -> Question:
     if summary:  # "Fasse … zusammen", "Worum geht es …": the words only shape the question
         terms = [t for t in terms if not SUMMARY_WORDS.match(t.word) and not SUMMARY_WORDS.match(t.term)]
     soft = {"reason"} if re.search(r"\b(warum|weshalb|wieso|wozu|aus\s+welchem\s+grund)\b", question, re.I) else set()
+    past_event = _past_event_question(question)
+    if past_event:  # "Wann wurde … abgenommen?" – a date, not "vor der Abnahme" or a duration
+        types -= {"duration", "relative"}
+        types.add("date")
+        prefer = "date"
+    yesno = not _W_QUESTION.match(question)
+    dimension = None
+    m = _WIE_ADJ.search(question)
+    if m and fold(m.group(1)) in _DIM_ADJ:
+        dimension = _DIM_ADJ[fold(m.group(1))]
+    for t in attrs:  # "Welche Breite hat …?", "Flurlänge"
+        dim = _dimension_of(t.word, noun=t.noun)
+        if dim and not dimension:
+            dimension = dim
     return Question(question, terms, types, temporal, enumeration, is_project_question(question),
                     named if not enumeration else set(), attrs=attrs, soft=soft, decision=decision,
                     roles=roles, authorship=authorship, summary=summary,
@@ -679,7 +965,35 @@ def analyse_question(question: str, sources: list[Source]) -> Question:
                                                                                      question, re.I)),
                     prefer=prefer if len(types) > 1 else None,
                     manner=bool(re.match(r"\s*wie\s+(wird|werden|wurde|wurden)\b", question, re.I)) and not types,
-                    yesno=not _W_QUESTION.match(question))
+                    yesno=yesno, past_event=past_event,
+                    completion=yesno and bool(_COMPLETION.search(question)) and not _FUTURE_Q.search(question),
+                    dimension=dimension, signer=bool(_SIGNER_Q.search(question)),
+                    project_words=[t for t in all_terms if t.term in project_terms and not t.term.isdigit()])
+
+
+def _past_event_question(question: str) -> bool:
+    """'Wann wurde/wurden …?', 'Wann ist … abgenommen worden?', 'Wann hat … erteilt?' – not 'Wann wird …?',
+    'Wann ist die Abnahme?' or 'Wann soll … ?'."""
+    if not _WHEN_Q.match(question) or _FUTURE_Q.search(question):
+        return False
+    if _PAST_AUX.search(question):
+        return True
+    raw = re.findall(r"[^\W\d_]+", question)
+    last = fold(raw[-1]) if raw and raw[-1][:1].islower() else ""
+    if not last or re.search(r"\bzu\s+\w+\W*$", question) or _ZU_INFINITIVE.match(last):
+        return False  # "Wann sind die Pläne zu übergeben / vorzulegen?" – an obligation
+    return bool(_PERFECT_AUX.search(question)) and bool(_PARTICIPLE_FORM.match(last))
+
+
+def _dimension_of(word: str, *, noun: bool = True) -> str | None:
+    """Dimension a folded word names: 'breite'/'breit' → breite, 'einfahrtshohe' → hohe (compound head)."""
+    if word in _DIM_WORDS:
+        return _DIM_WORDS[word]
+    if noun:
+        for head in _DIM_NOUNS:
+            if word.endswith(head) and len(word) - len(head) >= 3:
+                return _DIM_WORDS[head]
+    return None
 
 
 # --------------------------------------------------------------------------- chat: people and roles
@@ -807,6 +1121,16 @@ def _quotable(q: Question, u: Unit) -> bool:
             query_term_in(t, u.label_terms) for t in q.terms + q.attrs)
     if u.kind == "question":
         return q.open_points
+    if u.kind == "courtesy":
+        return False  # "Danke für die Nachfrage." answers nothing
+    if u.kind == "signature":
+        return q.signer
+    if u.kind == "role":  # "Bauherr: …, vertreten durch …" – who someone is
+        return bool(q.types & {"name", "agent"}) or q.participants or q.signer
+    if u.kind == "premise":  # "… nur 5,5 m² groß. Reicht das?" – what was asked, not a fact
+        return q.open_points or q.authorship or q.communication
+    if u.kind == "subject":
+        return q.enumeration  # only as evidence of an authored mail (see score_units)
     if u.kind == "request":  # "Bitte … so planen, dass die Rettungswege frei bleiben."
         return q.authorship or q.temporal or q.communication or (
             bool(q.terms) and all(query_term_in(t, u.terms) for t in q.terms if t.noun))
@@ -845,7 +1169,7 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
             sender = set(words(s.sender))
             authored |= {t.term for t in q.terms if t.noun and (t.word in sender or t.term in sender)}
         for u in units[s.n]:
-            if not _quotable(q, u):
+            if not _quotable(q, u) or (u.kind == "subject" and not authored):
                 continue
             credit: dict[str, float] = {}
             inline = False
@@ -876,8 +1200,8 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
                 u.section_topic = True  # "Welche Kennwerte hat …?" – the rows of that section
                 coverage = max(coverage, MIN_COVERAGE)
             types = set(k for k in q.types if _has_type(k, u, q, names))
-            if s.sender and q.communication and q.types & {"agent", "name"}:
-                types |= q.types & {"agent", "name"}  # "Wer hat … geschickt?" – the sender
+            if (s.sender and q.communication or u.kind == "signature") and q.types & {"agent", "name"}:
+                types |= q.types & {"agent", "name"}  # "Wer hat … geschickt/unterschrieben?" – sender, signer
             if authored and s.date and s.kind != "document" and "date" in q.types:
                 types.add("date")  # "Wann hat Frau Wendehals den Antrag abgelehnt?" – the date of her mail
             types = frozenset(types)
@@ -892,6 +1216,8 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
                 score += 1.0 * bool(_DECISION_STATED.search(u.text)) - 1.0 * bool(_CONDITIONAL.search(u.text))
             if authored:
                 score += 1.0
+            if u.kind == "subject":
+                score -= 1.5  # only when the mail says nothing else
             score -= 0.001 * len(u.text) + (TABLE_PENALTY if u.table else 0.0)  # among equals: precise prose
             sc = Scored(u, coverage, inline, score, frozenset(credit), types | soft, bool(authored))
             sc.answerable = _answerable(q, sc, attr_hit) and all(
@@ -938,8 +1264,11 @@ def _answerable(q: Question, sc: Scored, attr_hit: bool) -> bool:
     if q.decision and (q.yesno or re.search(r"\bentschied|\bentscheid", q.text, re.I)) \
             and not _DECISION_STATED.search(sc.unit.text):
         return False
-    if not q.terms:
-        return bool(q.attrs) and attr_hit and bool(q.types)
+    if (q.completion or q.past_event) and _NOT_DONE.search(sc.unit.text) and sc.unit.kind != "signature":
+        return False  # an obligation or a plan does not say that it was done
+    if not q.terms:  # "Wie hoch ist das Wohnhochhaus?" – a value of the project itself, not of its sensors
+        return bool(q.attrs) and attr_hit and bool(q.types) and (
+            not q.project_words or any(query_term_in(t, sc.unit.terms) for t in q.project_words))
     if sc.coverage < MIN_COVERAGE - 1e-9:
         return False
     # "Nutzbare Breite 1,0 m." in the draft named "…Fluchtbalkon…": attribute and value here, topic above
@@ -1012,6 +1341,8 @@ def _select(q: Question, candidates: list[Scored]) -> list[Scored]:
         if c in chosen or any(k in s or s in k for s in seen):
             continue  # same sentence from an overlapping source
         gain = (set(c.matched) - covered) | (set(c.types) - types)
+        if q.authorship and best.authored and not c.authored:
+            continue  # "Was hat die Feuerwehr gesagt?" – not what a permit says about the Feuerwehr
         broad = _open_question(q) and not q.temporal and c.unit.source.n not in sources and not c.unit.table \
             and c.score >= 0.7 * best.score
         if (gain and c.score >= 0.4 * best.score) or broad:
@@ -1083,7 +1414,28 @@ def _phrase(units: list[Unit], *, with_project: bool, with_date: bool) -> str:
     head = f"{'laut' if prefix else 'Laut'} {src.describe(with_date=with_date)}"
     if label:
         head += f", {label}"
-    return f"{prefix}{head}: {texts} [{src.n}]"
+    return re.sub(r"\s{2,}", " ", f"{prefix}{head}: {texts} [{src.n}]")
+
+
+# a sentence that starts with a pronoun needs the one before it: "Er wird zu 96 m³/h … gedeckt." – who is "er"?
+_PRONOUN_START = re.compile(r"^(Er|Dieser|Diese|Dieses|Dies|Dort|Hierfür|Dafür|Davon|Deren|Dessen|Hierzu|Dazu)\b")
+
+
+def _with_antecedents(chosen: list[Scored], units: dict[int, list[Unit]]) -> list[Unit]:
+    out: list[Unit] = []
+    for c in chosen:
+        u = c.unit
+        pronoun = _PRONOUN_START.match(u.text) or (u.source.kind == "document" and u.text.startswith("Sie "))
+        if (pronoun or u.kind == "question") and u.pos > 0:
+            prev = units[u.source.n][u.pos - 1]
+            # "Er wird … gedeckt." needs its subject; "Reicht das?" its premise
+            if prev not in out and ((pronoun and prev.kind in ("fact", "request")
+                                     and (prev.line == u.line or prev.context == u.context))
+                                    or (u.kind == "question" and prev.kind == "premise" and prev.line == u.line)):
+                out.append(prev)
+        if u not in out:
+            out.append(u)
+    return out
 
 
 def _phrase_rows(units: list[Unit], *, with_project: bool) -> str:
@@ -1110,16 +1462,17 @@ def _groups(units: list[Unit]) -> list[list[Unit]]:
     return groups
 
 
-def answer_from_sources(question: str, raw_sources: list[tuple[int, str, str]]) -> str:
+def answer_from_sources(question: str, raw_sources: list[tuple[int, str, str]],
+                        synonyms: Synonyms | None = None) -> str:
     sources = [_parse_header(n, h, t) for n, h, t in raw_sources]
     if not sources or not question.strip():
         return NOT_FOUND
-    q = analyse_question(question, sources)
+    q = analyse_question(question, sources, synonyms)
     units = {s.n: read_units(s) for s in sources}
     several_projects = len({s.project for s in sources}) > 1
     with_project = several_projects or q.project_question
     pool = [s for s in sources if not q.projects or s.project in q.projects]
-    if q.summary and not [t for t in q.terms if not _is_role(t)]:
+    if q.summary and not q.terms:  # "Fasse zusammen, was die Feuerwehr will" is about the Feuerwehr's statement
         groups = _summary(q, sources, units)
         if groups:
             return " ".join(_phrase(g, with_project=with_project, with_date=False) for g in groups)
@@ -1139,6 +1492,9 @@ def answer_from_sources(question: str, raw_sources: list[tuple[int, str, str]]) 
     candidates = [c for c in score_units(q, sources, units) if c.answerable]
     if not candidates:
         return NOT_FOUND
+    if q.open_points and re.search(r"\b(gefragt|fragt\w*|wissen|rückfrage\w*|anfrage\w*|nachfrage\w*)\b", q.text, re.I):
+        asked = [c for c in candidates if c.unit.kind in ("question", "premise")]
+        candidates = asked or candidates  # "Was hat die Architektin gefragt?" – her question, not her last remark
     if q.enumeration and several_projects:
         best: dict[str | None, Scored] = {}
         for c in sorted(candidates, key=lambda c: c.score, reverse=True):
@@ -1155,14 +1511,16 @@ def answer_from_sources(question: str, raw_sources: list[tuple[int, str, str]]) 
             return _phrase_rows(rows, with_project=with_project)
     with_date = q.temporal or q.decision or "date" in q.types
     return " ".join(_phrase(g, with_project=with_project, with_date=with_date)
-                    for g in _groups([c.unit for c in chosen]))
+                    for g in _groups(_with_antecedents(chosen, units)))
 
 
 CHAT_QUIRKS = ("length", "reasoning_only", "unterminated_think")
 
 
-def chat_completion(payload: dict, *, think: bool = True, quirk: str | None = None) -> dict:
-    """OpenAI chat completion. ``quirk`` imitates edge cases of real servers (see CHAT_QUIRKS)."""
+def chat_completion(payload: dict, *, think: bool = True, quirk: str | None = None,
+                    synonyms: Synonyms | None = None) -> dict:
+    """OpenAI chat completion. ``quirk`` imitates edge cases of real servers (see CHAT_QUIRKS);
+    ``synonyms`` default to :func:`active_synonyms` (built-in list plus SYNONYMS_FILE)."""
     messages = payload.get("messages") or []
     model = payload.get("model") or "fake-llm"
     user_texts, has_image = [], False
@@ -1181,7 +1539,7 @@ def chat_completion(payload: dict, *, think: bool = True, quirk: str | None = No
     else:
         question, sources = parse_sources(prompt)
         if sources or question:
-            answer = answer_from_sources(question, sources)
+            answer = answer_from_sources(question, sources, synonyms)
         else:
             answer = "OK"
     content = f"<think>Ich prüfe die Quellen.</think>\n{answer}" if think else answer

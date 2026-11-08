@@ -15,8 +15,8 @@ Fields of a question:
 * ``category`` – fact, paraphrase, abbreviation, stand (latest state), two_source, enumeration,
   cross (no project filter), negative, trap (near miss), decision, summary.
 
-No answer string may appear in the question itself. The block "Gegenprüfung" holds the questions an
-independent review found answered wrongly (round 2) – kept as regressions. How well the system does
+No answer string may appear in the question itself. The blocks "Gegenprüfung" hold the questions an
+independent review found answered wrongly (rounds 2 and 3) – kept as regressions. How well the system does
 on questions nobody tuned it for is measured with the held-back set tests/eval_holdout.json
 (``python -m projektakte.evaluate --set holdout --summary-only``).
 """
@@ -275,4 +275,22 @@ EVAL = [
     _neg("r2-abnahmedatum", None, "Wann wurde der Feuerwehraufzug im Wohnhochhaus Am Stadtpark abgenommen?"),
     _neg("r2-hersteller", None, "Welcher Hersteller liefert die Feststellanlage im Pflegeheim Sonnenhang?"),
     _neg("r2-treppe-abnahme", "BS-2024-0137", "Wann wird die Außentreppe abgenommen?", "trap"),
+    # --- Gegenprüfung (round 3): mixed-up dimensions, obligations for past events, another project,
+    # signer, LV attachment, overview phrasing --------------------------------------------------------
+    _neg("r3-pflicht-abnahme", None, "Wann wurde die Brandmeldeanlage im Pflegeheim Sonnenhang abgenommen?", "trap"),
+    _neg("r3-pflicht-uebergabe", None, "Wann wurden die Feuerwehrpläne für das Pflegeheim Sonnenhang übergeben?",
+         "trap"),
+    _neg("r3-mass-breite", "BS-2025-0019", "Wie breit ist die Balkontreppe?", "trap"),
+    _neg("r3-mass-laenge", None, "Wie lang ist der Flur im Pflegeheim Sonnenhang?", "trap"),
+    _neg("r3-fremdes-projekt", None, "Wie hoch ist die Einfahrt der Tiefgarage des Bürogebäudes Hafenkante?", "trap"),
+    _q("r3-mass-richtig", "BS-2024-0137", "Wie lang ist der Flur im Obergeschoss?", [{"file": BK}], ["38 m"],
+       "paraphrase"),
+    _q("r3-unterschrift", None, "Wer hat die Stellungnahme der Feuerwehr zum Hotel Seeblick unterschrieben?",
+       [{"attachment": "Stellungnahme Feuerwehr.pdf", "project": "BS-2024-0233"},
+        {"mail_subject": "Stellungnahme Brandschutzdienststelle – BS-2024-0233 Hotel Seeblick",
+         "project": "BS-2024-0233"}], ["Holger Lamm"], "fact"),
+    _q("r3-lv", None, "Wie viele Rauchwarnmelder sind für die Kita Regenbogen ausgeschrieben?",
+       [{"attachment": "BS-2025-0019_LV_Rauchwarnmelder.txt", "project": "BS-2025-0019"}], ["24"], "fact"),
+    _q("r3-ueberblick", None, "Gib mir einen Überblick über die Tiefgarage Marktplatz.",
+       [{"file": BK, "project": "BS-2022-0901"}], ["Großgarage"], "summary"),
 ]

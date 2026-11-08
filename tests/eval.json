@@ -1552,5 +1552,113 @@
   "answer_contains": [],
   "category": "trap",
   "not_found": true
+ },
+ {
+  "id": "r3-pflicht-abnahme",
+  "project": null,
+  "question": "Wann wurde die Brandmeldeanlage im Pflegeheim Sonnenhang abgenommen?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "trap",
+  "not_found": true
+ },
+ {
+  "id": "r3-pflicht-uebergabe",
+  "project": null,
+  "question": "Wann wurden die Feuerwehrpläne für das Pflegeheim Sonnenhang übergeben?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "trap",
+  "not_found": true
+ },
+ {
+  "id": "r3-mass-breite",
+  "project": "BS-2025-0019",
+  "question": "Wie breit ist die Balkontreppe?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "trap",
+  "not_found": true
+ },
+ {
+  "id": "r3-mass-laenge",
+  "project": null,
+  "question": "Wie lang ist der Flur im Pflegeheim Sonnenhang?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "trap",
+  "not_found": true
+ },
+ {
+  "id": "r3-fremdes-projekt",
+  "project": null,
+  "question": "Wie hoch ist die Einfahrt der Tiefgarage des Bürogebäudes Hafenkante?",
+  "sources": [],
+  "answer_contains": [],
+  "category": "trap",
+  "not_found": true
+ },
+ {
+  "id": "r3-mass-richtig",
+  "project": "BS-2024-0137",
+  "question": "Wie lang ist der Flur im Obergeschoss?",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx"
+   }
+  ],
+  "answer_contains": [
+   "38 m"
+  ],
+  "category": "paraphrase"
+ },
+ {
+  "id": "r3-unterschrift",
+  "project": null,
+  "question": "Wer hat die Stellungnahme der Feuerwehr zum Hotel Seeblick unterschrieben?",
+  "sources": [
+   {
+    "attachment": "Stellungnahme Feuerwehr.pdf",
+    "project": "BS-2024-0233"
+   },
+   {
+    "mail_subject": "Stellungnahme Brandschutzdienststelle – BS-2024-0233 Hotel Seeblick",
+    "project": "BS-2024-0233"
+   }
+  ],
+  "answer_contains": [
+   "Holger Lamm"
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "r3-lv",
+  "project": null,
+  "question": "Wie viele Rauchwarnmelder sind für die Kita Regenbogen ausgeschrieben?",
+  "sources": [
+   {
+    "attachment": "BS-2025-0019_LV_Rauchwarnmelder.txt",
+    "project": "BS-2025-0019"
+   }
+  ],
+  "answer_contains": [
+   "24"
+  ],
+  "category": "fact"
+ },
+ {
+  "id": "r3-ueberblick",
+  "project": null,
+  "question": "Gib mir einen Überblick über die Tiefgarage Marktplatz.",
+  "sources": [
+   {
+    "file": "02 Konzept/Brandschutzkonzept.docx",
+    "project": "BS-2022-0901"
+   }
+  ],
+  "answer_contains": [
+   "Großgarage"
+  ],
+  "category": "summary"
  }
 ]

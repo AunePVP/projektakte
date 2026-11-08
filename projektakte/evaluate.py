@@ -18,7 +18,9 @@ Sets:
 Before the run the services are probed (as on /health/deps). Exit code: 0 = targets met, 1 = targets
 missed (answerable questions: expected source in the top 5 and the fact in the answer, default
 >= 80 %; questions without an answer: "nicht gefunden" or unbelegt, default >= 90 %), 2 = a service was
-not reachable (the numbers then say little).
+not reachable (the numbers then say little), the set could not be read or no question was selected
+(``--only``/``--category`` matched nothing, empty set). A target without questions of its kind is
+reported as "nicht geprüft".
 
 The demo data is indexed into a separate data folder (default ``$DATA_DIR/eval``), never into the
 production index. The same checks are used by the tests (tests/test_ask.py, tests/test_search.py,
@@ -339,10 +341,12 @@ def print_summary(summary: dict, out=None, *, services: dict | None = None) -> N
     t = s["targets"]
     w(f"  Fragen: {s['questions']} ({s['answerable']} beantwortbar, {s['unanswerable']} ohne Antwort), "
       f"bestanden: {s['passed']}\n")
-    w(f"  Beantwortbar richtig (Quelle unter den ersten 5 und Fakt in der Antwort): {_fmt(s['correct'], 2)} "
-      f"(Ziel {t['correct']:.2f})\n")
-    w(f"  Ohne Antwort richtig abgelehnt („nicht gefunden“ oder unbelegt): {_fmt(s['refused'], 2)} "
-      f"(Ziel {t['refused']:.2f}); fälschlich als belegt beantwortet: {s['answered_wrongly']}\n")
+    def share(value, target: float) -> str:
+        return "nicht geprüft (keine solchen Fragen im Satz)" if value is None else f"{value:.2f} (Ziel {target:.2f})"
+
+    w(f"  Beantwortbar richtig (Quelle unter den ersten 5 und Fakt in der Antwort): {share(s['correct'], t['correct'])}\n")
+    w(f"  Ohne Antwort richtig abgelehnt („nicht gefunden“ oder unbelegt): {share(s['refused'], t['refused'])}; "
+      f"fälschlich als belegt beantwortet: {s['answered_wrongly']}\n")
     w(f"  Ziele {'erreicht' if s['targets_met'] else 'VERFEHLT'}\n")
     w(f"  Erwartete Quelle unter den ersten 5: {_fmt(s['retrieval_top5'], 2)}\n")
     w(f"  Antwort mit Fakt und Quelle: {_fmt(s['answers_passed'], 2)}   falsches „nicht gefunden“: "
@@ -435,6 +439,14 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         print(f"Evaluationssatz nicht lesbar: {exc}", file=sys.stderr)
         return 2
+    if a.only:
+        questions = [q for q in questions if q["id"] in set(a.only)]
+    if a.category:
+        questions = [q for q in questions if q.get("category") in set(a.category)]
+    if not questions:  # a typo in --only/--category or an empty set must not pass as "targets met"
+        print("Keine Fragen ausgewählt – nichts zu prüfen (Exit 2). --only, --category und den "
+              "Evaluationssatz prüfen.", file=sys.stderr)
+        return 2
     services = ai.check().get("services") or {}
     print(f"Dienste-Vorprüfung: {_services_line(services)}")
     for key in ("llm", "embeddings", "reranker"):
@@ -445,10 +457,6 @@ def main(argv: list[str] | None = None) -> int:
         t0 = time.perf_counter()
         build_index(s, ai)
         print(f"Index aktuell ({time.perf_counter() - t0:.1f} s)")
-    if a.only:
-        questions = [q for q in questions if q["id"] in set(a.only)]
-    if a.category:
-        questions = [q for q in questions if q.get("category") in set(a.category)]
     conn = sqlite3.connect(s.db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     records = [evaluate_question(conn, ai, str(s.db_path), q, s) for q in questions]

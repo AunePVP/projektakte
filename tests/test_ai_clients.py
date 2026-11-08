@@ -143,3 +143,15 @@ def test_llm_probe_without_model_list_is_ok(fresh_fake_ai):
     fresh_fake_ai.options["fail"] = ["chat"]
     info = LLMClient(f"{fresh_fake_ai.base_url}/v1", "qwen3.8-flash-next").probe(2.0)
     assert info["ok"] is False and "500" in info["error"]
+
+
+def test_rerank_timeout_is_not_waited_for_twice(fresh_fake_ai):
+    """Once the format is known, a timeout must not trigger a second (format re-detection) attempt."""
+    import time
+    c = RerankClient(fresh_fake_ai.base_url + "/rerank", timeout=0.3)
+    c.rerank("Rauchableitung", ["Rauchableitung im Treppenraum"])  # detect the format
+    fresh_fake_ai.options["delay"] = 1.0
+    t0 = time.perf_counter()
+    with pytest.raises(AIServiceError):
+        c.rerank("Rauchableitung", ["Rauchableitung im Treppenraum"])
+    assert time.perf_counter() - t0 < 0.55

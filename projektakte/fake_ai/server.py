@@ -32,6 +32,9 @@ DEFAULT_OPTIONS = {
     # "unterminated_think" (cut off inside <think>)
     "chat_quirk": None,
     "models_404": False,  # no GET /v1/models (some llama.cpp/proxy setups)
+    # synonym file for reranker and chat (same format as SYNONYMS_FILE); None = SYNONYMS_FILE from the
+    # environment, as the app's full-text search uses it
+    "synonyms_file": None,
 }
 
 
@@ -98,7 +101,8 @@ class _Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict) or not payload.get("messages"):
                 return self._send(400, {"error": "messages required"})
             return self._send(200, core.chat_completion(payload, think=bool(opts.get("think")),
-                                                        quirk=opts.get("chat_quirk")))
+                                                        quirk=opts.get("chat_quirk"),
+                                                        synonyms=core.active_synonyms(opts.get("synonyms_file"))))
         if path == "/v1/embeddings" and "openai" in opts["embed_formats"]:
             if not self._prelude("embed"):
                 return
@@ -128,14 +132,15 @@ class _Handler(BaseHTTPRequestHandler):
             query = payload.get("query") if isinstance(payload, dict) else None
             if not isinstance(query, str):
                 return self._send(422, {"error": "query required"})
+            syn = core.active_synonyms(opts.get("synonyms_file"))
             if isinstance(payload.get("texts"), list) and "tei" in opts["rerank_formats"]:
-                scores = [core.rerank_score(query, str(t)) for t in payload["texts"]]
+                scores = [core.rerank_score(query, str(t), syn) for t in payload["texts"]]
                 ranked = sorted(range(len(scores)), key=lambda i: (-scores[i], i))
                 return self._send(200, [{"index": i, "score": scores[i]} for i in ranked])
             if isinstance(payload.get("documents"), list) and "cohere" in opts["rerank_formats"]:
                 docs = [d.get("text", "") if isinstance(d, dict) else str(d)
                         for d in payload["documents"]]
-                scores = [core.rerank_score(query, d) for d in docs]
+                scores = [core.rerank_score(query, d, syn) for d in docs]
                 ranked = sorted(range(len(scores)), key=lambda i: (-scores[i], i))
                 top_n = payload.get("top_n") or len(ranked)
                 return self._send(200, {
