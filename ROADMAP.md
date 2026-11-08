@@ -42,7 +42,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
   Fragefeld mit Antwort und Quellen), Zuordnungs-Eingang mit Bestätigen/Verwerfen. Deutsch.
 - [x] **13. Zugangsschutz** – Anmeldung mit Benutzern aus der Konfiguration (Passwort-Hash), Sitzungs-
   Cookie; alle Seiten und APIs außer `/health` geschützt.
-- [ ] **14. plMail über JMAP** – zweite Mailquelle über die JMAP-API von plMail (App-Passwort, siehe
+- [x] **14. plMail über JMAP** – zweite Mailquelle über die JMAP-API von plMail (App-Passwort, siehe
   docs/plmail-jmap.md), inkrementell über `Email/changes`; Tests gegen einen kleinen Fake-JMAP-Server.
 
 ## Phase B – Ideen (nur mit benanntem Nutzen)

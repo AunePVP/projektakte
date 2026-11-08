@@ -19,6 +19,20 @@ from .background import BackgroundIndexer
 from .config import Settings, load_settings
 
 
+def health_deps_data(app: FastAPI) -> dict:
+    """State of the AI services (and plMail, if configured) – used by /health/deps and /status."""
+    settings = app.state.settings
+    result = app.state.ai.check()
+    result["ai_mode"] = settings.ai_mode
+    if settings.plmail_enabled:
+        from .indexer import plmail_client
+
+        client = plmail_client(settings)
+        client.timeout = settings.health_timeout
+        result["plmail"] = client.probe()
+    return result
+
+
 def create_app(settings: Settings | None = None, *, background: bool = True) -> FastAPI:
     settings = resolve_settings(settings or load_settings())
     ai = AIServices.from_settings(settings)
@@ -71,9 +85,7 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
 
     @app.get("/health/deps")
     def health_deps() -> dict:
-        result = app.state.ai.check()
-        result["ai_mode"] = settings.ai_mode
-        return result
+        return health_deps_data(app)
 
     @app.get("/api/version")
     def version() -> dict:

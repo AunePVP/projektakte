@@ -211,3 +211,18 @@ Neueste Entscheidungen werden je Roadmap-Schritt ergänzt.
   `APP_ENV=production` ignoriert.
 - **Gegen Durchprobieren**: 5 Fehlversuche je Benutzer und IP-Adresse führen zu 5 Minuten Sperre;
   unbekannte Benutzernamen kosten dieselbe Rechenzeit wie bekannte.
+
+## Schritt 14 – plMail über JMAP
+
+- **Gleicher Speicherweg wie eml**: JMAP-Mails werden zu `MailRecord`s und laufen durch
+  `store_mail`, Zuordnung und Suche ohne Sonderfälle. Schlüssel `jmap:<accountId>:<emailId>`.
+- **State der ersten Seite** wird beim Erstabgleich gespeichert (nicht der letzten), damit keine
+  Mail verloren geht, die während des Blätterns eintrifft; doppelt gelieferte Mails sind durch den
+  Upsert harmlos.
+- **Fingerabdruck vor dem Download**: `updated` meldet auch reine Flag-Änderungen; ohne inhaltliche
+  Änderung werden Anhänge nicht erneut geladen.
+- **Nur dokumentierte Eigenschaften** werden bei `Email/get` angefragt (plus `fetchHTMLBodyValues`
+  nach RFC 8621 für reine HTML-Mails). Fehlende Funktionen sind in docs/plmail-jmap.md als
+  Vorschläge notiert, nicht umgangen.
+- **Fehler isoliert**: Ein nicht erreichbares plMail oder ein abgelehntes App-Passwort steht im
+  Indexierungsergebnis und in `/health/deps`; die eml-Quelle und alles andere laufen weiter.

@@ -12,5 +12,15 @@
       {% if s.fallback %}<br><em>Rückfall: {{ s.fallback }}</em>{% endif %}</td>
   </tr>
   {% endfor %}
+  {% if deps.plmail %}
+  <tr>
+    <td>plMail (JMAP)</td>
+    <td>{% if deps.plmail.ok %}<span class="pill assigned">erreichbar</span>{% else %}<span class="pill warn">nicht erreichbar</span>{% endif %}</td>
+    <td>{{ deps.plmail.format or '–' }}</td>
+    <td class="num">{{ deps.plmail.latency_ms if deps.plmail.latency_ms is defined else '–' }}</td>
+    <td class="small">{{ deps.plmail.url }}{% if deps.plmail.accounts is defined %} · {{ deps.plmail.accounts }} Konto/Konten{% endif %}
+      {% if deps.plmail.error %}<br><span class="warn-text">{{ deps.plmail.error }}</span>{% endif %}</td>
+  </tr>
+  {% endif %}
   </tbody>
 </table>

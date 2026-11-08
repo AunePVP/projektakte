@@ -5,6 +5,16 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 14 – plMail über JMAP
+- Zweite Mailquelle über die JMAP-API von plMail (`PLMAIL_URL`, `PLMAIL_TOKEN` als Bearer):
+  Session-Erkennung mit Rückfall, alle Konten, Erstabgleich seitenweise (`Email/query` + `Email/get`,
+  Neusortierung nach den Query-IDs), danach inkrementell über `Email/changes` mit gespeichertem
+  `state`, Anhänge über die `downloadUrl`.
+- Strikt lesend (nur `Email/query`, `Email/get`, `Email/changes`); Fehler je Konto, keine Abbrüche.
+- `GET /health/deps` und die Statusseite melden plMail (erreichbar, Konten, Antwortzeit).
+- Fake-JMAP-Server für die Tests (`tests/fake_jmap.py`).
+- docs/plmail-jmap.md: Umsetzung und Vorschläge an plMail.
+
 ### Schritt 13 – Zugangsschutz
 - Anmeldung mit Benutzern aus `AUTH_USERS`/`AUTH_USERS_FILE` (PBKDF2-SHA256, 600 000 Iterationen),
   `python -m projektakte.passwd NAME` erzeugt Einträge.

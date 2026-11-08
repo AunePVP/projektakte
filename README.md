@@ -70,10 +70,28 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `SESSION_HOURS` | `12` | Gültigkeit einer Anmeldung |
 | `COOKIE_SECURE` | `0` | `1` = Cookie nur über HTTPS senden (hinter TLS-Proxy setzen) |
 | `AUTH_DISABLED` | `0` | `1` = kein Zugangsschutz (nur Entwicklung, nicht in `production`) |
+| `PLMAIL_URL` | – | Basisadresse von plMail (z. B. `https://mail.example.local`) |
+| `PLMAIL_TOKEN` | – | App-Passwort `plmail_…` (Secret, nur aus der Umgebung) |
+| `PLMAIL_TIMEOUT` / `PLMAIL_PAGE_SIZE` | `30` / `100` | Sekunden / Mails je Abfrage |
 | `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
 | `ASK_TOP_K` / `ASK_CONTEXT_CHARS` / `ASK_MIN_RERANK` | `6` / `8000` / `0.01` | Quellen je Frage / Zeichenbudget im Prompt / Mindest-Score des Rerankers |
 | `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
+
+## plMail anbinden (JMAP)
+
+Zweite Mailquelle neben `MAIL_DIR`: In plMail unter **Einstellungen → App-Passwörter** ein
+App-Passwort anlegen und setzen:
+
+```bash
+PLMAIL_URL=https://mail.example.local PLMAIL_TOKEN=plmail_… python -m projektakte
+```
+
+Projektakte liest die Session (`/.well-known/jmap`, sonst `/jmap/session`), durchläuft **alle**
+Konten, holt beim ersten Mal alle Mails seitenweise (`Email/query` + `Email/get`, `PLMAIL_PAGE_SIZE`
+je Seite) und danach nur noch Änderungen (`Email/changes` ab dem gespeicherten `state`). Anhänge
+kommen über die `downloadUrl` der Session. Es werden ausschließlich lesende Methoden verwendet.
+`GET /health/deps` meldet plMail mit Zahl der Konten. Details: [docs/plmail-jmap.md](docs/plmail-jmap.md).
 
 ## Anmeldung
 

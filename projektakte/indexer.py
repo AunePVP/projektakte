@@ -15,6 +15,7 @@ from .assign import assign_mails
 from .config import Settings
 from .documents import index_all_documents
 from .mails.eml_source import sync_eml_folder
+from .mails.jmap_source import JMAPClient, sync_plmail
 from .registry import scan_projects, sync_projects
 from .vectors import embed_pending
 
@@ -22,6 +23,13 @@ log = logging.getLogger("projektakte.indexer")
 
 
 _RUN_LOCK = threading.Lock()
+
+
+def plmail_client(settings: Settings) -> JMAPClient:
+    if not settings.plmail_token.startswith("plmail_"):
+        log.warning("PLMAIL_TOKEN hat nicht die erwartete Form plmail_<64 Hex-Zeichen>")
+    return JMAPClient(settings.plmail_url, settings.plmail_token, timeout=settings.plmail_timeout,
+                      page_size=settings.plmail_page_size)
 
 
 def run_index(settings: Settings, ai: AIServices | None = None, progress=None) -> dict:
@@ -48,6 +56,9 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
         stats["documents"] = index_all_documents(conn, llm=llm)
         phase("Mails")
         stats["mails"] = sync_eml_folder(conn, settings.mail_dir, cache_dir=settings.cache_dir, llm=llm)
+        if settings.plmail_enabled:
+            phase("plMail")
+            stats["plmail"] = sync_plmail(conn, plmail_client(settings), cache_dir=settings.cache_dir, llm=llm)
         if ai is not None:
             phase("Embeddings")
             stats["embeddings"] = embed_pending(conn, ai.embed)

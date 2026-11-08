@@ -283,8 +283,9 @@ def status_page(request: Request):
 
 @router.get("/status/dienste", response_class=HTMLResponse)
 def deps_partial(request: Request):
-    deps = request.app.state.ai.check()
-    return templates.TemplateResponse(request, "_deps.html", {"deps": deps})
+    from .main import health_deps_data
+
+    return templates.TemplateResponse(request, "_deps.html", {"deps": health_deps_data(request.app)})
 
 
 @router.post("/status/neu-indexieren")

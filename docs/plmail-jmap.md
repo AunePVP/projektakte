@@ -62,3 +62,33 @@ Fallstricke (laut plMail-Doku):
   `Email/changes` + Download), nie gegen ein echtes plMail.
 - Fehlt plMail eine Funktion, die Projektakte braucht, nicht umgehen (kein Scraping der Weboberfläche),
   sondern als Vorschlag notieren – plMail wird von Menschen gepflegt.
+
+## Umsetzung in Projektakte (Roadmap-Schritt 14)
+
+- Code: `projektakte/mails/jmap_source.py`; Konfiguration `PLMAIL_URL`, `PLMAIL_TOKEN`,
+  `PLMAIL_TIMEOUT`, `PLMAIL_PAGE_SIZE`.
+- Session über `/.well-known/jmap`, Rückfall `/jmap/session`; `apiUrl` und `downloadUrl` werden nur
+  aus der Session gelesen. Alle Konten mit `urn:ietf:params:jmap:mail` werden abgeglichen.
+- Erster Abgleich: `Email/query` (neueste zuerst, `position` + `limit`) mit Rückverweis auf
+  `Email/get`; die Liste wird nach den `ids` der Query neu sortiert. Der `state` der ersten Seite
+  wird gespeichert, damit während des Blätterns eintreffende Mails beim nächsten `Email/changes`
+  kommen.
+- Danach nur `Email/changes` (mit `maxChanges`, solange `hasMoreChanges`); `created`/`updated` werden
+  per `Email/get` geholt, `destroyed` aus dem Index entfernt. Bei `cannotCalculateChanges` folgt ein
+  vollständiger Abgleich.
+- Reine Flag-Änderungen (gelesen/markiert) lösen keinen erneuten Anhang-Download aus: Ein
+  Fingerabdruck aus Betreff, Absender, Datum, Text und Blob-IDs wird verglichen.
+- `accountId` wird immer als String gesendet. Fehler auf Request-Ebene (`application/problem+json`)
+  und Methodenfehler werden mit Text gemeldet, ein Konto mit Fehler hält die anderen nicht auf.
+- Tests: `tests/fake_jmap.py` (Fake-Server mit Session, `Email/query`, `Email/get` in
+  Datenbank-Reihenfolge, `Email/changes`, Download) und `tests/test_plmail_jmap.py`; die Tests prüfen
+  auch, dass nur `Email/query`, `Email/get` und `Email/changes` aufgerufen werden.
+
+## Vorschläge an plMail (nicht umgangen, nur notiert)
+
+- **Push statt Abfrage**: Ein dokumentierter `eventSourceUrl` bzw. JMAP-Push würde neue Mails ohne
+  periodisches `Email/changes` melden.
+- **`messageId`/`inReplyTo`/`references` in `Email/get`**: würde erlauben, Antworten über Konten
+  hinweg demselben Vorgang zuzuordnen. Projektakte fragt nur die dokumentierten Eigenschaften ab.
+- **`Email/queryChanges`** würde das Blättern bei sehr großen Postfächern beim Erstabgleich
+  entbehrlich machen (derzeit `position` + `limit`).

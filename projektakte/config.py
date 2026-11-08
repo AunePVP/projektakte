@@ -78,10 +78,19 @@ class Settings:
     secret_key: str = field(default="", repr=False)
     session_hours: float = 12.0
     cookie_secure: bool = False
+    # plMail (JMAP)
+    plmail_url: str = ""
+    plmail_token: str = field(default="", repr=False)
+    plmail_timeout: float = 30.0
+    plmail_page_size: int = 100
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
     rerank_api_key: str = field(default="", repr=False)
+
+    @property
+    def plmail_enabled(self) -> bool:
+        return bool(self.plmail_url and self.plmail_token)
 
     @property
     def db_path(self) -> Path:
@@ -153,6 +162,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         secret_key=e.get("SECRET_KEY", ""),
         session_hours=_float(e.get("SESSION_HOURS"), 12.0),
         cookie_secure=_bool(e.get("COOKIE_SECURE")),
+        plmail_url=(e.get("PLMAIL_URL") or "").rstrip("/"),
+        plmail_token=e.get("PLMAIL_TOKEN", ""),
+        plmail_timeout=_float(e.get("PLMAIL_TIMEOUT"), 30.0),
+        plmail_page_size=max(1, _int(e.get("PLMAIL_PAGE_SIZE"), 100)),
         llm_api_key=e.get("LLM_API_KEY", ""),
         embed_api_key=e.get("EMBED_API_KEY", ""),
         rerank_api_key=e.get("RERANK_API_KEY", ""),
