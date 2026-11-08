@@ -5,6 +5,13 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht]
 
+### Schritt 4 – Projektregister
+- SQLite-Datenbank `$DATA_DIR/projektakte.sqlite3` mit additiven Migrationen (`PRAGMA user_version`).
+- Projektordner unter `PROJECTS_DIR` werden bis Tiefe 2 erkannt (Ordnername beginnt mit der
+  Projektnummer nach `PROJECT_NUMBER_PATTERN`); verschwundene Projekte werden inaktiv, nicht gelöscht.
+- `GET /api/projects` (mit Suche `q`) und `GET /api/projects/{nummer}`; `python -m projektakte.index`.
+- `projektakte.main` erzeugt die App erst bei Bedarf (keine Seiteneffekte beim Import).
+
 ### Schritt 3 – Demo-Mails erzeugen
 - 76 deterministische `.eml`-Dateien unter `demo/mails` (50 mit Nummer im Betreff, 6 nur im Text,
   5 nur im Anhangnamen, 8 ohne Nummer aber eindeutig, 7 ohne Projektbezug), 15 mit Anhängen

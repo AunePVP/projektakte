@@ -66,6 +66,21 @@ an und führt `pytest` aus. Tests brauchen kein Netz und keine KI-Dienste.
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 
+## Indexieren
+
+```bash
+python -m projektakte.index      # ein Durchlauf im Vordergrund (Projekte, später Dokumente/Mails)
+```
+
+## API (Auszug)
+
+| Methode und Pfad | Zweck |
+|---|---|
+| `GET /health` | Lebenszeichen, ruft nie KI-Dienste auf |
+| `GET /health/deps` | Zustand der KI-Dienste (erreichbar, Format, Antwortzeit) |
+| `GET /api/projects?q=` | Projektliste, optional gefiltert nach Nummer/Name |
+| `GET /api/projects/{nummer}` | ein Projekt |
+
 ## Demo-Datensatz
 
 ```bash

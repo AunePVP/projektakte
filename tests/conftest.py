@@ -8,6 +8,14 @@ from projektakte.config import load_settings
 from projektakte.fake_ai import start_background
 
 
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(tmp_path, monkeypatch):
+    """Never touch ./data of the working copy from tests."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    for var in ("DEMO_MODE", "AI_MODE", "PROJECTS_DIR", "MAIL_DIR"):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture(scope="session")
 def fake_ai():
     server = start_background()

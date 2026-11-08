@@ -17,7 +17,7 @@ ersten Start in sein Gedächtnis und pflegt diese Datei danach selbst.)
   Anhängen) unter `DATA_DIR/demo/mails` an: mit Projektnummer im Betreff, nur im Text, nur im
   Anhangnamen, ohne Nummer aber eindeutig, ohne Projektbezug. Dazu `tests/eval.json` mit Fragen,
   erwarteten Projekten und Quellen.
-- [ ] **4. Projektregister** – Ordner unter `PROJECTS_DIR` scannen, Projekte (Nummer, Name, Pfad) in
+- [x] **4. Projektregister** – Ordner unter `PROJECTS_DIR` scannen, Projekte (Nummer, Name, Pfad) in
   SQLite speichern; `GET /api/projects`, `GET /api/projects/{nummer}`.
 - [ ] **5. Textextraktion und Abschnitte** – TXT/MD/PDF (pypdf)/DOCX (python-docx) lesen, in
   überlappende Abschnitte mit Seitenangabe zerlegen, in SQLite + FTS5 speichern; inkrementell über

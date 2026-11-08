@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from . import __version__
+from . import __version__, db
 from .ai.services import AIServices, resolve_settings
 from .config import Settings, load_settings
 
@@ -13,6 +13,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Projektakte", version=__version__)
     app.state.settings = settings
     app.state.ai = AIServices.from_settings(settings)
+    db.init_db(settings.db_path)
 
     @app.get("/health")
     def health() -> dict:
@@ -29,7 +30,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def version() -> dict:
         return {"version": __version__}
 
+    from .api import router as api_router
+
+    app.include_router(api_router)
     return app
 
 
-app = create_app()
+def __getattr__(name: str):
+    # ``uvicorn projektakte.main:app`` keeps working, but importing this module has no side effects
+    if name == "app":
+        global app
+        app = create_app()
+        return app
+    raise AttributeError(name)
