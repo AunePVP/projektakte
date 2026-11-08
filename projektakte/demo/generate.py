@@ -14,7 +14,7 @@ from .mails import render_all
 
 SEED = 4711
 # bump when the generated content changes, so DEMO_MODE regenerates outdated demo data
-DEMO_VERSION = "4"
+DEMO_VERSION = "5"  # 5: escape plan with ISO 7010 signs and legend
 
 
 def _mtime(d: date) -> float:

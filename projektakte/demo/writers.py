@@ -4,6 +4,7 @@ The demo data must be reproducible down to the file hash, so no timestamps are e
 """
 from __future__ import annotations
 
+import functools
 import io
 import struct
 import textwrap
@@ -203,48 +204,178 @@ def png_bytes(width: int = 96, height: int = 64, seed: int = 0) -> bytes:
 
 
 # ----------------------------------------------------------------------------- escape plan (RGB PNG)
-_FONT = {  # 5×7 bitmap font, enough for the plan labels
+# A small but recognisable "Flucht- und Rettungsplan" in the style of DIN ISO 23601: rescue signs in
+# safety green (ISO 7010 E002 emergency exit with direction arrow, E007 assembly point), the fire
+# extinguisher sign in red (F001), the escape route as a pale green band with green arrows, an own
+# "you are here" symbol (blue ring, so red only ever means fire-fighting equipment) and a legend.
+# Only integer arithmetic is used, so the pixels are identical on every platform; every label,
+# sign and arrow is recorded with its bounding box (see ``plan_layout``) so tests can check that
+# nothing overlaps.
+
+_FONT = {  # 5×7 bitmap font, rows top to bottom; umlauts have two extra rows (dots) above the cell
     "A": "01110 10001 10001 11111 10001 10001 10001", "B": "11110 10001 10001 11110 10001 10001 11110",
     "C": "01110 10001 10000 10000 10000 10001 01110", "D": "11110 10001 10001 10001 10001 10001 11110",
     "E": "11111 10000 10000 11110 10000 10000 11111", "F": "11111 10000 10000 11110 10000 10000 10000",
     "G": "01110 10001 10000 10111 10001 10001 01111", "H": "10001 10001 10001 11111 10001 10001 10001",
-    "I": "01110 00100 00100 00100 00100 00100 01110", "K": "10001 10010 10100 11000 10100 10010 10001",
-    "L": "10000 10000 10000 10000 10000 10000 11111", "M": "10001 11011 10101 10101 10001 10001 10001",
-    "N": "10001 11001 10101 10011 10001 10001 10001", "O": "01110 10001 10001 10001 10001 10001 01110",
-    "P": "11110 10001 10001 11110 10000 10000 10000", "R": "11110 10001 10001 11110 10100 10010 10001",
+    "I": "01110 00100 00100 00100 00100 00100 01110", "J": "00111 00010 00010 00010 00010 10010 01100",
+    "K": "10001 10010 10100 11000 10100 10010 10001", "L": "10000 10000 10000 10000 10000 10000 11111",
+    "M": "10001 11011 10101 10101 10001 10001 10001", "N": "10001 11001 10101 10011 10001 10001 10001",
+    "O": "01110 10001 10001 10001 10001 10001 01110", "P": "11110 10001 10001 11110 10000 10000 10000",
+    "Q": "01110 10001 10001 10001 10101 10010 01101", "R": "11110 10001 10001 11110 10100 10010 10001",
     "S": "01111 10000 10000 01110 00001 00001 11110", "T": "11111 00100 00100 00100 00100 00100 00100",
-    "U": "10001 10001 10001 10001 10001 10001 01110", "W": "10001 10001 10001 10101 10101 10101 01010",
-    "X": "10001 10001 01010 00100 01010 10001 10001", "Z": "11111 00001 00010 00100 01000 10000 11111", "1": "00100 01100 00100 00100 00100 00100 01110",
-    "2": "01110 10001 00001 00010 00100 01000 11111", ":": "00000 00100 00000 00000 00000 00100 00000",
-    "-": "00000 00000 00000 11111 00000 00000 00000", " ": "00000 00000 00000 00000 00000 00000 00000",
+    "U": "10001 10001 10001 10001 10001 10001 01110", "V": "10001 10001 10001 10001 10001 01010 00100",
+    "W": "10001 10001 10001 10101 10101 10101 01010", "X": "10001 10001 01010 00100 01010 10001 10001",
+    "Y": "10001 10001 01010 00100 00100 00100 00100", "Z": "11111 00001 00010 00100 01000 10000 11111",
+    "Ä": "01010 00000 01110 10001 10001 11111 10001 10001 10001",
+    "Ö": "01010 00000 01110 10001 10001 10001 10001 10001 01110",
+    "Ü": "01010 00000 10001 10001 10001 10001 10001 10001 01110",
+    "0": "01110 10001 10011 10101 11001 10001 01110", "1": "00100 01100 00100 00100 00100 00100 01110",
+    "2": "01110 10001 00001 00010 00100 01000 11111", "3": "11111 00010 00100 00010 00001 10001 01110",
+    "4": "00010 00110 01010 10010 11111 00010 00010", "5": "11111 10000 11110 00001 00001 10001 01110",
+    "6": "00110 01000 10000 11110 10001 10001 01110", "7": "11111 00001 00010 00100 01000 01000 01000",
+    "8": "01110 10001 10001 01110 10001 10001 01110", "9": "01110 10001 10001 01111 00001 00010 01100",
+    ":": "00000 00100 00000 00000 00000 00100 00000", ".": "00000 00000 00000 00000 00000 01100 01100",
+    ",": "00000 00000 00000 00000 01100 00100 01000", "-": "00000 00000 00000 11111 00000 00000 00000",
+    "–": "00000 00000 00000 11111 00000 00000 00000", "/": "00001 00010 00010 00100 01000 01000 10000",
+    "(": "00010 00100 01000 01000 01000 00100 00010", ")": "01000 00100 00010 00010 00010 00100 01000",
+    "&": "01100 10010 10100 01000 10101 10010 01101", "+": "00000 00100 00100 11111 00100 00100 00000",
+    "'": "00100 00100 01000 00000 00000 00000 00000", " ": "00000 00000 00000 00000 00000 00000 00000",
 }
-_BLACK, _WHITE, _GREEN, _RED, _GREY = (30, 30, 30), (255, 255, 255), (0, 150, 70), (210, 30, 30), (200, 200, 200)
+_BLACK, _WHITE, _GREY, _LABEL = (30, 30, 30), (255, 255, 255), (200, 200, 200), (90, 90, 90)
+_GREEN = (0, 150, 70)  # safety green: rescue signs, escape arrows
+_RED = (210, 30, 30)  # fire-protection red: fire extinguisher sign only
+_ROUTE = (204, 236, 212)  # pale green band = escape route
+_BLUE = (0, 82, 160)  # "you are here"
+
+
+def _label(s: str) -> str:
+    s = s.upper()
+    missing = sorted({ch for ch in s if ch not in _FONT})
+    if missing:
+        raise ValueError(f"Fluchtwegplan: kein Zeichen für {''.join(missing)!r} in {s!r}")
+    return s
+
+
+def text_width(s: str, scale: int = 1) -> int:
+    return (6 * len(s) - 1) * scale if s else 0
+
+
+def _inside_seg(px: int, py: int, ax: int, ay: int, bx: int, by: int, r2: int) -> bool:
+    dx, dy, wx, wy = bx - ax, by - ay, px - ax, py - ay
+    dot, len2 = wx * dx + wy * dy, dx * dx + dy * dy
+    if dot <= 0 or len2 == 0:
+        return wx * wx + wy * wy < r2
+    if dot >= len2:
+        return (px - bx) ** 2 + (py - by) ** 2 < r2
+    cross = wx * dy - wy * dx
+    return cross * cross < r2 * len2
+
+
+def _inside_poly(px: int, py: int, pts: tuple) -> bool:
+    """Point in a convex polygon (any orientation)."""
+    sign = 0
+    for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+        c = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+        if c:
+            if sign and (c > 0) != (sign > 0):
+                return False
+            sign = c
+    return True
 
 
 class _Canvas:
     def __init__(self, w: int, h: int):
         self.w, self.h = w, h
         self.px = [bytearray(_WHITE * w) for _ in range(h)]
+        # (kind, name, (x0, y0, x1, y1)) with exclusive x1/y1 – kinds: wall, text, sign, arrow, area
+        self.items: list[tuple[str, str, tuple[int, int, int, int]]] = []
+
+    def note(self, kind: str, name: str, box: tuple[int, int, int, int]) -> None:
+        self.items.append((kind, name, box))
 
     def rect(self, x0: int, y0: int, x1: int, y1: int, color) -> None:
+        x0, x1 = max(0, x0), min(self.w, x1)
+        if x0 >= x1:
+            return
+        fill = bytes(color) * (x1 - x0)
         for y in range(max(0, y0), min(self.h, y1)):
-            row = self.px[y]
-            for x in range(max(0, x0), min(self.w, x1)):
-                row[3 * x: 3 * x + 3] = bytes(color)
+            self.px[y][3 * x0: 3 * x1] = fill
 
-    def text(self, x: int, y: int, s: str, color=_BLACK, scale: int = 1) -> None:
-        for ch in s.upper():
-            rows = _FONT.get(ch, _FONT[" "]).split()
+    def wall(self, x0: int, y0: int, x1: int, y1: int) -> None:
+        self.rect(x0, y0, x1, y1, _BLACK)
+        self.note("wall", "", (x0, y0, x1, y1))
+
+    def text(self, x: int, y: int, s: str, color=_BLACK, scale: int = 1) -> tuple[int, int, int, int]:
+        s = _label(s)
+        cx, top = x, y
+        for ch in s:
+            rows = _FONT[ch].split()
+            gy = y - (len(rows) - 7) * scale  # umlaut dots go above the cell
+            top = min(top, gy)
             for ry, bits in enumerate(rows):
                 for rx, bit in enumerate(bits):
                     if bit == "1":
-                        self.rect(x + rx * scale, y + ry * scale, x + (rx + 1) * scale, y + (ry + 1) * scale, color)
-            x += 6 * scale
+                        self.rect(cx + rx * scale, gy + ry * scale, cx + (rx + 1) * scale,
+                                  gy + (ry + 1) * scale, color)
+            cx += 6 * scale
+        box = (x, top, x + text_width(s, scale), y + 7 * scale)
+        self.note("text", s, box)
+        return box
 
-    def arrow_east(self, x: int, y: int, color=_GREEN) -> None:
-        self.rect(x, y - 3, x + 22, y + 3, color)
-        for i in range(10):
-            self.rect(x + 22 + i, y - 10 + i, x + 23 + i, y + 10 - i, color)
+    def shapes(self, ox: int, oy: int, size: int, shapes, kind: str = "", name: str = "",
+               units_w: int = 100, background=None) -> tuple[int, int, int, int]:
+        """Draw ``shapes`` given in sign units: 100 units are ``size`` pixels, origin (ox, oy).
+        A pixel centre (x + ½, y + ½) is compared in integer coordinates scaled by 2·size, so no
+        rounding happens anywhere. Shapes: ("rect", x0, y0, x1, y1, c), ("circle", cx, cy, r, c),
+        ("seg", ax, ay, bx, by, r, c) – a line with round ends –, ("poly", ((x, y), …), c).
+        Returns (and notes, if ``kind`` is given) the box of the sign background, or without one
+        the box of the pixels actually drawn."""
+        k = 2 * size
+        if background is not None:
+            box = (ox, oy, ox + units_w * size // 100, oy + size)
+            self.rect(*box, background)
+            drawn = list(box)
+        else:
+            drawn = [self.w, self.h, 0, 0]
+        for shape in shapes:
+            form, color = shape[0], shape[-1]
+            if form == "rect":
+                pts, r = (shape[1:3], shape[3:5]), 0
+            elif form == "circle":
+                pts, r = (shape[1:3],), shape[3]
+            elif form == "seg":
+                pts, r = (shape[1:3], shape[3:5]), shape[5]
+            else:
+                pts, r = tuple(shape[1]), 0
+            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+            x_lo = max(0, ox + (min(xs) - r) * size // 100 - 1)
+            x_hi = min(self.w, ox - (-(max(xs) + r) * size // 100) + 1)
+            y_lo = max(0, oy + (min(ys) - r) * size // 100 - 1)
+            y_hi = min(self.h, oy - (-(max(ys) + r) * size // 100) + 1)
+            sp = tuple((x * k, y * k) for x, y in pts)
+            r2 = (r * k) ** 2
+            rgb = bytes(color)
+            for y in range(y_lo, y_hi):
+                py = (2 * (y - oy) + 1) * 100
+                row = self.px[y]
+                for x in range(x_lo, x_hi):
+                    px = (2 * (x - ox) + 1) * 100
+                    if form == "rect":
+                        hit = sp[0][0] <= px <= sp[1][0] and sp[0][1] <= py <= sp[1][1]
+                    elif form == "circle":
+                        hit = (px - sp[0][0]) ** 2 + (py - sp[0][1]) ** 2 < r2
+                    elif form == "seg":
+                        hit = _inside_seg(px, py, *sp[0], *sp[1], r2)
+                    else:
+                        hit = _inside_poly(px, py, sp)
+                    if hit:
+                        row[3 * x: 3 * x + 3] = rgb
+                        drawn[0], drawn[1] = min(drawn[0], x), min(drawn[1], y)
+                        drawn[2], drawn[3] = max(drawn[2], x + 1), max(drawn[3], y + 1)
+        box = (drawn[0], drawn[1], drawn[2], drawn[3])
+        if kind:
+            self.note(kind, name, box)
+        return box
 
     def png(self) -> bytes:
         raw = zlib.compress(b"".join(b"\x00" + bytes(r) for r in self.px), 9)
@@ -257,48 +388,141 @@ class _Canvas:
         return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", raw) + chunk(b"IEND", b"")
 
 
-def plan_png(title: str = "FLUCHTWEGPLAN ERDGESCHOSS") -> bytes:
-    """A recognisable escape plan of a ground floor: rooms along a corridor, staircase 1 in the west,
-    green escape arrows to the emergency exit east, fire extinguisher next to staircase 1, assembly
-    point at the northern car park (matches the fake vision transcription)."""
-    c = _Canvas(680, 420)
-    c.text(40, 20, title, scale=3)
+# ISO 7010 E002 (emergency exit, right) with direction arrow: 200 × 100 units, white on green
+_SIGN_EXIT = (
+    ("rect", 60, 8, 94, 92, _WHITE), ("rect", 66, 14, 88, 92, _GREEN),  # door, open at the bottom
+    ("circle", 46, 17, 9, _WHITE),  # running man heading into the door
+    ("seg", 42, 30, 34, 55, 7, _WHITE),
+    ("seg", 42, 33, 54, 42, 5, _WHITE), ("seg", 54, 42, 63, 35, 5, _WHITE),
+    ("seg", 40, 34, 28, 40, 5, _WHITE), ("seg", 28, 40, 20, 32, 5, _WHITE),
+    ("seg", 34, 55, 50, 64, 6, _WHITE), ("seg", 50, 64, 54, 86, 6, _WHITE),
+    ("seg", 54, 86, 62, 86, 4, _WHITE),
+    ("seg", 34, 55, 24, 70, 6, _WHITE), ("seg", 24, 70, 8, 72, 6, _WHITE),
+    ("rect", 112, 42, 158, 58, _WHITE), ("poly", ((152, 22), (188, 50), (152, 78)), _WHITE),
+)
+
+
+def _assembly_shapes() -> tuple:
+    """ISO 7010 E007 (assembly point): four arrows from the corners towards a group of people."""
+    out = []
+    for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+        def at(d: int) -> tuple[int, int]:
+            return 50 + sx * d, 50 + sy * d
+        bx, by = at(34)
+        out.append(("seg", *at(43), bx, by, 4, _WHITE))
+        out.append(("poly", (at(23), (bx + 8 * sy, by - 8 * sx), (bx - 8 * sy, by + 8 * sx)), _WHITE))
+    out += [
+        ("circle", 50, 35, 7, _WHITE), ("seg", 50, 53, 50, 68, 8, _WHITE),
+        ("circle", 34, 44, 6, _WHITE), ("seg", 34, 58, 34, 68, 6, _WHITE),
+        ("circle", 66, 44, 6, _WHITE), ("seg", 66, 58, 66, 68, 6, _WHITE),
+    ]
+    return tuple(out)
+
+
+_SIGN_ASSEMBLY = _assembly_shapes()
+# ISO 7010 F001 (fire extinguisher): white extinguisher with hose and flames on red
+_SIGN_EXTINGUISHER = (
+    ("seg", 40, 50, 40, 78, 13, _WHITE), ("rect", 35, 26, 45, 38, _WHITE),
+    ("seg", 28, 24, 52, 17, 3, _WHITE),
+    ("seg", 45, 28, 62, 30, 3, _WHITE), ("seg", 62, 30, 70, 50, 3, _WHITE),
+    ("seg", 70, 50, 72, 64, 4, _WHITE),
+    ("poly", ((74, 4), (86, 26), (66, 26)), _WHITE), ("poly", ((88, 12), (95, 28), (82, 28)), _WHITE),
+)
+_YOU_ARE_HERE = (("circle", 50, 50, 48, _BLUE), ("circle", 50, 50, 31, _WHITE),
+                 ("circle", 50, 50, 16, _BLUE))
+_ARROW_EAST = (("rect", 0, 34, 120, 66, _GREEN), ("poly", ((110, 0), (200, 50), (110, 100)), _GREEN))
+
+PLAN_SIZE = (800, 500)
+PLAN_TITLE = "FLUCHTWEGPLAN ERDGESCHOSS"
+
+
+def _draw_plan(title: str, subtitle: str) -> _Canvas:
+    """Ground floor of a school: staircase 1 in the west, classrooms along a corridor, the escape
+    route east to the emergency exit, from there north to the assembly point at the northern car
+    park, the fire extinguisher next to staircase 1 (matches the fake vision transcription)."""
+    c = _Canvas(*PLAN_SIZE)
+    c.text(40, 18, title, scale=3)
+    if subtitle:
+        c.text(40, 50, subtitle, color=_LABEL)
     wall = 4
     x0, y0, x1, y1 = 40, 80, 560, 360  # building
-    cy0, cy1 = 195, 245  # corridor
-    for (a, b, d, e) in ((x0, y0, x1, y0 + wall), (x0, y1 - wall, x1, y1), (x0, y0, x0 + wall, y1),
-                         (x1 - wall, y0, x1, cy0 + 5), (x1 - wall, cy1 - 5, x1, y1)):
-        c.rect(a, b, d, e, _BLACK)  # outer walls, gap in the east wall = emergency exit
-    for x in (140, 245, 350, 455):  # room partitions above and below the corridor, doors left open
-        c.rect(x, y0, x + wall, cy0, _BLACK)
-        c.rect(x, cy1, x + wall, y1, _BLACK)
-    for xa in range(x0, x1, 105):  # corridor walls with doors
-        c.rect(xa + 35, cy0, xa + 105, cy0 + wall, _BLACK)
-        c.rect(xa + 35, cy1 - wall, xa + 105, cy1, _BLACK)
-    for i in range(8):  # staircase 1 (west): steps
-        c.rect(52, 96 + i * 11, 132, 98 + i * 11, _GREY)
-    c.text(62, 186 - 20, "TR 1", scale=2)
-    c.rect(150, 205, 166, 228, _RED)  # fire extinguisher next to staircase 1
-    c.text(154, 210, "F", color=_WHITE, scale=2)
-    for x in (190, 290, 390, 480):  # escape route east
-        c.arrow_east(x, 220)
-    c.rect(566, 200, 626, 240, _GREEN)  # emergency exit sign
-    c.text(574, 213, "EXIT", color=_WHITE, scale=2)
-    c.text(566, 250, "NOTAUSGANG", scale=1)
-    c.text(566, 260, "OST", scale=1)
-    c.rect(575, 90, 625, 140, _GREEN)  # assembly point
-    c.rect(597, 100, 603, 130, _WHITE)
-    c.rect(585, 112, 615, 118, _WHITE)
-    c.text(560, 146, "SAMMELPLATZ", scale=1)
-    c.text(560, 156, "PARKPLATZ NORD", scale=1)
-    c.rect(300, 230, 310, 240, _RED)  # you are here
-    c.text(280, 262, "SIE SIND HIER", color=_RED, scale=1)
-    c.text(40, 392, "N", scale=2)  # north arrow
-    c.rect(56, 380, 60, 408, _BLACK)
-    for i in range(7):
-        c.rect(58 - i, 378 + i, 59 + i, 379 + i, _BLACK)
-    c.arrow_east(200, 395)
-    c.text(240, 392, "FLUCHTWEG", scale=1)
-    c.rect(330, 388, 342, 402, _RED)
-    c.text(350, 392, "FEUERLOESCHER", scale=1)
-    return c.png()
+    cy0, cy1 = 195, 245  # corridor walls (outer edges)
+    ey0, ey1 = 200, 240  # emergency exit: gap in the east wall
+    c.rect(x0 + wall, cy0 + wall, x1, cy1 - wall, _ROUTE)  # escape route band incl. the exit door
+    c.note("area", "fluchtweg", (x0 + wall, cy0 + wall, x1, cy1 - wall))
+    for box in ((x0, y0, x1, y0 + wall), (x0, y1 - wall, x1, y1), (x0, y0, x0 + wall, y1),
+                (x1 - wall, y0, x1, ey0), (x1 - wall, ey1, x1, y1)):
+        c.wall(*box)
+    partitions = (140, 245, 350, 455)
+    for x in partitions:  # room partitions above and below the corridor
+        c.wall(x, y0 + wall, x + wall, cy0)
+        c.wall(x, cy1, x + wall, y1 - wall)
+    for xa in range(x0, x1 - wall, 105):  # corridor walls, a door gap of 35 px per room
+        c.wall(xa + 35, cy0, min(xa + 105, x1 - wall), cy0 + wall)
+        c.wall(xa + 35, cy1 - wall, min(xa + 105, x1 - wall), cy1)
+
+    # rooms (interior x ranges) and their names
+    bounds = (x0 + wall,) + tuple(x for p in partitions for x in (p, p + wall)) + (x1 - wall,)
+    rooms = list(zip(bounds[::2], bounds[1::2]))
+    for i in range(7):  # staircase 1 (west): steps
+        c.rect(52, 92 + i * 10, 132, 94 + i * 10, _GREY)
+    c.note("area", "treppe", (52, 92, 132, 154))
+    upper = ("TREPPENRAUM 1", "KLASSE 1A", "KLASSE 1B", "KLASSE 2A", "KLASSE 2B")
+    lower = ("WC", "LEHRERZIMMER", "KLASSE 3A", "KLASSE 3B", "KLASSE 4A")
+    for (ra, rb), up, low in zip(rooms, upper, lower):
+        c.text((ra + rb - text_width(up)) // 2, 175 if up.startswith("TREPPE") else 134, up, _LABEL)
+        c.text((ra + rb - text_width(low)) // 2, 297, low, _LABEL)
+
+    c.shapes(82, 208, 24, _SIGN_EXTINGUISHER, "sign", "feuerloescher", background=_RED)
+    for x in (118, 172, 344, 414, 484):  # escape arrows towards the exit
+        c.shapes(x, 211, 18, _ARROW_EAST, "arrow", "fluchtweg", units_w=200)
+    c.shapes(222, 210, 20, _YOU_ARE_HERE, "sign", "standort")
+    c.text(248, 217, "SIE SIND HIER", color=_BLUE)
+
+    # outside: from the exit east, then north to the assembly point
+    c.shapes(0, 0, 100, (("seg", x1, 220, 710, 220, 3, _GREEN),), "arrow", "weg-aussen")
+    c.shapes(0, 0, 100, (("seg", 710, 220, 710, 184, 3, _GREEN),
+                         ("poly", ((710, 166), (722, 184), (698, 184)), _GREEN)), "arrow", "weg-aussen")
+    c.shapes(566, 232, 40, _SIGN_EXIT, "sign", "notausgang", units_w=200, background=_GREEN)
+    c.text(566, 278, "NOTAUSGANG OST")
+    c.shapes(686, 86, 48, _SIGN_ASSEMBLY, "sign", "sammelplatz", background=_GREEN)
+    c.text(710 - text_width("SAMMELPLATZ") // 2, 140, "SAMMELPLATZ")
+    c.text(710 - text_width("PARKPLATZ NORD") // 2, 151, "PARKPLATZ NORD")
+
+    # north arrow
+    c.text(40, 400, "N", scale=2)
+    c.shapes(0, 0, 100, (("rect", 62, 392, 66, 420, _BLACK),
+                         ("poly", ((64, 380), (72, 394), (56, 394)), _BLACK)), "sign", "nordpfeil")
+
+    # legend
+    lx0, ly0, lx1, ly1 = 90, 372, 790, 490
+    for box in ((lx0, ly0, lx1, ly0 + 1), (lx0, ly1 - 1, lx1, ly1), (lx0, ly0, lx0 + 1, ly1),
+                (lx1 - 1, ly0, lx1, ly1)):
+        c.rect(*box, _BLACK)
+        c.note("wall", "legende", box)
+    c.text(100, 380, "LEGENDE")
+    col1, col2, col3, row1, row2 = 100, 330, 560, 394, 442  # icons are 32 px high
+    c.rect(col1, row1 + 4, col1 + 64, row1 + 28, _ROUTE)
+    c.note("area", "legende-fluchtweg", (col1, row1 + 4, col1 + 64, row1 + 28))
+    c.shapes(col1 + 14, row1 + 7, 18, _ARROW_EAST, "arrow", "legende-fluchtweg", units_w=200)
+    c.text(col1 + 74, row1 + 13, "FLUCHTWEG")
+    c.shapes(col2, row1, 32, _SIGN_EXIT, "sign", "notausgang", units_w=200, background=_GREEN)
+    c.text(col2 + 74, row1 + 13, "NOTAUSGANG")
+    c.shapes(col3, row1, 32, _SIGN_ASSEMBLY, "sign", "sammelplatz", background=_GREEN)
+    c.text(col3 + 74, row1 + 13, "SAMMELPLATZ")
+    c.shapes(col1, row2, 32, _SIGN_EXTINGUISHER, "sign", "feuerloescher", background=_RED)
+    c.text(col1 + 74, row2 + 13, "FEUERLÖSCHER")
+    c.shapes(col2 + 4, row2 + 4, 24, _YOU_ARE_HERE, "sign", "standort")
+    c.text(col2 + 74, row2 + 13, "STANDORT")
+    return c
+
+
+def plan_layout(title: str = PLAN_TITLE, subtitle: str = "") -> list[tuple[str, str, tuple]]:
+    """Every wall, label, sign and arrow of the escape plan with its pixel box (for tests)."""
+    return list(_draw_plan(title, subtitle).items)
+
+
+@functools.lru_cache(maxsize=8)
+def plan_png(title: str = PLAN_TITLE, subtitle: str = "") -> bytes:
+    """The escape plan as RGB PNG (byte-identical on every run; cached, the image is immutable)."""
+    return _draw_plan(title, subtitle).png()

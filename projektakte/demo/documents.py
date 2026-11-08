@@ -164,5 +164,6 @@ def project_files(p: dict, rng: random.Random) -> list[tuple[str, bytes, date]]:
          protokoll_txt(p, author).encode("utf-8"), date.fromisoformat(pr["date"])),
     ]
     if p.get("image"):
-        files.append(("05 Pläne/Fluchtwegplan EG.png", plan_png(), date.fromisoformat(pr["date"])))
+        files.append(("05 Pläne/Fluchtwegplan EG.png", plan_png(subtitle=f"{p['number']} {p['name']}"),
+                      date.fromisoformat(pr["date"])))
     return files
