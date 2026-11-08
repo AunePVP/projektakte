@@ -195,16 +195,6 @@ def test_pdf_scan_pages_are_marked_incomplete_without_vision():
     assert extract(Path("scan.pdf"), pdf_bytes(["x"]), llm=vision).status == "empty"
 
 
-class _Img:
-    def __init__(self, name="bild.png"):
-        self.name, self.data = name, b"\x89PNG"
-
-
-class _PdfPage:
-    def __init__(self, images):
-        self.images = images
-
-
 class _FakeVision:
     vision = True
     model = "vision-x"
@@ -222,11 +212,7 @@ class _FakeVision:
         return R()
 
 
-def test_failed_vision_pages_are_reported_not_dropped():
-    from projektakte.extract import _read_scanned_pages
-    pages = [(2, _PdfPage([_Img()])), (3, _PdfPage([_Img("a.jpg")])), (4, _PdfPage([])), (5, _PdfPage([_Img()]))]
-    read, unread, failed = _read_scanned_pages(pages, _FakeVision(["Grundriss", RuntimeError("timeout"), ""]), "x.pdf")
-    assert [p.number for p in read] == [2] and unread == 2 and failed
+# Pages of real image PDFs (read, failed, undecodable, empty answer): test_indexierung_scans.py
 
 
 def test_extraction_errors_are_retryable_and_images_need_vision():

@@ -171,11 +171,18 @@ def _scores(mat: np.ndarray, q: np.ndarray, rows: np.ndarray | None, block: int 
     return out
 
 
+# Sections that may be found: mails and their attachments always, project files only while their
+# project is active – the files of a project whose folder is missing are kept for a grace period
+# (registry.MISSING_GRACE) but must not show up in search and answers meanwhile.
+_SEARCHABLE = "(c.mail_id IS NOT NULL OR c.project IN (SELECT number FROM projects WHERE active = 1))"
+
+
 class VectorIndex:
     """All chunk vectors as one matrix, reloaded only when the embedding generation changes.
 
-    Project membership is deliberately not cached: it changes without new vectors (mail assignment,
-    decisions in the inbox, renamed projects), so a project filter is resolved per search in SQL."""
+    Project membership and visibility are deliberately not cached: they change without new vectors
+    (mail assignment, decisions in the inbox, renamed projects, a project folder missing for a
+    while), so they are resolved per search in SQL."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -211,7 +218,8 @@ class VectorIndex:
         rows = None
         if project:
             rows = _rows_for(ids, (r[0] for r in conn.execute(
-                "SELECT id FROM chunks WHERE project = ? AND embedding IS NOT NULL", (project,))))
+                f"SELECT c.id FROM chunks c WHERE c.project = ? AND c.embedding IS NOT NULL AND {_SEARCHABLE}",
+                (project,))))
         if chunk_ids is not None:
             selected = _rows_for(ids, chunk_ids)
             rows = selected if rows is None else np.intersect1d(rows, selected, assume_unique=True)
@@ -227,14 +235,14 @@ class VectorIndex:
 
 def _top_existing(conn: sqlite3.Connection, ranked_ids: np.ndarray, ranked_scores: np.ndarray,
                   k: int) -> list[tuple[int, float]]:
-    """The first ``k`` ranked sections that still exist (sections deleted since the matrix was
-    loaded – removed files, re-indexed documents – are skipped)."""
+    """The first ``k`` ranked sections that still exist and may be found (sections deleted since the
+    matrix was loaded – removed files, re-indexed documents – and hidden files are skipped)."""
     out: list[tuple[int, float]] = []
     step = max(2 * k, 64)
     for start in range(0, ranked_ids.size, step):
         part = [int(c) for c in ranked_ids[start : start + step]]
         alive = {r[0] for r in conn.execute(
-            f"SELECT id FROM chunks WHERE id IN ({','.join(map(str, part))})")}
+            f"SELECT c.id FROM chunks c WHERE c.id IN ({','.join(map(str, part))}) AND {_SEARCHABLE}")}
         for cid, sc in zip(part, ranked_scores[start : start + step]):
             if cid in alive:
                 out.append((cid, float(sc)))

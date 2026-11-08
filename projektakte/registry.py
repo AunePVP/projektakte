@@ -6,11 +6,24 @@ import os
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .documents import is_inside, refresh_fts_titles, remove_project_documents, warn_once
+from .documents import (_sqlite_time, hide_project_documents, link_problem, refresh_fts_titles,
+                        remove_project_documents, restore_project_documents, warn_once)
 
 log = logging.getLogger("projektakte.registry")
+
+# A project folder that disappears may only be unreachable for a while (network share, a year folder
+# briefly gone, a folder renamed and renamed back). Its files leave search and answers at once but
+# are deleted only once it has been missing for MISSING_GRACE *and* in MISSING_RUNS consecutive
+# passes; if it comes back sooner, they return without being extracted or embedded again.
+MISSING_GRACE = timedelta(hours=24)
+MISSING_RUNS = 3
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -59,12 +72,13 @@ def scan_projects(root: Path, pattern: str, max_depth: int = 2, *,
     def subfolders(folder: Path) -> list[Path]:
         out = []
         for p in folder.iterdir():
-            if p.name.startswith(".") or not p.is_dir():
+            if p.name.startswith("."):
                 continue
-            if p.is_symlink() and not is_inside(p, boundary):
-                warn_once(log, "Verknüpfung auf Ziel außerhalb von PROJECTS_DIR übersprungen: %s", p)
+            if p.is_symlink() and (problem := link_problem(p, boundary)):
+                warn_once(log, "%s: %s", problem, p)
                 continue
-            out.append(p)
+            if p.is_dir():
+                out.append(p)
         return sorted(out)
 
     def walk(folder: Path, depth: int) -> None:
@@ -94,33 +108,61 @@ def sync_projects(conn: sqlite3.Connection, folders: list[ProjectFolder], *,
                   unreadable: list[Path] | tuple = ()) -> dict:
     """Store scanned projects and keep the derived data in step.
 
-    Projects whose folder disappeared are marked inactive, not deleted (their mails and decisions
-    stay), but their files leave the index. Projects below a folder that could not be listed
-    (``unreadable``) are left alone. A new name refreshes the full-text titles of all sections."""
+    A project whose folder disappeared is marked inactive, not deleted (its mails and decisions
+    stay). Its files are hidden from search and answers at once and deleted only after the grace
+    period (:data:`MISSING_GRACE` and :data:`MISSING_RUNS`); a folder that comes back before brings
+    them back as they were. Projects below a folder that could not be listed (``unreadable``) are
+    left alone. A new name refreshes the full-text titles of all sections."""
     existing = {r["number"]: r for r in conn.execute("SELECT * FROM projects")}
-    added = updated = 0
+    now = _utcnow()
+    stats = {"projects": len(folders), "added": 0, "updated": 0, "reactivated": 0, "deactivated": 0,
+             "documents_hidden": 0, "documents_restored": 0, "documents_removed": 0}
     for f in folders:
         row = existing.get(f.number)
         if row is None:
             conn.execute("INSERT INTO projects(number, name, path) VALUES(?, ?, ?)",
                          (f.number, f.name, str(f.path)))
-            added += 1
-        elif (row["name"], row["path"], row["active"]) != (f.name, str(f.path), 1):
-            conn.execute("UPDATE projects SET name=?, path=?, active=1, updated_at=datetime('now') "
-                         "WHERE number=?", (f.name, str(f.path), f.number))
-            if row["name"] != f.name:
-                refresh_fts_titles(conn, f.number, f.name)
-            updated += 1
+            stats["added"] += 1
+            continue
+        if (row["name"], row["path"], row["active"]) == (f.name, str(f.path), 1):
+            continue
+        conn.execute("UPDATE projects SET name=?, path=?, active=1, missing_since=NULL, missing_runs=0, "
+                     "updated_at=datetime('now') WHERE number=?", (f.name, str(f.path), f.number))
+        if not row["active"]:
+            restored = restore_project_documents(conn, f.number, f.name)
+            stats["reactivated"] += 1
+            stats["documents_restored"] += restored
+            log.info("Projektordner wieder vorhanden: %s – %d Dokument(e) wieder sichtbar", f.number, restored)
+        if row["name"] != f.name:
+            refresh_fts_titles(conn, f.number, f.name)
+        stats["updated"] += 1
     seen = {f.number for f in folders}
     blocked = [Path(p) for p in unreadable]
-    gone = [n for n, r in existing.items() if n not in seen and r["active"]
-            and not any(Path(r["path"]).is_relative_to(b) for b in blocked)]
-    removed = 0
-    for n in gone:
-        conn.execute("UPDATE projects SET active=0, updated_at=datetime('now') WHERE number=?", (n,))
-        removed += remove_project_documents(conn, n)
-    return {"projects": len(folders), "added": added, "updated": updated, "deactivated": len(gone),
-            "documents_removed": removed}
+    cutoff = _sqlite_time(now - MISSING_GRACE)
+    for number, row in existing.items():
+        if number in seen or any(Path(row["path"]).is_relative_to(b) for b in blocked):
+            continue
+        if row["active"]:  # just went missing: hide its files, start the grace period
+            conn.execute("UPDATE projects SET active=0, missing_since=?, missing_runs=1, "
+                         "updated_at=datetime('now') WHERE number=?", (_sqlite_time(now), number))
+            hidden = hide_project_documents(conn, number)
+            stats["deactivated"] += 1
+            stats["documents_hidden"] += hidden
+            log.warning("Projektordner fehlt: %s (%s) – %d Dokument(e) aus Suche und Antworten ausgeblendet; "
+                        "gelöscht werden sie erst, wenn der Ordner %d h lang und in %d Läufen fehlt",
+                        number, row["path"], hidden, MISSING_GRACE // timedelta(hours=1), MISSING_RUNS)
+            continue
+        if row["missing_since"] is None:  # inactive since an older version – its files are gone
+            continue
+        runs = row["missing_runs"] + 1
+        conn.execute("UPDATE projects SET missing_runs=? WHERE number=?", (runs, number))
+        if runs >= MISSING_RUNS and row["missing_since"] <= cutoff:
+            removed = remove_project_documents(conn, number)
+            if removed:
+                log.info("Projektordner %s fehlt seit %s (UTC) – %d Dokument(e) aus dem Index entfernt",
+                         number, row["missing_since"], removed)
+            stats["documents_removed"] += removed
+    return stats
 
 
 def sync_from_folder(conn: sqlite3.Connection, root: Path, pattern: str) -> dict:

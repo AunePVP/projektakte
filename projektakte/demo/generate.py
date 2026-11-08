@@ -74,6 +74,15 @@ def generate(demo_dir: Path, seed: int = SEED) -> dict:
     return manifest
 
 
+def mail_message_ids(seed: int = SEED) -> dict[str, str]:
+    """File name below ``demo/mails`` → Message-ID of every demo mail, computed without writing
+    anything (lets the index drop demo mails even when the demo folder was deleted meanwhile)."""
+    rng = random.Random(seed)
+    for p in data.PROJECTS:  # the same random sequence as generate()
+        project_files(p, rng)
+    return {fname: m["message_id"] for fname, _raw, m in render_all(rng)}
+
+
 def is_current(demo_dir: Path) -> bool:
     try:
         manifest = json.loads((Path(demo_dir) / "manifest.json").read_text())

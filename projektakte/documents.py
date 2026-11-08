@@ -5,6 +5,7 @@ extraction profile changes or after a back-off. Files are extracted outside the 
 and committed one by one, so the web UI never waits long for the database."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 import os
@@ -160,10 +161,11 @@ def write_document(conn: sqlite3.Connection, doc: PreparedDocument, *, path: str
 def store_document(conn: sqlite3.Connection, *, path: str, rel_path: str, project: str | None,
                    project_name: str | None, data: bytes, mtime: float | None, llm=None,
                    mail_id: int | None = None, doc_date: str | None = None) -> int:
-    """(Re)index one file's content; returns the document id.
+    """(Re)index one file's content in one call; returns the document id.
 
-    Extracts inside the caller's transaction – long-running callers should use
-    :func:`prepare_document` before and :func:`write_document` inside their write transaction."""
+    Convenience for one-off callers (scripts, tests). It extracts while the caller may hold a write
+    transaction, so the indexing passes use :func:`prepare_document` (no lock) and
+    :func:`write_document` (short transaction) instead."""
     doc = prepare_document(rel_path=rel_path, data=data, mtime=mtime, llm=llm, doc_date=doc_date)
     return write_document(conn, doc, path=path, project=project, project_name=project_name, mail_id=mail_id)
 
@@ -177,16 +179,47 @@ def _delete_documents(conn: sqlite3.Connection, where: str, args: tuple = ()) ->
     return len(ids)
 
 
+_PROJECT_FILE_CHUNKS = ("SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id "
+                        "WHERE d.project = ? AND d.mail_id IS NULL")
+
+
+def hide_project_documents(conn: sqlite3.Connection, project: str) -> int:
+    """Take the files of a project whose folder is missing out of search and answers, but keep them:
+    their full-text rows go (vector search skips files of inactive projects, see vectors.py), while
+    documents, sections and vectors stay, so they return unchanged if the folder comes back.
+    Returns the number of hidden documents."""
+    conn.execute(f"DELETE FROM chunks_fts WHERE rowid IN ({_PROJECT_FILE_CHUNKS})", (project,))
+    return conn.execute("SELECT COUNT(*) FROM documents WHERE project = ? AND mail_id IS NULL",
+                        (project,)).fetchone()[0]
+
+
+def restore_project_documents(conn: sqlite3.Connection, project: str, project_name: str | None) -> int:
+    """The folder of a hidden project is back: its files return to search (full-text rows written
+    again from the stored sections – nothing is extracted or embedded). Returns the number of
+    documents."""
+    rows = conn.execute(
+        "SELECT c.id, c.heading, c.text, d.filename FROM chunks c JOIN documents d ON d.id = c.doc_id "
+        "WHERE d.project = ? AND d.mail_id IS NULL", (project,)).fetchall()
+    for r in rows:
+        conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (r["id"],))  # never twice
+        add_fts(conn, r["id"], fts_title(r["filename"], project, project_name, r["heading"]), r["text"])
+    return conn.execute("SELECT COUNT(*) FROM documents WHERE project = ? AND mail_id IS NULL",
+                        (project,)).fetchone()[0]
+
+
 def remove_project_documents(conn: sqlite3.Connection, project: str) -> int:
-    """Drop the indexed files of a project whose folder disappeared (derived data – they come back
-    when the folder does). Mails and their attachments stay, as do human decisions."""
+    """Drop the indexed files of a project whose folder has been missing beyond the grace period
+    (derived data – they are indexed again if the folder ever returns). Mails and their attachments
+    stay, as do human decisions."""
     return _delete_documents(conn, "mail_id IS NULL AND project = ?", (project,))
 
 
 def purge_inactive_documents(conn: sqlite3.Connection) -> int:
-    """Drop project files whose project is not active (any left over from older versions)."""
+    """Drop project files that belong to no known project, or to an inactive project without a
+    running grace period (left over by older versions, which removed them at once). Files of a
+    project whose folder went missing recently stay hidden until the register removes them."""
     return _delete_documents(conn, "mail_id IS NULL AND (project IS NULL OR project NOT IN "
-                                   "(SELECT number FROM projects WHERE active = 1))")
+                                   "(SELECT number FROM projects WHERE active = 1 OR missing_since IS NOT NULL))")
 
 
 def refresh_fts_titles(conn: sqlite3.Connection, project: str, project_name: str | None) -> int:
@@ -228,6 +261,24 @@ def is_inside(path: Path, boundary: Path) -> bool:
         return False
 
 
+def link_problem(link: Path, boundary: Path) -> str | None:
+    """Why a symbolic link is not followed (German, for the log) – target missing, a loop, not
+    checkable, or outside ``boundary`` (PROJECTS_DIR, resolved) – or None if its target is inside."""
+    try:
+        target = link.resolve(strict=True)
+    except FileNotFoundError:
+        return "Verknüpfung ohne Ziel übersprungen"
+    except RuntimeError:  # loop (older Python versions)
+        return "Verknüpfung mit Schleife übersprungen"
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return "Verknüpfung mit Schleife übersprungen"
+        return f"Verknüpfung nicht prüfbar ({exc.strerror or exc}) – übersprungen"
+    if not target.is_relative_to(boundary):
+        return "Verknüpfung auf Ziel außerhalb von PROJECTS_DIR übersprungen"
+    return None
+
+
 def _project_files(root: Path, boundary: Path | None = None, errors: list | None = None):
     """Files of a project folder. Linked folders are never entered; linked files only count when
     their target lies inside ``boundary`` (PROJECTS_DIR) – nothing from outside gets indexed.
@@ -240,8 +291,8 @@ def _project_files(root: Path, boundary: Path | None = None, errors: list | None
             if name.startswith((".", "~$")) or name.lower() in ("thumbs.db", "desktop.ini"):
                 continue
             f = Path(dirpath) / name
-            if f.is_symlink() and not is_inside(f, boundary):
-                warn_once(log, "Verknüpfung auf Ziel außerhalb von PROJECTS_DIR übersprungen: %s", f)
+            if f.is_symlink() and (problem := link_problem(f, boundary)):
+                warn_once(log, "%s: %s", problem, f)
                 continue
             yield f
 
@@ -355,7 +406,7 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
 
 
 def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Path | str | None = None) -> dict:
-    """Index the files of all active projects. Files of inactive projects leave the index first.
+    """Index the files of all active projects (files of unknown projects leave the index first).
     ``projects_dir`` is the boundary for links (default: each project folder itself)."""
     total: dict = {"removed": purge_inactive_documents(conn)}
     conn.commit()

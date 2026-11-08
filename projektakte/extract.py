@@ -24,7 +24,16 @@ VISION_PROMPT = (
     "Beschreibe bei Plänen kurz Inhalt, Beschriftungen und Brandschutz-Symbole. Erfinde nichts."
 )
 # Bump when the extraction itself changes in a way that could read more of incomplete documents.
-EXTRACT_VERSION = 1
+# 2: images inside PDFs are decoded robustly (Pillow); pages whose images could not be decoded are
+#    retried instead of being recorded as "no text" – documents stored by version 1 are read again.
+EXTRACT_VERSION = 2
+# Images of one PDF page that are sent to the model (scanners write one image per page; more are
+# usually logos or decoration).
+MAX_IMAGES_PER_PAGE = 3
+# Larger page images are scaled down before they are sent (an A0 plan scanned at 300 dpi has about
+# 140 megapixels; multimodal models work with far fewer and requests must stay reasonably small).
+MAX_IMAGE_PIXELS = 16_000_000
+_SENDABLE = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
 
 
 def extraction_profile(llm) -> str:
@@ -156,53 +165,157 @@ def _pdf(data: bytes, llm, name: str) -> Extracted:
                 f"{len(empty_pages)} Seite(n) ohne Textebene – Bildauswertung ausgeschaltet (LLM_VISION=0)"))
         return Extracted([], status="skipped", incomplete=True,
                          message="Scan ohne Textebene – Bildauswertung ausgeschaltet (LLM_VISION=0)")
-    vision_pages, unread, failed = _read_scanned_pages(empty_pages, llm, name)
-    pages = sorted(pages + vision_pages, key=lambda p: p.number or 0)
-    method = "vision" if vision_pages else "text"
-    retry = failed and unread > 0
-    reason = "Bildauswertung fehlgeschlagen" if retry else "Bildauswertung ergab keinen Text"
+    scan = _read_scanned_pages(empty_pages, llm, name)
+    pages = sorted(pages + scan.pages, key=lambda p: p.number or 0)
+    method = "vision" if scan.pages else "text"
+    unread = scan.unread
     if pages:
-        message = f"{unread} Seite(n) ohne Textebene nicht gelesen ({reason})" if unread else None
-        return Extracted(pages, method=method, message=message, incomplete=unread > 0, retry=retry)
+        message = f"{unread} Seite(n) ohne Textebene nicht gelesen ({scan.reason()})" if unread else None
+        return Extracted(pages, method=method, message=message, incomplete=unread > 0, retry=scan.retry)
     if not unread:  # only blank pages – nothing a model could read
         return Extracted([], status="empty", message="kein Text gefunden")
-    return Extracted([], status="error" if retry else "skipped", message=f"Scan ohne Textebene – {reason}",
-                     incomplete=True, retry=retry)
+    return Extracted([], status="error" if scan.retry else "skipped",
+                     message=f"Scan ohne Textebene – {scan.reason()}", incomplete=True, retry=scan.retry)
 
 
-def _read_scanned_pages(empty_pages, llm, name: str) -> tuple[list[Page], int, bool]:
+@dataclass
+class _ScanResult:
+    """Outcome of reading the pages without a text layer with the multimodal model."""
+    pages: list[Page] = field(default_factory=list)
+    no_text: int = 0  # the model read the page images but answered nothing
+    undecodable: int = 0  # page images could not be decoded (Pillow/jbig2dec missing, broken image)
+    model_failed: int = 0  # the model call failed (timeout, server down)
+    decode_error: str = ""  # first decoding problem, for the message
+
+    @property
+    def unread(self) -> int:
+        return self.no_text + self.undecodable + self.model_failed
+
+    @property
+    def retry(self) -> bool:
+        """A failure that may go away (model back, missing component installed): try again later."""
+        return bool(self.undecodable or self.model_failed)
+
+    def reason(self) -> str:
+        parts = []
+        if self.undecodable:
+            parts.append(f"Bilder nicht lesbar: {self.decode_error}" if self.decode_error else "Bilder nicht lesbar")
+        if self.model_failed:
+            parts.append("Bildauswertung fehlgeschlagen")
+        if self.no_text:
+            parts.append("Bildauswertung ergab keinen Text")
+        if len(parts) > 1:  # say which reason applies to how many pages
+            counts = [n for n in (self.undecodable, self.model_failed, self.no_text) if n]
+            parts = [f"{n}× {p}" for n, p in zip(counts, parts)]
+        return "; ".join(parts)
+
+
+_pillow_warned = False
+
+
+def _decode_problem(exc: Exception) -> str:
+    """Short German description of why a PDF image could not be decoded."""
+    global _pillow_warned
+    text = str(exc)
+    if isinstance(exc, ImportError) and ("pillow" in text.lower() or getattr(exc, "name", None) == "PIL"):
+        if not _pillow_warned:
+            _pillow_warned = True
+            log.error("Pillow ist nicht installiert – Bilder in PDF-Dateien (Scans) können nicht gelesen "
+                      "werden. Abhilfe: pip install -r requirements.txt")
+        return "Pillow nicht installiert"
+    name = type(exc).__name__
+    if name == "DependencyError":  # pypdf: an external program is missing
+        if "jbig2" in text.lower():
+            return "JBIG2-Bild, Programm jbig2dec nicht installiert"
+        return f"fehlende Komponente ({text})"[:160]
+    if name == "UnidentifiedImageError":  # Pillow
+        return "Bilddaten beschädigt oder Format unbekannt"
+    return f"{name}: {re.sub(r' at 0x[0-9a-fA-F]+', '', text)}"[:160]
+
+
+def _image_payload(image) -> tuple[bytes, str]:
+    """Bytes and MIME type of a PDF page image in a format multimodal models accept (JPEG/PNG).
+
+    JPEG and PNG within the size limit are sent as they are; other formats (JPEG 2000, TIFF from
+    CCITT fax or LZW, CMYK) and very large images are converted with Pillow. Raises if the image
+    cannot be decoded."""
+    ext = Path(getattr(image, "name", "") or "").suffix.lower()
+    pil = getattr(image, "image", None)
+    mime = _SENDABLE.get(ext)
+    if pil is None:
+        if mime and image.data:
+            return image.data, mime
+        raise ValueError(f"Bildformat {ext or '(unbekannt)'} nicht unterstützt")
+    width, height = pil.size
+    fits = width * height <= MAX_IMAGE_PIXELS
+    if fits and mime == "image/png":
+        return image.data, mime
+    if fits and mime == "image/jpeg" and pil.mode in ("L", "RGB"):
+        return image.data, mime
+    from PIL import Image  # installed with requirements.txt; pypdf needs it for images anyway
+
+    img = pil
+    if img.mode not in ("1", "L", "RGB"):
+        img = img.convert("RGB")  # CMYK, palette, alpha channel, 16 bit
+    if not fits:
+        if img.mode == "1":
+            img = img.convert("L")  # scaling bilevel scans keeps text readable in grey
+        f = (MAX_IMAGE_PIXELS / (width * height)) ** 0.5
+        img = img.resize((max(1, int(width * f)), max(1, int(height * f))), Image.Resampling.LANCZOS)
+    out = io.BytesIO()
+    if img.mode == "RGB":  # photos and colour plans: JPEG keeps the request small
+        img.save(out, "JPEG", quality=90)
+        return out.getvalue(), "image/jpeg"
+    img.save(out, "PNG", optimize=True)  # bilevel/grey scans: lossless and compact
+    return out.getvalue(), "image/png"
+
+
+def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
     """Let the multimodal model read the images of pages without a text layer.
 
-    Returns (pages read, pages with images that could not be read, whether a model call failed).
-    Pages without any image (blank pages) count as nothing to read."""
-    read: list[Page] = []
-    unread = 0
-    failed = False
+    Pages without any image (blank pages) count as nothing to read. A page counts as undecodable or
+    failed – and the document is retried later – if one of its images could not be decoded or the
+    model call failed and nothing else on the page was read; only a page whose images the model read
+    without finding text counts as "no text"."""
+    result = _ScanResult()
     for i, page in empty_pages:
-        try:
-            images = list(page.images)[:3]
-        except Exception as exc:  # noqa: BLE001
-            log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, i, exc)
-            unread += 1
-            continue
-        if not images:
-            continue
+        decode_failed = model_failed = False
         texts = []
-        for img in images:
-            mime = "image/jpeg" if img.name.lower().endswith((".jpg", ".jpeg")) else "image/png"
+        try:
+            images = page.images  # decoded one by one below, so one broken image spoils nothing else
+            keys = list(images.keys())
+        except Exception as exc:  # noqa: BLE001 – broken resources: the page cannot be read now
+            log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, i, exc)
+            result.decode_error = result.decode_error or _decode_problem(exc)
+            result.undecodable += 1
+            continue
+        if not keys:
+            continue
+        for key in keys[:MAX_IMAGES_PER_PAGE]:
             try:
-                text = llm.describe_image(img.data, mime, VISION_PROMPT).text
+                data, mime = _image_payload(images[key])
+            except Exception as exc:  # noqa: BLE001 – missing Pillow/jbig2dec, unsupported or broken image
+                log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, i, exc)
+                result.decode_error = result.decode_error or _decode_problem(exc)
+                decode_failed = True
+                continue
+            try:
+                text = llm.describe_image(data, mime, VISION_PROMPT).text
             except Exception as exc:  # noqa: BLE001
                 log.warning("%s Seite %d: Bildauswertung fehlgeschlagen (%s)", name, i, exc)
-                failed = True
+                model_failed = True
                 continue
             if text and text.strip():
                 texts.append(text)
         if texts:
-            read.append(Page(i, "\n".join(texts)))
+            result.pages.append(Page(i, "\n".join(texts)))
+        elif decode_failed:
+            result.undecodable += 1
+        elif model_failed:
+            result.model_failed += 1
         else:
-            unread += 1
-    return read, unread, failed
+            result.no_text += 1
+    return result
 
 
 def _docx(data: bytes) -> Extracted:

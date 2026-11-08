@@ -127,6 +127,13 @@ MIGRATIONS: list[str] = [
         OR (status = 'ok' AND COALESCE(message, '') LIKE '%ohne Textebene%')
         OR (status = 'empty' AND ext IN ('.pdf', '.png', '.jpg', '.jpeg', '.tif', '.tiff', '.webp'));
     """,
+    # 7 – a project folder that went missing: since when and in how many consecutive passes. Its files
+    #     are only hidden at first and deleted after a grace period (see registry.MISSING_GRACE).
+    #     Projects already inactive keep NULL: their files were removed by the older version.
+    """
+    ALTER TABLE projects ADD COLUMN missing_since TEXT;
+    ALTER TABLE projects ADD COLUMN missing_runs INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

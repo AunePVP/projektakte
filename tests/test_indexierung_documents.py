@@ -300,20 +300,21 @@ def test_renamed_project_folder_keeps_documents_and_refreshes_titles(store):
     assert mail_title == documents.mail_fts_title("BS-2024-0001", "Lagerhalle Nordring", rec.subject, "A")
 
 
-def test_documents_of_vanished_projects_leave_the_index(store):
-    """BUG-6/ops-05: renumbered or removed folder – its files leave search and answers."""
+def test_documents_of_vanished_projects_leave_search_at_once(store):
+    """BUG-6/ops-05: renumbered or removed folder – its files leave search and answers at once; they
+    are deleted after the grace period (test_indexierung_grace.py)."""
     conn, root, proj = store
     rec = _mail([])
     mail_id, _ = store_mail(conn, rec, cache_dir=root.parent / "cache")
     _index(conn, root)
     proj.rename(root / "BS-2024-0002 Testhalle")
     stats = sync_projects(conn, scan_projects(root, PATTERN))
-    assert (stats["added"], stats["deactivated"], stats["documents_removed"]) == (1, 1, 2)
+    assert (stats["added"], stats["deactivated"], stats["documents_hidden"], stats["documents_removed"]) == \
+        (1, 1, 2, 0)
     assert _index(conn, root)["new"] == 2
-    projects = {r[0] for r in conn.execute("SELECT DISTINCT project FROM documents WHERE mail_id IS NULL")}
-    assert projects == {"BS-2024-0002"}
-    assert conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0] == \
-        conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    found = {r[0] for r in conn.execute("SELECT DISTINCT d.project FROM chunks_fts f JOIN chunks c ON c.id = f.rowid "
+                                        "JOIN documents d ON d.id = c.doc_id WHERE d.mail_id IS NULL")}
+    assert found == {"BS-2024-0002"}
     # the project stays known (inactive), the mail stays
     assert conn.execute("SELECT active FROM projects WHERE number = 'BS-2024-0001'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM mails WHERE id = ?", (mail_id,)).fetchone()[0] == 1
