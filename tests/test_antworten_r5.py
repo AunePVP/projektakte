@@ -259,7 +259,7 @@ def test_author_reading_only_for_who_wrote_it():
         return {t.word: t for t in question_terms(q, syn)}[word].syns
 
     assert ("verfass",) in syns("Wer hat das Konzept fürs Heim geschrieben?", "geschrieben")
-    assert ("aufstell",) in syns("Wer hat das Protokoll erstellt?", "erstellt")
+    assert ("aufgestellt",) in syns("Wer hat das Protokoll erstellt?", "erstellt")  # the label, not "aufzustellen"
     assert ("verfass",) not in syns("Feuerwehrplan erstellen", "erstellen")
     assert ("verfass",) not in syns("Wann wurde das Gutachten erstellt?", "erstellt")
     header = "Brandschutzkonzept | Hotel Seeblick | Brandschutzkonzept\nVerfasser: Ingenieurbüro Feuerfest, Murat Yilmaz."

@@ -1096,14 +1096,25 @@ def _heading_shaped(line: str) -> bool:
     return len(line.split()) <= PASSAGE_HEADING_WORDS and ":" not in line and not re.search(r"[.!?;,]$", line)
 
 
+# the only words written in lower case in a title: "Prüfbericht Nr. 3 zum Brandschutznachweis", "Auflagen zum
+# Brandschutz – Hotel Seeblick" – a line with a verb or adverb ("… sind je Geschoss vorzusehen") is part of a sentence
+_TITLE_WORDS = frozenset("""der die das des dem den ein eine einer eines einem und oder sowie für fur im in am an
+    zum zur vom von mit nach bei beim auf aus über uber unter gem gemäß gemass je pro nr""".split())
+
+
+def _title_like(line: str) -> bool:
+    """A short line that is a heading or title itself, not the unpunctuated start of a sentence."""
+    return _heading_shaped(line) and all(fold(w) in _TITLE_WORDS for w in _WORD.findall(line) if w[:1].islower())
+
+
 def _passage_headings(text: str, lines: list[str]) -> set[int]:
     """Indexes of the (plain) lines that are section headings: markdown headings, agenda items ("TOP 2 –
     Räumungsübung") and numbered section headings that stand on their own – a short line with a section
     number, no quantity ("2 Pulverlöscher" after "je Geschoss:" is a list line, "12 Monate nach
-    Inbetriebnahme" a phrase), after a line that ends a statement or is short itself (not after "…
-    zwar je Geschoss:" or in the middle of a wrapped sentence), not continued by the next line ("… ist
-    die erste Prüfung fällig.") and not one of several numbered lines in a row ("3 Wandhydranten / 2
-    Pulverlöscher")."""
+    Inbetriebnahme" a phrase), after a line that ends a statement or is a title itself (not after "…
+    zwar je Geschoss:", "… sind je Geschoss vorzusehen" or in the middle of a wrapped sentence), not
+    continued by the next line ("… ist die erste Prüfung fällig.") and not one of several numbered lines
+    in a row ("3 Wandhydranten / 2 Pulverlöscher")."""
     md = {h for raw in (text or "").replace("\r\n", "\n").split("\n") if _MD_HEADING.match(raw.strip())
           for h in plain_lines(raw)}
     out = set()
@@ -1119,8 +1130,7 @@ def _passage_headings(text: str, lines: list[str]) -> set[int]:
         if _PASSAGE_QUANTITY.match(ln):
             continue
         prev = lines[i - 1] if i > 0 else ""
-        if prev and (re.search(r"[:,;–-]$", prev) or not (
-                _PASSAGE_ENDS_STATEMENT.search(prev) or len(prev.split()) <= PASSAGE_HEADING_WORDS)):
+        if prev and (re.search(r"[:,;–-]$", prev) or not (_PASSAGE_ENDS_STATEMENT.search(prev) or _title_like(prev))):
             continue  # the line continues a list or a sentence of the line before
         nxt = lines[i + 1] if i + 1 < len(lines) else ""
         if nxt[:1].islower():
