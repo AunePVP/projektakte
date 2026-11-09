@@ -1014,7 +1014,9 @@ def split_sentences(line: str) -> list[str]:
     buf = ""
     for piece in re.split(r"(?<=[.!?])\s+", line):
         buf = f"{buf} {piece}".strip()
-        if not _PASSAGE_ABBREV.search(buf):
+        # an abbreviation is the buffer's last word – searching only that keeps a long line of dates ("am 11.03.
+        # … am 12.03. …") linear instead of rescanning the growing buffer
+        if not _PASSAGE_ABBREV.search(buf.rsplit(None, 1)[-1] if buf else buf):
             out.append(buf)
             buf = ""
     if buf:

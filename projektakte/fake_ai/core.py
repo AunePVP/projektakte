@@ -27,22 +27,34 @@ models, not like a lookup table for an evaluation set:
   number, cost, duration, name, norm, class, colour, …) is only answered by a sentence that contains
   such a value for the asked topic – a length must be the asked dimension of the asked thing ("Wie
   breit …?" is not answered by "in 60 cm Höhe"), "Wann wurde … abgenommen?" needs the date of the
-  event, not an obligation or a plan; otherwise – and whenever no sentence covers the topic – it says
-  "Nicht gefunden.". A question naming a project is answered from that project only. What singles out
-  the asked thing must be the sentence's too (in itself, or in its section heading or source): "im
+  event, not an obligation, a plan or a proposal; otherwise – and whenever no sentence covers the topic –
+  it says "Nicht gefunden.". A question naming a project is answered from that project only. What singles
+  out the asked thing must be the sentence's too (in itself, or in its section heading or source): "im
   Wohnbereich C" is not answered by a sentence about Wohnbereich B, "im 2. OG" not by one about the
-  3. Obergeschoss (but by "im 2. bis 4. OG", "im OG 2", "in allen Geschossen"), "der erste Rettungsweg"
-  not by the second, "vor dem Umbau" not by the result of the Umbau, "bei der Abnahme" not by what was
-  done without one. The legend of a plan ("Notausgang Ost, Sammelplatz Parkplatz Nord, …") is read item
-  by item. Questions about the latest state use the newest dated source, "Was hat X geschrieben?" the
-  sources written by X, "Was hat die
-  Prüfingenieurin festgestellt/bemängelt?" the findings (for "bemängelt" those saying that something is
-  wrong or still to be done; what a party wrote without calling it a finding counts only as an
-  assessment, demand or report – and for "bemängelt" only as a defect: not a wish with "ohne", a permit's
-  conditions or standard notes), "Wer hat das Konzept geschrieben?" the author's field ("Verfasser:",
-  "Aufgestellt:"), a field by its label ("Datum: …", "Betreff: …" – but "betrifft" is a verb, not the
-  label), decision questions ("Hat … zugestimmt?") the sources that state the decision, "Wer hat …
-  unterschrieben?" the signature, overview questions several sources (without the standard formulas
+  3. Obergeschoss (but by "im 2. bis 4. OG", "im OG 2", "in allen Geschossen" – the floor is the
+  qualifier, no topic of its own, so that is no answer to "Was wünscht der Mieter im 2. OG?"), "der erste
+  Rettungsweg" not by the second, "die zweite Besprechung" not by the "Nächste Besprechung: …" of protocol
+  Nr. 2, "Raum 5" not by "Raum 2-14" (a range only after a plural: "Treppenräume 1-3"), "DIN EN 13501-2"
+  not by part 1 (but "DIN 4102" by "DIN 4102-2"), "am 13.12.2024" not by a sentence dated otherwise, "vor
+  dem Umbau" not by the result of the Umbau, "vor der Eröffnung" in a question about a state not by "bei
+  der Eröffnung" (only an obligation "vor/bei der Abnahme" is met by what is due "zur Abnahme"), "bei/nach
+  der Abnahme" not by what was done without one or is still to be done ("Die Abnahme ist nachzuholen").
+  The legend of a plan ("Notausgang Ost, Sammelplatz Parkplatz Nord, …") is read item by item. Questions
+  about the latest state use the newest dated source, "Was hat X geschrieben?" the sources written by X
+  (a party is named by its own word, not by a compound such as "Feuerwehraufzug", and in a source it did not
+  write only as the speaker – "Die Feuerwehr fordert …", "laut Feuerwehr" –, not as an object: "mit der
+  Brandschutzdienststelle abzustimmen"; "Was wünscht/fordert X?" is answered only by a wish, demand or
+  proposal of X), "Was hat die Prüfingenieurin festgestellt/bemängelt?" the
+  findings (for "bemängelt" those saying that something is wrong or still to be done; what a party wrote
+  without calling it a finding counts only as an assessment, a defect or a completed check – not as a
+  cover line, an organisational sentence or a demand – and for "bemängelt" only as a defect, read within
+  its clause: not a wish with "ohne", a rule ("darf nicht ohne Abnahme …"), a denial ("Es fehlen keine
+  Unterlagen"), praise ("nicht nur ausreichend"), a hypothesis, a permit's conditions or standard notes; a
+  "Mangel:" label names its own sentence only), "Wer hat das Konzept geschrieben?" the author's field
+  ("Verfasser:", "Aufgestellt:") of the document asked for (not the author of a protocol that mentions an
+  Abnahmeprotokoll or a Rauchmelder), a field by its label ("Datum: …", "Betreff: …" – but "betrifft" is a
+  verb, not the label), decision questions ("Hat … zugestimmt?") the sources that state the decision, "Wer
+  hat … unterschrieben?" the signature, overview questions several sources (without the standard formulas
   every concept ends with), and questions over several projects get one finding per project.
 """
 from __future__ import annotations
@@ -83,6 +95,7 @@ from ..textutil import (
     stem,
     strip_identifiers,
     text_terms,
+    word_credit,
     words,
 )
 
@@ -815,13 +828,20 @@ def _is_title(sent: str) -> bool:
 def _inline_labels(sentences: list[str], label: str | None) -> list[tuple[str | None, str]]:
     """(label, sentence) for the sentences of a line: a label inside the line ("… liegt vor. Wesentliche
     Feststellung: Mangel: … in Betrieb genommen. Die Abnahme … ist nachzuholen.") applies to its sentence and
-    the ones after it, as the line's own label does."""
+    the ones after it, as the line's own label does – except a label that classifies its sentence as a defect,
+    which names that sentence only ("Mangel: Die Tür schließt nicht. Die Brandmeldeanlage funktioniert
+    einwandfrei." – the second sentence is no Mangel)."""
     out: list[tuple[str | None, str]] = []
+    outer = None if label and _DEFECT_SECTION.search(label) else label  # the label after a defect label
     for i, sent in enumerate(sentences):
         m = _LABEL.match(sent) if i > 0 else None
         if m and len(m.group(1).split()) <= 5:
             label, sent = m.group(1).strip(), sent[m.end():].strip()
+            if not _DEFECT_SECTION.search(label):
+                outer = label
         out.append((label, sent))
+        if label is not None and _DEFECT_SECTION.search(label):
+            label = outer
     return out
 
 
@@ -888,7 +908,8 @@ def read_units(src: Source) -> list[Unit]:
             continue
         label = None
         m = _LABEL.match(line)
-        if m and len(m.group(1).split()) <= 5:
+        # a label starts its sentence: "Vielen Dank. Hinweis: …" is a sentence and a labelled one (_inline_labels)
+        if m and len(m.group(1).split()) <= 5 and len(split_sentences(m.group(1))) == 1:
             label, line = m.group(1).strip(), line[m.end():].strip()
         sentences = split_sentences(line)
         field = label is not None and (fold(label) in _META_LABELS or _is_role_label(label))
@@ -984,11 +1005,15 @@ _NEED_RULES = (
     (("agent",), re.compile(r"^\s*(wer|von\s+wem|durch\s+wen)\b|\b(von|durch)\s+wem\b|\bwen\b", re.I)),
 )
 # words that name the asked attribute; they are answered by a value, not by the word itself
-_ATTRIBUTE_WORDS = frozenset(stem(fold(w)) for w in """
+_ATTRIBUTE_WORDS = frozenset(fold(w) for w in """
     kosten preis preise honorar miete gebühr gebühren anzahl zahl datum termin zeitpunkt temperatur gewicht
     farbe hersteller firma unternehmen lieferant anbieter norm normen richtlinie vorschrift kategorie klasse
     sprache sprachen name höhe breite länge tiefe größe dauer menge fläche betrag summe
     """.split())
+# … in their inflected forms ("Termins", "Kosten") – by the word, not by its stem alone: a "Mieter" (a tenant, whom
+# the answer must name) is no "Miete"
+_ATTRIBUTE_STEMS = frozenset(stem(w) for w in _ATTRIBUTE_WORDS)
+_ATTRIBUTE_FORMS = frozenset(w + e for w in _ATTRIBUTE_WORDS for e in ("", "e", "n", "en", "s", "es"))
 # compounds whose head names the asked value: "Feuerwiderstandsklasse", "Baustoffklasse" (answered by "T30-RS",
 # "A1"), "Brandschutznorm"
 _COMPOUND_ATTRIBUTES = {"klass": "class", "kategori": "class", "norm": "standard", "sprach": "language"}
@@ -1007,7 +1032,8 @@ _SEP = r"(?:ab|an|auf|aus|bei|dar|durch|ein|fest|frei|her|hin|mit|nach|nieder|si
 # not done (yet): an obligation, a plan or an announcement
 _NOT_DONE = re.compile(
     r"\b(muss|müssen|soll|sollen|sollte|sollten|geplant|vorgesehen|voraussichtlich|beabsichtigt|angesetzt|terminiert|"
-    r"anvisiert|erforderlich|notwendig|vorzusehen|vorzulegen)\b|"
+    r"anvisiert|erforderlich|notwendig|vorzusehen|vorzulegen|vorgeschlagen|vorschlag\w*)\b|"
+    r"\b(schlage|schlagen|schlägt)\b(?:\s+\S+){0,20}?\s+vor\b|"
     r"\b(ist|sind|war|waren)\b(?:\s+\S+){0,14}?\s+(?:zu\s+[a-zäöüß]\w{2,}(?:en|ern|eln)|" + _SEP + r"zu[a-zäöüß]{3,}(?:en|ern|eln))\b|"
     r"\b(wird|werden)\s+(?:\S+\s+){0,6}?(am|im|ab|bis|zum|zur|in\s+KW|nach)\s+(\d|KW|Januar|Februar|März|April|Mai|"
     r"Juni|Juli|August|September|Oktober|November|Dezember)", re.I)
@@ -1043,6 +1069,15 @@ _COMMUNICATION = re.compile(r"\b(geschrieben|schreibt|schrieb|gesagt|sagt|sagte|
                             r"geäußert|äußert|stellung|meint|gemeint|empfiehlt|empfohlen|rückmeldung|geschickt|"
                             r"schickt|gesendet|verschickt|wünscht|möchte|will|wollte|gefragt|fragt|fragte|bittet|"
                             r"bat|gebeten|stammt|stammen|vorgeschlagen|schlägt)\b", re.I)
+# what a party asks for: "Was hat die Feuerwehr gefordert?", "Was wünscht der Bauherr?", "Was schlägt die Architektin
+# vor?" are answered by a demand, wish or proposal of hers, not by anything she wrote
+_REQUEST_Q = re.compile(r"\b(fordert|fordern|forderte|gefordert|verlangt|verlangen|verlangte|wünscht|wünschen|"
+                        r"gewünscht|möchte|möchten|will|wollen|wollte|empfiehlt|empfehlen|empfohlen|bittet|gebeten|"
+                        r"vorgeschlagen|beantragt)\b|\b(schlägt|schlagen|schlug)\b.*\bvor\b", re.I)
+_REQUESTED = re.compile(r"\b(muss|müssen|soll|sollen|sollte|sollten|möchte\w*|wünsch\w*|gewünscht|will|wollen|"
+                        r"bitte\w*|gebeten|empfehle\w*|empfiehlt|empfohlen|schlage\w*|schlägt|vorschlag\w*|"
+                        r"vorgeschlagen|beantrag\w*|forder\w*|gefordert|verlang\w*|erforderlich|notwendig|sinnvoll|"
+                        r"ratsam|empfehlenswert|wünschenswert|zweckmäßig)\b", re.I)
 # words for the source itself ("Von wem stammt die Mail …?") – answered by the kind of source
 _SOURCE_WORDS = {"mail": ("mail", "email", "nachricht", "schreib", "brief", "anschreib"),
                  "attachment": ("anhang", "anlag", "datei")}
@@ -1087,8 +1122,10 @@ _DEFECT = re.compile(
     r"\b(reicht|reichen|genügt|genügen)\s+(?:\w+\s+){0,4}?nicht\b|"
     r"\bohne\s+(?:\w+\s+){0,2}?(?:" + _CHECKS + r")\b", re.I)
 _DEFECT_SECTION = re.compile(r"\b(mangel\w*|mängel\w*|beanstandung\w*)\b", re.I)
-# what a finding that is no defect says: an assessment ("ist ausreichend", "wird mitgetragen"), a demand or that
-# something was done ("ist erfolgt") – not a cover line ("Mein Prüfbericht Nr. 1 liegt vor.")
+# what a finding that is no defect says: an assessment ("ist ausreichend", "wird mitgetragen") or that a check was
+# done or a defect removed ("Die Abnahme … ist erfolgt", "ist behoben") – not a cover line ("Mein Prüfbericht Nr. 1
+# liegt vor.", "Die Baugenehmigung … ist erteilt worden."), an organisational sentence ("Die Besprechung ist
+# erfolgt.", "Wir müssen die Termine noch abstimmen.") or a demand, which is what a party asks for, not what it found
 _ASSESSMENT = re.compile(r"\b(ausreichend|genügt|genügend|eingehalten|erfüllt|nachgewiesen|nachvollziehbar|schlüssig|"
                          r"plausibel|geeignet|ungeeignet|zulässig|unzulässig|mitgetragen|funktioniert|funktionsfähig|"
                          r"einwandfrei|unbedenklich|unkritisch|entspricht|entsprechen|bedenken|ordnungsgemäß)\b", re.I)
@@ -1096,6 +1133,8 @@ _DEMAND = re.compile(
     r"\b(muss|müssen|erforderlich|notwendig|vorzusehen|vorzulegen)\b|"
     r"\b(ist|sind)\b(?:\s+\S+){0,14}?\s+(?:zu\s+[a-zäöüß]\w{2,}(?:en|ern|eln)|"
     + _SEP + r"zu[a-zäöüß]{3,}(?:en|ern|eln))\b", re.I)
+_CHECK_DONE = re.compile(r"\b(abgenommen|behoben|beseitigt|nachgeholt)\b|\b(?:" + _CHECKS + r")\b.*\b(erfolgt|"
+                         r"abgeschlossen)\b", re.I)
 # conditions of a permit and standard notes are rules, neither findings nor criticism of the project
 _CONDITION = re.compile(r"^(auflage|auflagen|bedingung\w*|nebenbestimmung\w*|hinweis|hinweise|rechtsbehelf\w*)\b", re.I)
 
@@ -1105,10 +1144,50 @@ _NO_DEFECT = re.compile(r"\b(kein\w*|ohne)\s+(?:\w+\s+){0,2}?(mangel\w*|mängel\
                         r"befund\w*)\b|\bmängelfrei\w*|\bbeanstandungsfrei\w*", re.I)
 
 
+# the scope of a defect word is its clause: "Es fehlen keine Unterlagen", "Die Länge überschreitet das Maß nicht",
+# "nicht mangelhaft" deny it, "nicht nur ausreichend, sondern vorbildlich" is praise
+_NEGATION = re.compile(r"\b(nicht|kein\w*|nichts|nie|niemals)\b(?!\s+nur\b)", re.I)
+_DEFECT_VERB = re.compile(r"^(fehlt|fehlen|überschreit\w*|unterschreit\w*)$", re.I)
+_DENIED_FINDING = re.compile(r"^\W*(?:\w+\s+){0,3}?(nicht|nichts|kein\w*)\s+(festgestellt|vorhanden|erkennbar|gefunden|"
+                             r"ersichtlich|zu\s+erkennen)\b", re.I)
+# a rule is no defect: "Die Anlage darf nicht ohne Abnahme in Betrieb genommen werden", "Ohne Prüfung … darf die
+# Anlage nicht in Betrieb gehen"; nor is a hypothesis: "Sollte die Zufahrt nicht ausreichen, …", "Etwaige Mängel …"
+_PROHIBITION = re.compile(r"\b(darf|dürfen|soll|sollen)\b(?:\s+\S+){0,5}?\s+(nicht|kein\w*)\b|"
+                          r"\b(nicht|kein\w*)\b(?:\s+\S+){0,5}?\s+(darf|dürfen)\b", re.I)
+_MODAL = re.compile(r"\b(darf|dürfen|muss|müssen|soll|sollen|sollte|sollten)\b", re.I)
+_HYPOTHETICAL = re.compile(r"^\s*(wenn|falls|sofern|soweit|sollte|sollten)\b|\b(etwaig\w*|eventuell\w*|gegebenenfalls|"
+                           r"ggfs?\b|möglicherweise)", re.I)
+_CLAUSE_END = re.compile(r"[,;:]|\s[–-]\s")
+
+
+def _defect_in(clause: str) -> bool:
+    """Does a clause say that something is wrong (see _DEFECT), within the scope of its own words?"""
+    if _HYPOTHETICAL.search(clause) or _PROHIBITION.search(clause):
+        return False
+    for m in _DEFECT.finditer(clause):
+        before, after = clause[max(0, m.start() - 30):m.start()], clause[m.end():]
+        if m.group(1):  # a defect word: denied before it ("nicht mangelhaft"), or after a verb ("fehlen keine")
+            if re.search(r"\b(nicht|kein\w*|nichts)\s+(?:\w+\s+)?$", before, re.I) \
+                    or (_DEFECT_VERB.match(m.group(1)) and _NEGATION.search(after)) or _DENIED_FINDING.match(after):
+                continue
+        elif m.group(2):  # "nicht ausreichend" – but not "nicht nur ausreichend"
+            if re.match(r"\w+\s+nur\b", m.group(0), re.I):
+                continue
+        elif m.group(3):  # "reicht nicht aus" – not "reicht nicht nur aus"
+            if re.match(r"\s+nur\b", after, re.I):
+                continue
+        elif _NEGATION.search(clause) or _MODAL.search(clause):  # "ohne Abnahme": "wird ohne … nicht verändert"
+            continue
+        return True
+    return False
+
+
 def _is_defect(u: "Unit") -> bool:
     if _NO_DEFECT.search(u.text):
         return False
-    return bool(_DEFECT.search(u.text) or _DEFECT_SECTION.search(f"{u.label or ''} {u.context}"))
+    if _DEFECT_SECTION.search(f"{u.label or ''} {u.context}"):
+        return True  # under "Mängel", after "Mangel:"
+    return any(_defect_in(clause) for clause in _CLAUSE_END.split(u.text))
 
 
 def _own_finding(u: "Unit", criticism: bool) -> bool:
@@ -1118,8 +1197,8 @@ def _own_finding(u: "Unit", criticism: bool) -> bool:
         return False
     if criticism:
         return _is_defect(u)
-    done = bool(_COMPLETION.search(u.text)) and not _NOT_DONE.search(u.text)  # "Die Abnahme … ist erfolgt."
-    return done or _is_defect(u) or bool(_ASSESSMENT.search(u.text) or _DEMAND.search(u.text))
+    done = bool(_CHECK_DONE.search(u.text)) and not _NOT_DONE.search(u.text)  # "Die Abnahme … ist erfolgt."
+    return done or _is_defect(u) or bool(_ASSESSMENT.search(u.text))
 
 
 # documents written by a role (for "Was hat der Prüfingenieur festgestellt?")
@@ -1161,6 +1240,7 @@ class Question:
     qualifiers: list["Qualifier"] = field(default_factory=list)  # "Wohnbereich C", "2. OG", "vor dem Umbau"
     findings: bool = False  # "Was hat die Prüfingenieurin festgestellt/bemängelt?" – the findings of a review
     author: bool = False  # "Wer hat das Konzept geschrieben?" – the author of a document
+    request: bool = False  # "Was hat die Feuerwehr gefordert?", "Was wünscht der Bauherr?" – a party's wish
 
 
 TYPE_WORD_WEIGHT = 0.5  # the building type in front of a project's own name
@@ -1259,7 +1339,7 @@ def analyse_question(question: str, sources: list[Source], synonyms: Synonyms | 
         head = attribute_head(t.word) if t.noun else None
         if t.term in shaping or t.word in shaping:
             attrs.append(replace(t, weak=True))
-        elif t.term in _ATTRIBUTE_WORDS or (head and not head[0]) or (t.noun and any(
+        elif (t.term in _ATTRIBUTE_STEMS and t.word in _ATTRIBUTE_FORMS) or (head and not head[0]) or (t.noun and any(
                 t.term.endswith(a) and len(t.term) - len(a) >= 4 and kind in types
                 for a, kind in _COMPOUND_ATTRIBUTES.items())):  # "Welche Feuerwiderstandsklasse …?": a class
             attrs.append(t)
@@ -1318,7 +1398,9 @@ def analyse_question(question: str, sources: list[Source], synonyms: Synonyms | 
                     completion=yesno and bool(_COMPLETION.search(question)) and not _FUTURE_Q.search(question),
                     dimension=dimension, signer=bool(_SIGNER_Q.search(question)),
                     project_words=[t for t in all_terms if t.term in project_terms and not t.term.isdigit()],
-                    located=_located(question, terms), qualifiers=qualifiers, findings=findings, author=author)
+                    located=_located(question, terms), qualifiers=qualifiers, findings=findings, author=author,
+                    request=authorship and bool(_REQUEST_Q.search(question))
+                    and not _OPEN_POINTS.search(question))  # "Was wollte der Bauherr wissen?" asks for his question
 
 
 _PLACE_PREP = frozenset("im in ins am an beim bei auf aus vom von zum zur unter uber neben hinter".split())
@@ -1350,8 +1432,11 @@ class Qualifier:
     Obergeschoss") or a time relative to an event ("vor dem Umbau", "nach der Sanierung", "früher", "bis
     zur Abnahme", "bei der Abnahme")."""
 
-    kind: str  # "designator" | "floor" | "time"
-    value: str  # "c", "7" | floor number "2" | "vor", "nach", "bis" (by a milestone: a deadline), "zu" (at it)
+    kind: str  # "designator" | "floor" | "time" | "date"
+    # "c", "7", "13501-2" | floor number "2" | "vor", "nach" (a state before/after a process such as an Umbau), "bis"
+    # (an obligation by a milestone: a deadline), "ab" (after a milestone or an obligation after it: said so), "zu" (at
+    # a milestone: what was found on that occasion) | "2024-12-13" (a date)
+    value: str
     head: QueryTerm | None = None  # noun of the designator, event of the time (None: "früher", "ursprünglich")
     group: str = ""  # floor group: "og" (Obergeschoss, Stock, Etage), "ug" (Untergeschoss, Keller)
     words: frozenset[str] = frozenset()  # stems of the question words it is told by ("dritten", "erste", "früher")
@@ -1360,8 +1445,17 @@ class Qualifier:
 _NO_DESIGNATOR_HEADS = frozenset(fold(w) for w in _MONTHS.split("|")) | frozenset(
     "montag dienstag mittwoch donnerstag freitag samstag sonntag jahr jahre jahren seite kw uhr mal".split())
 # a designator is a capital letter or a number; the part or edition of a norm after its number ("DIN 4102-2",
-# "DIN 14095:2007-05") belongs to it, "1-3" is a range – no decimal, date or ordinal ("im 3. OG")
+# "DIN 14095:2007-05") belongs to it, "1-3" after a plural is a range – no decimal, date or ordinal ("im 3. OG")
 _DESIGNATOR_VALUE = r"(?:[A-Z](?![\w-])|\d{1,5}(?:[-:]\d{1,4})*(?![\d,/]|\.\d|\.\s+[^\W\d_]|-[^\W\d_]))"
+# the series a norm's number belongs to: its part ("DIN EN 13501-2") or edition ("DIN 14095:2007-05") is part of
+# the norm's designator – "DIN 4102" names all its parts, "DIN EN 13501-2" not part 1
+_NORM_WORDS = frozenset("din en iso iec vde vdi vds asr dguv trbs trgs".split())
+# a norm in a question, kept although its number looks like a reference code ("DIN EN 13501-2")
+_NORM_REF = re.compile(r"\b(?:DIN|EN|ISO|IEC|VDE|VDI|VdS)\s+(?:(?:EN|ISO|IEC)\s+)*\d{1,5}(?:[-:]\d{1,4})*")
+# what names another one of a kind than the source's own: "Nächste Besprechung: 04.12.2024" in protocol Nr. 2
+# is the following meeting, "die vorige Prüfung" an earlier one
+_OTHER_INSTANCE = re.compile(r"^(nachst|ubernachst|kommend|folgend|vorig|vorherig|vorangegangen|vorausgegangen|"
+                             r"letzt|vergangen|weiter|ander|fruher)\w*$")
 _LIST_SEP = r"\s*(?:,|/|und|oder|sowie|bis|–)\s*"
 # a noun followed by its designator(s): "Wohnbereich C", "Auflage 7", "Prüfbericht Nr. 1", "Bauteile A und B" –
 # not a measure ("Flur 38 m"), a decimal, a date or an ordinal ("im 3. OG")
@@ -1374,27 +1468,35 @@ _ORDINALS = _ORDINAL + r"(?:" + _LIST_SEP + _ORDINAL + r")*"
 # an ordinal in front of its noun, adjectives between: "der 2. Rettungsweg", "ein zweiter baulicher Rettungsweg"
 _ORDINAL_NOUN = re.compile(r"(?<![\w.])(" + _ORDINALS + r")\s+(?:[a-zäöüß][\wäöüß-]*\s+){0,2}"
                            r"([A-ZÄÖÜ][\wäöüß-]*)")
-_FLOOR_GROUPS = (("ug", r"UG|KG|Untergeschoss\w*|Tiefgeschoss\w*|Kellergeschoss\w*"),
-                 ("og", r"OG|Obergeschoss\w*|Geschoss\w*|Etage\w*|Stockwerk\w*|Stock"))
+# the floor nouns in their inflected forms – not a compound such as "Geschossanzahl 5" or "Geschosshöhe"
+_FLOOR_GROUPS = (("ug", r"UG|KG|(?:Unter|Tief|Keller)geschoss(?:e|en|es)?"),
+                 ("og", r"OG|(?:Ober)?[Gg]eschoss(?:e|en|es)?|Etagen?|Stockwerk(?:e|en|es|s)?|Stock"))
 _FLOOR_NOUN = "|".join(rx for _, rx in _FLOOR_GROUPS)
 # floors with their numbers: "im 3. OG", "im dritten Obergeschoss", "im 3. und 4. Obergeschoss", "im 2. bis 4.
 # OG", "im OG 3" – and all of them: "in allen Geschossen", "je Geschoss"
 _FLOOR = re.compile(r"(?<![\w.])(" + _ORDINALS + r")\s*(" + _FLOOR_NOUN + r")\b")
 _FLOOR_AFTER = re.compile(r"\b(" + _FLOOR_NOUN + r")\s+(\d{1,2})\b(?![.,]\d|\s*" + _UNIT
-                          + r"|\s*[A-ZÄÖÜ][a-zäöüß])")  # not "Geschoss 2 Wohnungen" (a count)
+                          + r"|\s*[A-ZÄÖÜ][a-zäöüß]|\s+[a-zäöüß]+(?:e|en|er|es|em)\s+[A-ZÄÖÜ])")
+# (not a count: "Geschoss 2 Wohnungen", "im Obergeschoss 2 zusätzliche Feuerlöscher")
 _ALL_FLOORS = re.compile(r"\b(?:alle[nrms]?|jede[nrms]?|sämtliche[nrn]?|je)\s+(" + _FLOOR_NOUN + r")\b")
 # an event that divides the state before from the state after: "vor dem Umbau", "nach der Sanierung"
 _EVENT_NOUN = re.compile(r"(bau|sanierung|erweiterung|modernisierung|renovierung|anderung|nahme|eroffnung|"
                          r"fertigstellung|beginn|abriss|umzug|bezug|brand)$")
-# … of which a milestone is a point in time: "vor/bis zur Abnahme" sets a deadline, met by what is there "zur
-# Abnahme" as well
+# … of which a milestone is a point in time: in a question about an obligation "vor/bis zur/bei der Abnahme" sets a
+# deadline, met by what is due "zur Abnahme" as well ("Was muss vor der Abnahme vorliegen?"); in a question about a
+# state or an occasion it is that time ("Wie viele Betten hatte es vor der Eröffnung?" is not answered by "bei der
+# Eröffnung", "Was wurde bei der Abnahme bemängelt?" not by what is to be done "bis zur Abnahme")
 _MILESTONE = re.compile(r"(nahme|eroffnung|fertigstellung|beginn|bezug|ubergabe)$")
+_DEADLINE_Q = re.compile(r"\b(darf|dürfen)\b|\bzu\s+tun\b", re.I)
 _TIME_RELATION = re.compile(r"\b((?i:vor|nach|seit|bis\s+zum|bis\s+zur))\s+(?:(?:dem|der|den|einem|einer)\s+"
                             r"(?:[a-zäöüß]+\s+)?)?([A-ZÄÖÜ][a-zäöüß]{2,}[\wäöüß-]*)")
 _AT_EVENT = re.compile(r"\b((?i:zur|zum|bei|beim|während|mit\s+der|mit\s+dem))\s+(?:(?:der|dem|ersten)\s+)?"
                        r"([A-ZÄÖÜ][a-zäöüß]{2,}[\wäöüß-]*)")
 # an event that did not take place: "ohne Abnahmeprüfung in Betrieb genommen", "keine Abnahme"
 _WITHOUT = re.compile(r"\b(?:ohne|kein\w*)\s+(?:\w+\s+){0,2}?$", re.I)
+# … or not yet: "Die Abnahme durch eine Fachkraft ist nachzuholen", "steht noch aus", "ist noch nicht erfolgt", "ist
+# für den 18.06. geplant" – such a sentence is no record of what happened at it or after it
+_PENDING = re.compile(r"\bnoch\s+nicht\b|\bsteht\b(?:\s+\S+){0,6}?\s+aus\b|\bausstehend\w*", re.I)
 # "früher" and "vorher" ask for the earlier state in a question about a state ("Wie viele Betten gab es früher?"),
 # not in one about what is to be done ("Muss die Abnahme vorher angemeldet werden?" – in advance); not "bisher"
 _EARLIER_Q = re.compile(r"\b(ursprünglich\w*|ehemal\w*|vormal\w*)\b", re.I)
@@ -1403,24 +1505,29 @@ _EARLIER = re.compile(r"\b(bisher\w*|bislang|früher\w*|ursprünglich\w*|vorher\
 _LATER = re.compile(r"\b(künftig\w*|zukünftig\w*|danach|anschließend\w*|nachher)\b", re.I)
 
 
-def _number_item(item: str) -> set[str]:
+def _number_item(item: str, *, ranges: bool) -> set[str]:
+    """"7" → {7}; "1-3" → {1, 2, 3} with ``ranges`` (after a plural: "Treppenräume 1-3"), else one designator
+    as written ("Raum 2-14", "DIN EN 13501-2", "DIN 14095:2007-05")."""
     nums = [int(n) for n in re.findall(r"\d+", item)]
-    if len(nums) == 2 and "-" in item and ":" not in item and nums[0] < nums[1] <= nums[0] + 50:
-        return {str(i) for i in range(nums[0], nums[1] + 1)}  # "Treppenräume 1-3"
-    return {str(nums[0])}  # "4102-2", "14095:2007-05": the norm
+    if ranges and len(nums) == 2 and "-" in item and ":" not in item and nums[0] < nums[1] <= nums[0] + 50:
+        return {str(i) for i in range(nums[0], nums[1] + 1)}
+    return {re.sub(r"\d+", lambda m: str(int(m.group())), re.sub(r"\s+", "", item))}
 
 
-def _designator_values(raw: str) -> set[str]:
-    """"C" → {c}; "A und B" → {a, b}; "A bis D", "3–5", "1-3" → the range; "4102-2" → {4102}."""
+def _designator_values(raw: str, *, ranges: bool = True) -> set[str]:
+    """"C" → {c}; "A und B" → {a, b}; with ``ranges`` "A bis D", "3–5", "1-3" → the range; "4102-2" →
+    {4102-2}. Without ``ranges`` (a noun in the singular: "Raum 2-14") a range is no list but one designator."""
     items = [x for x in re.split(r"\s*(?:,|/|\bund\b|\boder\b|\bsowie\b|\bbis\b|–)\s*", raw.strip()) if x]
     if not items:
         return set()
+    if not ranges and len(items) == 2 and re.search(r"\bbis\b|–", raw):
+        return {re.sub(r"\s+", "", raw)}
     letters = items[0][:1].isalpha()
     items = [x for x in items if x[:1].isalpha() == letters]
     values: set[str] = set()
     for item in items:
-        values |= {item[0].lower()} if letters else _number_item(item)
-    if len(items) == 2 and re.search(r"\bbis\b|–", raw):
+        values |= {item[0].lower()} if letters else _number_item(item, ranges=ranges)
+    if ranges and len(items) == 2 and re.search(r"\bbis\b|–", raw):
         if letters and items[0][0] < items[1][0]:
             values.update(chr(c).lower() for c in range(ord(items[0][0]), ord(items[1][0]) + 1))
         elif not letters:
@@ -1428,6 +1535,17 @@ def _designator_values(raw: str) -> set[str]:
             if a < b <= a + 50:
                 values.update(str(i) for i in range(a, b + 1))
     return values
+
+
+def _norm_noun(noun: str) -> bool:
+    return fold(noun) in _NORM_WORDS
+
+
+def _plural_of(noun: str, head: QueryTerm) -> bool:
+    """Is the text's noun the plural of the asked one ("Treppenräume" for "Treppenraum 2")? Only then is "1-3"
+    after it a range; "der Raum 2-14" is one room."""
+    word = fold(noun)
+    return word != head.word and word.startswith(head.word) and word[len(head.word):] in ("e", "en", "n", "er", "nen")
 
 
 def _ordinal_values(raw: str) -> set[str]:
@@ -1465,14 +1583,16 @@ def _without_floors(text: str) -> str:
     return _ALL_FLOORS.sub(" ", _FLOOR_AFTER.sub(" ", _FLOOR.sub(" ", text)))
 
 
-def _designations(text: str) -> list[tuple[str, set[str]]]:
-    """(noun, designators) of a text: "Wohnbereich C" → (Wohnbereich, {c}), "der zweite Rettungsweg" →
-    (Rettungsweg, {2}); floors are told apart by :func:`_floor_mentions`, dates and articles are no nouns."""
+def _designations(text: str) -> list[tuple[str, str | None, set[str]]]:
+    """(noun, designator as written, ordinal values) of a text: "Wohnbereich C" → (Wohnbereich, "C", ∅), "der
+    zweite Rettungsweg" → (Rettungsweg, None, {2}); floors are told apart by :func:`_floor_mentions`, dates and
+    articles are no nouns."""
     text = _without_floors(text)
-    out = [(m.group(1), _designator_values(m.group(2))) for m in _DESIGNATED.finditer(text)]
-    out += [(m.group(2), _ordinal_values(m.group(1))) for m in _ORDINAL_NOUN.finditer(text)
+    out: list[tuple[str, str | None, set[str]]] = [(m.group(1), m.group(2), set()) for m in _DESIGNATED.finditer(text)]
+    out += [(m.group(2), None, _ordinal_values(m.group(1))) for m in _ORDINAL_NOUN.finditer(text)
             if fold(m.group(2)) not in STOPWORDS]
-    return [(noun, values) for noun, values in out if values and fold(noun) not in _NO_DESIGNATOR_HEADS]
+    return [(noun, raw, values) for noun, raw, values in out
+            if (raw or values) and fold(noun) not in _NO_DESIGNATOR_HEADS]
 
 
 def _ordinal_words(raw: str) -> frozenset[str]:
@@ -1485,21 +1605,26 @@ _LIST_WORDS = frozenset({"und", "oder", "bis", "sowie"})
 def question_qualifiers(question: str, terms: list[QueryTerm], project_terms: set[str]) -> list[Qualifier]:
     """The qualifiers of the asked thing (see :class:`Qualifier`); project names ("Hafenkante 7"), dates and
     several values at once ("Wohnbereiche A bis C", "im 3. und 4. OG") are none."""
-    text = strip_identifiers(question)
+    text = _strip_identifiers_but_norms(question)
     by_word = {t.word: t for t in terms}
     out: list[Qualifier] = []
     floors: dict[str, list[tuple[set[str], frozenset[str]]]] = {}
+    # the floor noun belongs to the qualifier ("im dritten Obergeschoss"), it is no topic of its own: "Was wünscht der
+    # Mieter im 3. OG?" is not answered by any sentence about "allen Geschossen"
     for m in _FLOOR.finditer(text):
-        floors.setdefault(_floor_group(m.group(2)), []).append((_ordinal_values(m.group(1)), _ordinal_words(m.group(1))))
+        floors.setdefault(_floor_group(m.group(2)), []).append(
+            (_ordinal_values(m.group(1)), _ordinal_words(m.group(1)) | {stem(fold(m.group(2)))}))
     for m in _FLOOR_AFTER.finditer(text):
-        floors.setdefault(_floor_group(m.group(1)), []).append(({str(int(m.group(2)))}, frozenset({m.group(2)})))
+        floors.setdefault(_floor_group(m.group(1)), []).append(
+            ({str(int(m.group(2)))}, frozenset({m.group(2), stem(fold(m.group(1)))})))
     for group, found in sorted(floors.items()):
         numbers = set().union(*(values for values, _ in found))
         if len(numbers) == 1:
             out.append(Qualifier("floor", next(iter(numbers)), group=group,
                                  words=frozenset().union(*(words for _, words in found))))
     rest = _without_floors(text)
-    designated = [(m.group(1), _designator_values(m.group(2)), frozenset(re.findall(r"\d+", m.group(2))))
+    designated = [(m.group(1), _designator_values(m.group(2), ranges=not _norm_noun(m.group(1))),
+                   frozenset(re.findall(r"\d+", m.group(2))))
                   for m in _DESIGNATED.finditer(rest)]  # "Treppenraum 2" is answered by "Treppenräume 1-3"
     designated += [(m.group(2), _ordinal_values(m.group(1)), _ordinal_words(m.group(1)))
                    for m in _ORDINAL_NOUN.finditer(rest)]  # "der erste Rettungsweg": "erste" is no topic
@@ -1512,18 +1637,27 @@ def question_qualifiers(question: str, terms: list[QueryTerm], project_terms: se
             continue  # a year ("die WM 2014" is no designator, "DIN 1946" is)
         out.append(Qualifier("designator", value, head=head, words=words_))
     taken: set[int] = set()
+    deadline = bool(_NOT_DONE.search(text) or _DEADLINE_Q.search(text))  # "Was muss vor der Abnahme vorliegen?"
     for m in _TIME_RELATION.finditer(text):
         event = by_word.get(fold(m.group(2)))
         if event is None or not _EVENT_NOUN.search(event.word):
             continue
         before = fold(m.group(1)).startswith(("vor", "bis"))
-        relation = ("bis" if _MILESTONE.search(event.word) else "vor") if before else "nach"
+        if before:
+            relation = "bis" if deadline and _MILESTONE.search(event.word) else "vor"
+        else:  # "Was ist nach der Abnahme zu tun?" is not answered by the record of the Abnahme
+            relation = "ab" if deadline or _MILESTONE.search(event.word) else "nach"
         out.append(Qualifier("time", relation, head=event))
         taken.add(m.start(2))
-    for m in _AT_EVENT.finditer(text):  # "bei der Abnahme": what was found or due on that occasion
+    for m in _AT_EVENT.finditer(text):  # "bei der Abnahme": what was found on that occasion, or is due by it
         event = by_word.get(fold(m.group(2)))
         if event is not None and m.start(2) not in taken and _MILESTONE.search(event.word):
-            out.append(Qualifier("time", "zu", head=event))
+            out.append(Qualifier("time", "bis" if deadline else "zu", head=event))
+    dates = {d for d, _ in _dates_in(question) if d[0] is not None}
+    if len(dates) == 1:  # "Was ist am 13.12.2024 abgenommen worden?" – the day, not any date of the Abnahme
+        (day,) = dates
+        out.append(Qualifier("date", "%04d-%02d-%02d" % day, words=frozenset(
+            stem(fold(w)) for m in _DATE_IN_TEXT.finditer(question) for w in re.findall(r"\w+", m.group(0)))))
     if not any(q.kind == "time" for q in out):
         earlier = list(_EARLIER_Q.finditer(text))
         if not (_FUTURE_Q.search(text) or _NOT_DONE.search(text)):
@@ -1533,20 +1667,51 @@ def question_qualifiers(question: str, terms: list[QueryTerm], project_terms: se
     return out
 
 
+def _strip_identifiers_but_norms(text: str) -> str:
+    """:func:`strip_identifiers`, but a norm keeps its number ("DIN EN 13501-2" is no reference code)."""
+    parts, last = [], 0
+    for m in _NORM_REF.finditer(text):
+        parts += [strip_identifiers(text[last:m.start()]), m.group(0)]
+        last = m.end()
+    return "".join(parts + [strip_identifiers(text[last:])])
+
+
 def _designated(head: QueryTerm, text: str) -> set[str]:
     """Designators the text gives the head noun ("Die Abnahme … im Wohnbereich B" → {"b"}, "ein zweiter
-    baulicher Rettungsweg" → {"2"})."""
+    baulicher Rettungsweg" → {"2"}, "die Treppenräume 1-3" → {"1", "2", "3"}, "der Raum 2-14" → {"2-14"})."""
     out: set[str] = set()
-    for noun, values in _designations(text):
+    for noun, raw, values in _designations(text):
         if query_term_credit(head, text_terms(noun)) > 0:
-            out |= values
+            out |= values if raw is None else _designator_values(
+                raw, ranges=_plural_of(noun, head) and not _norm_noun(noun))
     return out
+
+
+def _designator_hit(ql: Qualifier, named: set[str]) -> bool:
+    """The asked designator among the named ones; a norm named as a whole ("DIN 4102") is met by its parts and
+    editions ("DIN 4102-2", "DIN 14095:2007-05"), a part never by another part ("13501-2" ≠ "13501-1")."""
+    if ql.value in named:
+        return True
+    return ql.head is not None and _norm_noun(ql.head.word) and any(
+        v.startswith((ql.value + "-", ql.value + ":")) for v in named)
+
+
+def _other_instance(head: QueryTerm, text: str) -> bool:
+    """Does the text name the head noun as another one of its kind ("Nächste Besprechung: 04.12.2024",
+    "die vorige Prüfung")? Such a sentence says nothing about the one its source is numbered as."""
+    toks = list(re.finditer(r"[^\W\d_][\w-]*", text))
+    for i, m in enumerate(toks):
+        if query_term_credit(head, text_terms(m.group(0))) > 0 and any(
+                _OTHER_INSTANCE.match(fold(p.group(0))) for p in toks[max(0, i - 2):i]):
+            return True
+    return False
 
 
 def _time_relations(event: QueryTerm, text: str) -> set[str]:
     """How a text relates to the event: "vor" ("vor dem Umbau"), "bis" ("bis zur Abnahme"), "nach" ("nach
     dem Umbau", "seit dem Umbau"), "zu" ("zur Abnahme", "bei der Abnahme"), "event" (it names the event
-    itself: "Umbau … auf 120 Gastbetten", "Abnahmeprotokoll") or "absent" ("ohne Abnahmeprüfung")."""
+    itself: "Umbau … auf 120 Gastbetten", "Abnahmeprotokoll"), "absent" ("ohne Abnahmeprüfung") or "pending"
+    (still to come: "Die Abnahme ist nachzuholen", "steht noch aus")."""
     out = set()
     related = set()
     for rx in (_TIME_RELATION, _AT_EVENT):
@@ -1558,7 +1723,15 @@ def _time_relations(event: QueryTerm, text: str) -> set[str]:
                 related.add(m.start(2))
     for m in re.finditer(r"[^\W\d_][\w-]*", text):
         if m.start() not in related and query_term_credit(event, text_terms(m.group(0))) > 0:
-            out.add("absent" if _WITHOUT.search(text[max(0, m.start() - 40):m.start()]) else "event")
+            start = max([0] + [b.end() for b in re.finditer(r"[;,]", text[:m.start()])])
+            end = min([len(text)] + [m.end() + b.start() for b in re.finditer(r"[;,]", text[m.end():])])
+            clause = text[start:end]
+            if _WITHOUT.search(text[max(0, m.start() - 40):m.start()]):
+                out.add("absent")
+            elif _NOT_DONE.search(clause) or _PENDING.search(clause):
+                out.add("pending")
+            else:
+                out.add("event")
     return out
 
 
@@ -1567,27 +1740,45 @@ def qualifier_matched(ql: Qualifier, u: "Unit") -> bool:
     section heading or source? "Die Abnahme der Feststellanlage im Wohnbereich B …" does not answer a
     question about Wohnbereich C, "T30-RS im 2. Obergeschoss" none about the 3. Obergeschoss (but "in allen
     Geschossen" does), "Umbau … auf 120 Gastbetten" none about the time before the Umbau, "der zweite
-    Rettungsweg" none about the first; what is due "zur Abnahme" is due "bis zur Abnahme"."""
+    Rettungsweg" none about the first, "Nächste Besprechung: …" in protocol Nr. 2 none about the second
+    meeting; what is due "zur Abnahme" is due "bis zur Abnahme", what is still to be done ("Die Abnahme ist
+    nachzuholen") was not found at it."""
     levels = (f"{u.label or ''} {u.text}", f"{u.context} {u.source.header}")
+    if ql.kind == "date":
+        asked = tuple(int(x) for x in ql.value.split("-"))
+        for text in levels:
+            named = _dates_in(text)
+            if named:
+                return any(d == asked or (d[0] is None and d[1:] == asked[1:]) for d, _ in named)
+        return u.source.date is not None and (u.source.date.year, u.source.date.month, u.source.date.day) == asked
     if ql.kind == "time":
         whole = " ".join(levels)
-        relations = _time_relations(ql.head, whole) if ql.head is not None else set()
-        if ql.value == "bis":
+        own = _time_relations(ql.head, levels[0]) if ql.head is not None else set()
+        around = _time_relations(ql.head, levels[1]) if ql.head is not None else set()
+        relations = own | around
+        if ql.value == "bis":  # a deadline: due before it, by it or for it
             return bool(relations & {"vor", "bis", "zu"})
-        if ql.value == "zu":  # "bei der Abnahme": at it, due by it, or in its record ("Abnahmeprotokoll")
-            return bool(relations & {"vor", "bis", "zu", "event"})
         if ql.value == "vor":
             return bool(relations & {"vor", "bis"}) or bool(_EARLIER.search(whole))
+        at = "zu" if ql.value == "zu" else "nach"
+        if own & {"absent", "pending"} and at not in own:
+            return False  # "Die Abnahme durch eine Fachkraft ist nachzuholen": nothing found at it or after it
+        if ql.value == "zu":  # "bei der Abnahme": at it, or in its record ("Abnahmeprotokoll")
+            return bool(relations & {"zu", "event"})
+        if ql.value == "ab":  # an obligation after it: said so
+            return "nach" in relations or bool(_LATER.search(whole))
         return bool(relations & {"nach", "event"}) or bool(_LATER.search(whole))
-    for text in levels:
+    for i, text in enumerate(levels):
         if ql.kind == "floor":
             named = {number for group, number in _floor_mentions(text) if group == ql.group}
             if named:
                 return ql.value in named or "*" in named
         else:
+            if i == 0 and _other_instance(ql.head, text):
+                return False
             named = _designated(ql.head, text)
             if named:
-                return ql.value in named
+                return _designator_hit(ql, named)
     return False
 
 
@@ -1680,6 +1871,48 @@ def known_names(sources: list[Source], units: dict[int, list[Unit]]) -> frozense
     return frozenset(n for n in names if len(n) >= 3)
 
 
+_ROLE_FORMS = frozenset({"", "e", "en", "n", "s", "es", "er", "ern", "in", "innen"})
+
+
+def _party_terms(role: QueryTerm, terms: frozenset[str]) -> frozenset[str]:
+    """A text's terms without the compounds that only start with a role word: a "Feuerwehraufzug", a
+    "Feuerwehrplan" or the "Architektenkammer" are no mention of that party ("Feuerwehren", "Prüfingenieurin" are)."""
+    return frozenset(d for d in terms if not d.startswith(role.term) or d[len(role.term):] in _ROLE_FORMS)
+
+
+# what may stand before the party that a sentence starts with ("Die Feuerwehr fordert …", "Frau Wendehals hat …"),
+# and what makes it the source of a sentence ("laut Feuerwehr", "nach Auffassung der Prüfingenieurin")
+_SUBJECT_LEAD = frozenset("die der das unsere unser ihre ihr frau herr herrn".split())
+_SPEAKER_BEFORE = re.compile(r"\b(laut|lt\.|gemäß|seitens|nach\s+(?:auffassung|ansicht|angaben|aussage|einschätzung|"
+                             r"meinung|mitteilung))\s+(?:der|des|dem|unserer|unseres)?\s*$", re.I)
+
+
+def _speaks(role: QueryTerm, text: str) -> bool:
+    """Does a sentence name the party as the one who speaks or decides – as the subject it starts with ("Die
+    Feuerwehr fordert …") or as its source ("laut Feuerwehr …")? Not as an object or an agent ("mit der
+    Brandschutzdienststelle abzustimmen", "wird dort von der Feuerwehr übernommen"): in a question about what a
+    party said, a sentence it did not write must say that it is the party's word."""
+    toks = list(re.finditer(r"[^\W\d_][\w.-]*", text))
+    for i, m in enumerate(toks):
+        if not query_term_in(role, _party_terms(role, text_terms(m.group(0)))):
+            continue
+        lead = [fold(t.group(0)) for t in toks[:i]]
+        if all(w in _SUBJECT_LEAD for w in lead) and i + 1 < len(toks) and toks[i + 1].group(0)[:1].islower():
+            return True
+        if _SPEAKER_BEFORE.search(text[:m.start()]):
+            return True
+    return False
+
+
+def _names_document(t: QueryTerm, src: Source) -> bool:
+    """Does the source's own name call it what the question asks for – the same or a more specific word ("Wer
+    hat das Protokoll erstellt?" – "Besprechungsprotokoll Nr. 7.txt"), not a more general one ("Wer hat das
+    Abnahmeprotokoll erstellt?" – a Besprechungsprotokoll is no Abnahmeprotokoll)?"""
+    terms = text_terms(src.name.rsplit("/", 1)[-1] if src.kind == "document" else src.name)
+    return word_credit(t.term, terms, reverse=False, word=t.word) >= 1.0 or any(
+        all(word_credit(p, terms, reverse=False) >= 1.0 for p in alt) for alt in t.syns)
+
+
 def _authored(role: QueryTerm, src: Source, aliases: dict[str, set[str]]) -> bool:
     """Was the source written by the role or person ('Mail von Renate Albers' for the Bauherr,
     'Stellungnahme Brandschutzdienststelle' for the Feuerwehr, a Prüfbericht for the Prüfingenieur,
@@ -1692,7 +1925,7 @@ def _authored(role: QueryTerm, src: Source, aliases: dict[str, set[str]]) -> boo
         for r, names in aliases.items():
             if (r.startswith(key) or key.startswith(r)) and names & sender:
                 return True
-    name_terms = text_terms(f"{src.name} {src.sender or ''}")
+    name_terms = _party_terms(role, text_terms(f"{src.name} {src.sender or ''}"))  # not "Feuerwehraufzug_Steuerung.pdf"
     if query_term_in(role, name_terms):
         return True
     folded = fold(src.name)
@@ -1803,8 +2036,10 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
     # parties and people named in the question must be the speaker or be named in the sentence:
     # "Hat die Feuerwehr … zugestimmt?" is not answered by the Prüfingenieur's consent
     essential = {t.term for t in q.terms if t.noun and t.word in names}
+    parties: set[str] = set()
     if q.decision or q.authorship:
-        essential |= {t.term for t in q.roles}
+        parties = {t.term for t in q.roles}
+        essential |= parties
     if q.types & {"date", "agent", "name"} or q.manner:
         # "Wann wird X abgenommen?" – the date of the Abnahme; "Wer prüft X?" – the one who checks;
         # "Wie werden die Gäste alarmiert?" – the way of alarming (a communication verb is the sender's part)
@@ -1839,12 +2074,16 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
             inline = False
             own = f"{u.label or ''} {u.text}"
             for t in q.terms:
-                if t.term in findings:  # a finding by name – not the "Feststellanlage" that shares the verb's stem
-                    c = 1.0 if _FINDING_NAMED.search(own) else 0.0
+                if t.term in findings:  # a finding by name – not the "Feststellanlage" that shares the verb's stem,
+                    c = 1.0 if _FINDING_NAMED.search(own) and not _HYPOTHETICAL.search(u.text) else 0.0  # "Etwaige …"
                 elif q.author and t.noun:  # "Wer hat den Bericht geschrieben?" asks for a document called so,
                     c = term_credit(t, _noun_terms(own), own)  # not for "… berichten wir über …"
+                elif t.term in parties:  # "Was bemängelt die Feuerwehr?" – the party, not a "Feuerwehraufzug",
+                    c = term_credit(t, _party_terms(t, u.terms), own) if _speaks(t, u.text) else 0.0  # the speaker
                 else:
                     c = term_credit(t, u.terms, own)
+                if 0 < c < 1.0 and any(t.term != p and t.term.startswith(p) for p in parties):
+                    c = 0.0  # "Feuerwehrpläne" are not half named by the party's own word ("Feuerwehr-Dreikant")
                 if t.term in authored:
                     c = 1.0  # "Was hat der Bauherr geschrieben?": the Bauherr's own mail
                 elif source_terms.get(t.term) == s.kind:
@@ -1865,6 +2104,11 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
                         credit[t.term] = CONTEXT_CREDIT
                 elif q.decision and not t.noun and _DECISION_Q.search(t.word) and _DECISION_STATED.search(u.text):
                     credit[t.term] = 1.0  # "zugestimmt?" is answered by "abgelehnt" as well
+                elif q.author and t.noun and fold(u.label or "") in _PERSON_FIELDS:
+                    # "Aufgestellt: …" is the author of its own document, whatever section it stands in: "Wer hat das
+                    # Abnahmeprotokoll erstellt?" is not answered by the author of a protocol mentioning one
+                    if _names_document(t, s):
+                        credit[t.term] = CONTEXT_CREDIT
                 elif query_term_in(t, u.ctx_terms):
                     credit[t.term] = CONTEXT_CREDIT
             # a finding by name: the sentence, its label or its section calls it one ("Mangel:", "Feststellungen")
@@ -1914,6 +2158,25 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
     return out
 
 
+# a date written out: "13.12.2024", "13.12.24", "13.12." (no year), "13. Dezember 2024"
+_DATE_IN_TEXT = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2}(?!\d))?|(?<![\d.])(\d{1,2})\.\s*(" + _MONTHS
+                           + r")(?:\s+(\d{4}))?\b")
+
+
+def _dates_in(text: str) -> list[tuple[tuple[int | None, int, int], str]]:
+    """((year or None, month, day), as written) of the dates in a text."""
+    out = []
+    for m in _DATE_IN_TEXT.finditer(text):
+        if m.group(1):
+            day, month, year = int(m.group(1)), int(m.group(2)), m.group(3)
+        else:
+            day, month, year = int(m.group(4)), _MONTH_NO[fold(m.group(5))], m.group(6)
+        y = None if not year else int(year) + (2000 if len(year) == 2 else 0)
+        if 1 <= day <= 31 and 1 <= month <= 12:
+            out.append(((y, month, day), m.group(0)))
+    return out
+
+
 def _question_dates(text: str) -> list[date]:
     out = []
     for m in re.finditer(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b", text):
@@ -1954,6 +2217,9 @@ def _answerable(q: Question, sc: Scored, attr_hit: bool) -> bool:
         return False
     if (q.completion or q.past_event) and _NOT_DONE.search(sc.unit.text) and sc.unit.kind != "signature":
         return False  # an obligation or a plan does not say that it was done
+    if q.request and sc.unit.kind != "request" and not (_REQUESTED.search(sc.unit.text)
+                                                         or _DEMAND.search(sc.unit.text)):
+        return False  # "Was wünscht der Bauherr?" – not what else he wrote ("Der Mietvertrag ist unterschrieben.")
     if not q.terms:  # "Wie hoch ist das Wohnhochhaus?" – a value of the project itself, not of its sensors
         return bool(q.attrs) and attr_hit and bool(q.types) and (
             not q.project_words or any(query_term_in(t, sc.unit.terms) for t in q.project_words))
@@ -2168,19 +2434,22 @@ def answer_from_sources(question: str, raw_sources: list[tuple[int, str, str]],
     several_projects = len({s.project for s in sources}) > 1
     with_project = several_projects or q.project_question
     pool = [s for s in sources if not q.projects or s.project in q.projects]
-    if q.summary and not q.terms:  # "Fasse zusammen, was die Feuerwehr will" is about the Feuerwehr's statement
+    # the shortcuts below ignore what singles out the asked thing: a question naming a floor, a designator or a time
+    # ("Was ist der letzte Stand im 3. OG?") takes the sentences that name it
+    if q.summary and not q.terms and not q.qualifiers:  # "Fasse zusammen, was die Feuerwehr will": her statement
         groups = _summary(q, sources, units)
         if groups:
             return " ".join(_phrase(g, with_project=with_project, with_date=False) for g in groups)
         return NOT_FOUND
-    if q.authorship and q.temporal and not q.types and not [t for t in q.terms if t not in q.roles]:
+    if q.authorship and q.temporal and not q.types and not q.qualifiers \
+            and not [t for t in q.terms if t not in q.roles]:
         aliases = role_aliases(units)  # "Was gibt es Neues vom Bauherrn?": the newest source by them
         own = [s for s in pool if any(_authored(t, s, aliases) for t in q.roles)]
         latest = _latest_state(own, units)
         if latest:
             return " ".join(_phrase(g, with_project=with_project, with_date=True) for g in _groups(latest))
     if not q.terms and not q.attrs:
-        if q.temporal and not q.types:
+        if q.temporal and not q.types and not q.qualifiers:
             latest = _latest_state(pool, units)
             if latest:
                 return " ".join(_phrase(g, with_project=with_project, with_date=True) for g in _groups(latest))
