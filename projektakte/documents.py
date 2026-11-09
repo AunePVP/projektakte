@@ -195,6 +195,33 @@ def store_document(conn: sqlite3.Connection, *, path: str, rel_path: str, projec
 
 
 # -- derived data that follows the project register ------------------------------------------------
+def further_folders(conn: sqlite3.Connection, number: str | None = None) -> dict[str, list[str]]:
+    """The further folders of the projects (all, or those of ``number``) as stored, in their order:
+    project number → folders. The primary folder is ``projects.path``."""
+    sql, args = "SELECT project, path FROM project_folders", ()
+    if number is not None:
+        sql, args = sql + " WHERE project = ?", (number,)
+    out: dict[str, list[str]] = {}
+    for project, path in conn.execute(sql + " ORDER BY project, position", args):
+        out.setdefault(project, []).append(path)
+    return out
+
+
+def folder_prefix(primary: Path, folder: Path) -> str:
+    """How the files of a further folder of a project are named inside the project (``rel_path``): the
+    folder's path from the folder that holds the primary folder (111301_Heisse Bemessung/Bericht.pdf
+    next to 111301_Fortschreibung …) or, for a folder elsewhere, from the nearest folder holding both
+    (1073_Y/1071_X/107100_A/…). The files of the primary folder keep their path inside it, so a project
+    of one folder is named as before. Empty for the primary folder."""
+    if folder == primary:
+        return ""
+    try:
+        base = Path(os.path.commonpath([primary.parent, folder]))
+        return folder.relative_to(base).as_posix()
+    except ValueError:  # one relative, one absolute path
+        return folder.name
+
+
 def _delete_documents(conn: sqlite3.Connection, where: str, args: tuple = ()) -> int:
     ids = [r[0] for r in conn.execute(f"SELECT id FROM documents WHERE {where}", args)]
     for doc_id in ids:
@@ -282,6 +309,15 @@ def printable(text: str) -> str:
     return "".join("\ufffd" if "\ud800" <= c <= "\udfff" else c for c in text)
 
 
+def is_folder(path: Path) -> bool:
+    """Whether ``path`` is a folder – False also if that cannot be checked (a folder above it denies
+    access: ``Path.is_dir`` raises PermissionError there instead of answering)."""
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def real_folder(stored: Path | str) -> Path | None:
     """The real path of a folder whose path is stored with � for bytes that are no valid UTF-8
     (:func:`printable`): every component holding � is looked up among the entries of its parent
@@ -296,7 +332,7 @@ def real_folder(stored: Path | str) -> Path | None:
         found: list[Path] = []
         for folder in candidates:
             if "\ufffd" not in part:
-                if (folder / part).is_dir():
+                if is_folder(folder / part):
                     found.append(folder / part)
                 continue
             try:
@@ -383,22 +419,46 @@ def _read_inside(f: Path, boundary: Path) -> bytes:
 class _ProjectState:
     """Documents of one project known to the index, by path and by path inside the project."""
 
-    def __init__(self, conn: sqlite3.Connection, number: str):
+    def __init__(self, conn: sqlite3.Connection, number: str, folders: list[Path]):
         self.by_path = {r["path"]: dict(r) for r in conn.execute(
             "SELECT id, path, rel_path, size, mtime, sha256, incomplete, extract_profile, retry_after "
             "FROM documents WHERE project = ? AND mail_id IS NULL", (number,))}
         self.by_rel = {r["rel_path"]: r for r in self.by_path.values()}
+        self.folders = folders  # the project's current folders, as stored
+        self._gone: dict[str, list[dict]] | None = None  # file name → documents outside these folders
 
-    def relocate(self, conn: sqlite3.Connection, key: str, rel: str, root: Path) -> dict | None:
+    def _inside(self, path: str) -> bool:
+        return any(Path(path).is_relative_to(f) for f in self.folders)
+
+    def _vanished(self, inner: str) -> dict | None:
+        """The one document outside the project's current folders whose path ends with ``inner`` (a
+        file's path inside its folder) – the file of a folder of the project that was renamed or moved
+        (a further folder carries its name in ``rel_path``, so that alone would not find it)."""
+        if self._gone is None:
+            self._gone = {}
+            for r in self.by_path.values():
+                if not self._inside(r["path"]):
+                    self._gone.setdefault(Path(r["path"]).name, []).append(r)
+        tail = os.sep + inner
+        hits = [r for r in self._gone.get(Path(inner).name, ()) if r["path"].endswith(tail)]
+        return hits[0] if len(hits) == 1 else None
+
+    def relocate(self, conn: sqlite3.Connection, key: str, rel: str, inner: str) -> dict | None:
         """A known file of this project under another folder path (folder renamed or moved, number
-        kept): move the document to the new path instead of extracting and embedding it again."""
+        kept): move the document to the new path instead of extracting and embedding it again – found
+        by its name inside the project (``rel``) or, if that fails, by its path inside its folder
+        (``inner``). A file in one of the project's current folders is another file, never moved
+        (identical files in two folders of a project are two documents). Whether the content is the
+        same is checked afterwards, as for every file."""
         old = self.by_rel.get(rel)
-        if old is None or old["path"] == key or Path(old["path"]).is_relative_to(root):
-            return None
-        if conn.execute("SELECT 1 FROM documents WHERE path = ?", (key,)).fetchone():
+        if old is None or old["path"] == key or self._inside(old["path"]):
+            old = self._vanished(inner)
+        if old is None or conn.execute("SELECT 1 FROM documents WHERE path = ?", (key,)).fetchone():
             return None
         conn.execute("UPDATE documents SET path = ? WHERE id = ?", (key, old["id"]))
         del self.by_path[old["path"]]
+        if self._gone is not None:
+            self._gone[Path(old["path"]).name].remove(old)
         old["path"] = key
         self.by_path[key] = old
         return old
@@ -406,98 +466,53 @@ class _ProjectState:
 
 def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *,
                             projects_dir: Path | str | None = None) -> dict:
-    """Bring the documents of one project folder up to date. Every file is read and extracted
-    without holding the write lock, then written and committed on its own.
+    """Bring the documents of one project up to date – all its folders: the primary folder
+    (``project["path"]``) and the further folders with the same number (``project["further"]``, read
+    from the register if the key is missing). Every file is read and extracted without holding the
+    write lock, then written and committed on its own. Documents keep their own absolute paths; inside
+    the project, files of a further folder are named with that folder (:func:`folder_prefix`).
 
-    The register stores folder names that are no valid UTF-8 with � (:func:`printable`); such a
-    project folder is read under its real path (:func:`real_folder`), its documents are stored under
-    the printable one. Files whose name (or a folder name inside the project) is no valid UTF-8 cannot
-    be stored: they are skipped before they are read – counted in ``skipped`` and ``bad_names``,
-    named in ``bad_name_examples`` and warned about once."""
+    A folder that is not reachable now (vanished since the register was read, share gone) keeps its
+    documents unchanged, as does a folder inside that could not be listed; files of folders that no
+    longer belong to the project leave the index like vanished files. The register stores folder names
+    that are no valid UTF-8 with � (:func:`printable`); such a folder is read under its real path
+    (:func:`real_folder`), its documents are stored under the printable one. Files whose name (or a
+    folder name inside the project) is no valid UTF-8 cannot be stored: they are skipped before they
+    are read – counted in ``skipped`` and ``bad_names``, named in ``bad_name_examples`` and warned
+    about once."""
     stored_root = Path(project["path"])
+    further = project.get("further")
+    if further is None:
+        further = further_folders(conn, project["number"]).get(project["number"], [])
+    stored_folders = list(dict.fromkeys([stored_root, *map(Path, further)]))
     stats = {"new": 0, "changed": 0, "unchanged": 0, "reprocessed": 0, "moved": 0, "removed": 0,
              "skipped": 0, "errors": 0, "bad_names": 0}
-    root = real_folder(stored_root)
-    if root is None or not root.is_dir():  # vanished since the register was read, or share not reachable
-        log.warning("Projektordner nicht erreichbar, Dokumente bleiben unverändert: %s%s", stored_root,
-                    f" – {ENCODING_HINT}" if "\ufffd" in str(stored_root) else "")
-        return stats
-    boundary = Path(projects_dir).resolve() if projects_dir else root.resolve()
     profile = extraction_profile(llm)
     now = _sqlite_time(_utcnow())
-    state = _ProjectState(conn, project["number"])
+    state = _ProjectState(conn, project["number"], stored_folders)
     seen: set[str] = set()
-    walk_errors: list[OSError] = []
     bad: list[str] = []
-    if is_inside(root, boundary):
-        files = _project_files(root, boundary, walk_errors)
-    else:
-        warn_once(log, "Projektordner liegt außerhalb von PROJECTS_DIR und wird nicht gelesen: %s",
-                  printable(str(root)))
-        files = ()
-    for f in files:
-        if f.suffix.lower() not in SUPPORTED_EXT:
-            stats["skipped"] += 1
+    unlisted: list[Path] = []  # stored paths whose content is unknown this pass – their documents stay
+    reachable = 0
+    for stored in stored_folders:
+        root = real_folder(stored)
+        if root is None or not is_folder(root):  # vanished, share not reachable, or a folder above unreadable
+            log.warning("Projektordner nicht erreichbar, Dokumente bleiben unverändert: %s%s", stored,
+                        f" – {ENCODING_HINT}" if "\ufffd" in str(stored) else "")
+            unlisted.append(stored)
             continue
-        rel_path = f.relative_to(root)
-        rel = str(rel_path)
-        if has_bad_encoding(rel):  # cannot be stored – never read it (nor extract it again at every pass)
-            bad.append(printable(rel))
-            stats["skipped"] += 1
-            continue
-        try:
-            st = f.stat()
-        except OSError:
-            continue
-        key = str(stored_root / rel_path)
-        seen.add(key)
-        row = state.by_path.get(key)
-        if row is None and (row := state.relocate(conn, key, rel, stored_root)) is not None:
-            conn.commit()
-            stats["moved"] += 1
-        due = row is not None and reprocess_due(row, profile, now, extract_worker.limits_for(f.name, llm))
-        if row and row["size"] == st.st_size and row["mtime"] == st.st_mtime and not due:
-            stats["unchanged"] += 1
-            continue
-        if st.st_size > MAX_FILE_BYTES:
-            stats["skipped"] += 1
-            continue
-        try:
-            data = _read_inside(f, boundary)
-        except OSError as exc:
-            log.warning("Datei nicht lesbar: %s (%s)", key, exc)
-            stats["errors"] += 1
-            continue
-        if row and not due and row["sha256"] == sha256(data):  # touched but not changed
-            conn.execute("UPDATE documents SET mtime=?, size=? WHERE id=?", (st.st_mtime, st.st_size, row["id"]))
-            conn.commit()
-            stats["unchanged"] += 1
-            continue
-        doc = prepare_document(rel_path=rel, data=data, mtime=st.st_mtime, llm=llm)  # no lock held
-        try:
-            write_document(conn, doc, path=key, project=project["number"], project_name=project["name"])
-        except UnicodeError as exc:  # text that cannot be stored – this file only, the pass goes on
-            conn.rollback()
-            warn_once(log, "Datei nicht gespeichert, ein Text ist kein gültiges UTF-8: %s (%s)", key, exc)
-            stats["errors"] += 1
-            continue
-        conn.commit()  # one short write transaction per file – the web UI never waits long
-        if row is None:
-            stats["new"] += 1
-        else:
-            stats["reprocessed" if due and row["sha256"] == doc.sha256 else "changed"] += 1
+        reachable += 1
+        _index_folder(conn, project, state, stats, llm=llm, stored=stored, root=root,
+                      prefix=folder_prefix(stored_root, stored),
+                      boundary=Path(projects_dir).resolve() if projects_dir else root.resolve(),
+                      profile=profile, now=now, seen=seen, bad=bad, unlisted=unlisted)
+    if not reachable:  # nothing could be read: change nothing
+        return stats
     if bad:
         stats["bad_names"] = len(bad)
-        stats["bad_name_examples"] = [f"{stored_root.name}/{name}" for name in bad[:MAX_BAD_EXAMPLES]]
+        stats["bad_name_examples"] = bad[:MAX_BAD_EXAMPLES]
         warn_once(log, "Projekt %s: %d Datei(en) nicht gelesen – der Name hat eine falsche Zeichenkodierung "
                        "(z. B. %s) – %s", project["number"], len(bad), ", ".join(bad[:3]), ENCODING_HINT)
-    unlisted = []  # folders that could not be listed, as stored (with � where the name is no UTF-8)
-    for e in walk_errors:
-        if getattr(e, "filename", None):
-            try:
-                unlisted.append(stored_root / Path(os.fsdecode(e.filename)).relative_to(root))
-            except ValueError:
-                unlisted.append(Path(printable(os.fsdecode(e.filename))))
     kept = 0
     for key, row in state.by_path.items():
         if key in seen:
@@ -516,6 +531,83 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
                   project["number"], kept, ENCODING_HINT)
     conn.commit()
     return stats
+
+
+def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState, stats: dict, *, llm,
+                  stored: Path, root: Path, prefix: str, boundary: Path, profile: str, now: str, seen: set[str],
+                  bad: list[str], unlisted: list[Path]) -> None:
+    """The files of one folder of a project (``stored`` as registered, ``root`` its real path): new and
+    changed ones are extracted and written, every file found is added to ``seen``; folders inside that
+    could not be listed are added to ``unlisted``, names in a wrong encoding to ``bad``."""
+    walk_errors: list[OSError] = []
+    if is_inside(root, boundary):
+        files = _project_files(root, boundary, walk_errors)
+    else:
+        warn_once(log, "Projektordner liegt außerhalb von PROJECTS_DIR und wird nicht gelesen: %s",
+                  printable(str(root)))
+        files = ()
+    for f in files:
+        if f.suffix.lower() not in SUPPORTED_EXT:
+            stats["skipped"] += 1
+            continue
+        rel_path = f.relative_to(root)
+        rel = str(rel_path)
+        if has_bad_encoding(rel):  # cannot be stored – never read it (nor extract it again at every pass)
+            bad.append(f"{stored.name}/{printable(rel)}")
+            stats["skipped"] += 1
+            continue
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        key = str(stored / rel_path)
+        shown = str(Path(prefix) / rel_path) if prefix else rel  # the name inside the project
+        seen.add(key)
+        row = state.by_path.get(key)
+        if row is None and (row := state.relocate(conn, key, shown, rel)) is not None:
+            conn.commit()
+            stats["moved"] += 1
+        if row is not None and row["rel_path"] != shown:  # the project's primary folder changed
+            conn.execute("UPDATE documents SET rel_path = ? WHERE id = ?", (shown, row["id"]))
+            conn.commit()
+            row["rel_path"] = shown
+        due = row is not None and reprocess_due(row, profile, now, extract_worker.limits_for(f.name, llm))
+        if row and row["size"] == st.st_size and row["mtime"] == st.st_mtime and not due:
+            stats["unchanged"] += 1
+            continue
+        if st.st_size > MAX_FILE_BYTES:
+            stats["skipped"] += 1
+            continue
+        try:
+            data = _read_inside(f, boundary)
+        except OSError as exc:
+            log.warning("Datei nicht lesbar: %s (%s)", key, exc)
+            stats["errors"] += 1
+            continue
+        if row and not due and row["sha256"] == sha256(data):  # touched but not changed
+            conn.execute("UPDATE documents SET mtime=?, size=? WHERE id=?", (st.st_mtime, st.st_size, row["id"]))
+            conn.commit()
+            stats["unchanged"] += 1
+            continue
+        doc = prepare_document(rel_path=shown, data=data, mtime=st.st_mtime, llm=llm)  # no lock held
+        try:
+            write_document(conn, doc, path=key, project=project["number"], project_name=project["name"])
+        except UnicodeError as exc:  # text that cannot be stored – this file only, the pass goes on
+            conn.rollback()
+            warn_once(log, "Datei nicht gespeichert, ein Text ist kein gültiges UTF-8: %s (%s)", key, exc)
+            stats["errors"] += 1
+            continue
+        conn.commit()  # one short write transaction per file – the web UI never waits long
+        if row is None:
+            stats["new"] += 1
+        else:
+            stats["reprocessed" if due and row["sha256"] == doc.sha256 else "changed"] += 1
+    for e in walk_errors:  # folders that could not be listed, as stored (with � where no UTF-8)
+        if getattr(e, "filename", None):
+            try:
+                unlisted.append(stored / Path(os.fsdecode(e.filename)).relative_to(root))
+            except ValueError:
+                unlisted.append(Path(printable(os.fsdecode(e.filename))))
 
 
 EML_TEXT_META = "eml_text_charset"  # meta: .eml documents with replacement characters were marked once
@@ -550,7 +642,9 @@ def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Pat
     conn.commit()
     mark_garbled_eml_documents(conn)
     projects = [dict(r) for r in conn.execute("SELECT number, name, path FROM projects WHERE active = 1")]
+    further = further_folders(conn)
     for p in projects:
+        p["further"] = further.get(p["number"], [])
         try:
             stats = index_project_documents(conn, p, llm=llm, projects_dir=projects_dir)
         except UnicodeError as exc:

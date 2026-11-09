@@ -543,3 +543,37 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   `ro` ein; Projektakte sieht nur einen Ordner. `propagation: rslave`, weil automount und Neustarts des
   Dateiservers die Freigabe nach dem Container einbinden.
 
+**Mehrere Ordner mit derselben Nummer**
+- *Zusammenführen statt „der erste gewinnt“*: Auf der echten Freigabe lagen 98 Auftragsnummern in mehreren
+  Ordnern – meist Teilordner außerhalb des Auftragsordners und Kopien desselben Auftrags. Deren Dateien
+  wurden bisher nie gelesen. Ein Projekt mit Hauptordner (`projects.path`, unverändert) und weiteren
+  Ordnern (`project_folders`) hält die Migration rein additiv.
+- *Formregel statt Wortliste*: Ob ein Ordner der Auftrag ist (`<Nr>_<Name>`, `<Nr> <Name>`), nur die Nummer
+  trägt oder ein Teilordner ist (`<Nr>-<ein Wort>`), entscheidet die Form, nicht eine Liste von
+  Büro-Wörtern – sie gilt für die Unterordner jedes Büros. Preis: ein Auftrag, der fälschlich
+  `284201-Zwischendecke` heißt, gilt als Teilordner und wird nach seinem Bauvorhaben benannt.
+- *Name aus dem Bauvorhaben nur, wo das passt*: Ein Projekt nur aus Teilordnern heißt nach dem Ordner
+  darüber, dessen Nummer die Projektnummer fortsetzt (`1193_…` über `119300-Bilder`) – aber nur, wenn die
+  Ablage ihre Projekte überwiegend `<Nr>_<Name>` nennt oder die Teilordner verschiedene Wörter tragen.
+  Ablagen, die Projekte `1234-Kita` nennen, behalten so ihre Namen (sonst hieße jedes Projekt nach seinem
+  Gruppenordner `1_Hochbau`). „Fortsetzen“ ist ein Strukturmerkmal: ein Jahresordner `2024` ist kein
+  Bauvorhaben von `2024-017`.
+- *Ordner in einem fremden Bauvorhaben nicht zusammenlegen*: `\d{6}` passt auf Daten (`230512_Begehung`).
+  Liegt ein Ordner in einem Bauvorhaben, dessen Nummer die Projektnummer nicht fortsetzt, während es
+  einen Ordner im passenden Bauvorhaben gibt, würde Zusammenlegen fremde Fotos und Schreiben in die
+  Antworten eines anderen Auftrags bringen – er wird ausgelassen und genannt. Ohne passenden Ordner
+  bleibt alles wie bisher (andere Ablagen, Kundenordner mit eigener Nummer); ein Jahresordner zwischen
+  Bauvorhaben und Auftrag stört nicht, weil irgendein Bauvorhaben darüber passen muss.
+- *`rel_path` des Hauptordners bleibt*: Dateien des Hauptordners behalten ihren Pfad, Dateien weiterer
+  Ordner bekommen den Ordnernamen davor – bestehende Projekte mit einem Ordner sehen aus wie vorher, und
+  ein Wechsel des Hauptordners schreibt nur Pfade um, liest nichts neu. Preis: Besteht ein Projekt nur
+  aus Teilordnern, steht vor den Dateien des Hauptordners kein Teilname (`Bilder.txt` neben
+  `119300-CAD/…`).
+- *Kein Aufschub für einen verschwundenen weiteren Ordner*: Seine Dateien verlassen den Index wie
+  verschwundene Dateien; ein nicht lesbarer Ordner darüber oder ein nicht eingebundenes Laufwerk ändern
+  dagegen nichts, und ganze Projekte haben weiter 24 h / 3 Läufe Aufschub.
+- *Gleiche Dateien in zwei Ordnern bleiben zwei Dokumente*: Erkennen und Zusammenlegen spart wenig und
+  macht Quellenangaben mehrdeutig.
+- *Trennzeichen aus der Position im Treffer*: keine neue benannte Gruppe im regulären Ausdruck, weil ein
+  eigenes `PROJECT_NUMBER_PATTERN` nur `num`/`name` reserviert.
+

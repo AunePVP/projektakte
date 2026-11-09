@@ -277,7 +277,23 @@ Projekte sind Ordner unter `PROJECTS_DIR`, deren Name mit einer Projektnummer be
 (`PROJECT_NUMBER_PATTERN`), direkt oder tiefer, z. B. in Jahres- oder Kundenordnern
 (`PROJECT_FOLDER_DEPTH`). Das Nummernschema der eigenen Ablage nennt `python -m projektakte.structure`;
 mit `PROJECT_NUMBER_PATTERN=auto` schlägt Projektakte es selbst vor, liest aber erst nach einer
-Bestätigung auf der Statusseite (deploy/README.md, „Projektordner vom Dateiserver“). Unterstützte Formate: TXT,
+Bestätigung auf der Statusseite (deploy/README.md, „Projektordner vom Dateiserver“).
+
+**Mehrere Ordner mit derselben Nummer** sind ein Projekt: der Auftragsordner, seine Teilordner außerhalb
+davon (`119300-Bilder` direkt im Bauvorhaben), Kopien (`111301_… -2013-11-04`) und verschachtelte Kopien
+eines Bauvorhabens werden zusammen gelesen. Hauptordner ist ein Ordner der Form `<Nr>_<Name>` oder
+`<Nr> <Name>`, sonst einer nur mit der Nummer, sonst ein Teilordner `<Nr>-<ein Wort>` – davon der am
+wenigsten tief liegende. Der Projektname kommt aus dem Hauptordner. Ein Projekt nur aus Teilordnern heißt
+nach seinem Bauvorhaben (dem Ordner darüber, dessen Nummer die Projektnummer fortsetzt: `1193_…` für
+`119300`), wenn die Projekte der Ablage überwiegend `<Nr>_<Name>` heißen oder die Teilordner verschiedene
+Wörter tragen; sonst bleibt das Wort der Name (Ablagen mit `1234-Kita`). Liegt ein Ordner mit der Nummer
+in einem Bauvorhaben mit anderer Nummer, während es den Auftrag in seinem eigenen Bauvorhaben gibt (meist
+ein Datum: `1827_…/Fotos/230512_Begehung` neben `2305_…/230512_Konzept`), wird er nicht mit dem Auftrag
+gelesen; das Protokoll nennt ihn. Dateien weiterer Ordner erscheinen mit dem Ordnernamen davor, die
+Projektseite zeigt alle Ordner. Wird ein weiterer Ordner nicht mehr gefunden, verlassen seine Dateien den
+Index wie verschwundene Dateien; ein umbenannter Ordner wird verschoben, nicht neu gelesen.
+
+Unterstützte Formate: TXT,
 Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften und Tabellen), EML.
 Textdateien in UTF-8, UTF-16/32 (auch Windows-„Unicode“) oder cp1252. Bilder (PNG/JPG/TIFF) und
 PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1` über das multimodale Modell gelesen, sonst
@@ -410,7 +426,7 @@ zugeordnet oder vorgeschlagen, 8 von 8 inhaltlichen Vorschlägen richtig.
 | `GET /api/status` | Indexierungsstand (Phase, letzter Lauf, Fehler) und Zahlen |
 | `POST /api/reindex` | Indexierung sofort anstoßen |
 | `GET /api/projects?q=` | Projektliste, optional gefiltert nach Nummer/Name |
-| `GET /api/projects/{nummer}` | ein Projekt |
+| `GET /api/projects/{nummer}` | ein Projekt, mit `folders` (alle Ordner der Nummer, Hauptordner zuerst) |
 | `GET /api/projects/{nummer}/documents` | Dokumente eines Projekts mit Status (ok/übersprungen/Fehler) |
 | `GET /api/documents/{id}` | ein Dokument mit seinen Abschnitten (Seite, Überschrift, Text) |
 | `GET /api/mails?project=&status=&q=` | Mails (neueste zuerst), filterbar |

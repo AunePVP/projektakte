@@ -253,11 +253,12 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
   muss jeder Unterordner mit der Auftragsnummer beginnen (`245700-Bilder`, `245700_Abgabe_FW`); ein
   Unterordner ohne Nummer ist ein Fehler. Die Namen der Unterordner sind frei.
 - **Ablage-Prüfung:** `scripts/ablage_pruefen.py` prüft die ganze Freigabe gegen diese Regel und
-  zeigt, was Projektakte davon liest (Aufträge nicht gefunden, Nummern doppelt, Dateien außerhalb
-  eines Auftrags = werden nicht gelesen, nicht gelesene Dateitypen) und jede Abweichung von der
-  Ablage-Regel als Hinweis. Nur Namen, nichts wird verändert. Aufruf im Repository:
-  `.venv/bin/python scripts/ablage_pruefen.py /mnt/projekt --csv abweichungen.csv`. Exit-Code 0 =
-  keine Fehler, 1 = Fehler gefunden. Die Regel steht im Block `REGELN` am Anfang des Skripts.
+  zeigt, was Projektakte davon liest (Aufträge nicht gefunden, Nummer passt nicht zum Bauvorhaben,
+  Dateien außerhalb eines Auftrags = werden nicht gelesen, nicht gelesene Dateitypen) und jede
+  Abweichung von der Ablage-Regel als Hinweis. Nur Namen, nichts wird verändert. Aufruf im Repository:
+  `.venv/bin/python scripts/ablage_pruefen.py /mnt/projekt --tiefe 6 --csv abweichungen.csv`
+  (`--tiefe` = `PROJECT_FOLDER_DEPTH`, Standard 4). Exit-Code 0 = keine Fehler, 1 = Fehler gefunden.
+  Die Regel steht im Block `REGELN` am Anfang des Skripts.
 - **Erster Lauf auf der echten Freigabe** (`ablage_pruefen.py`, Stand 9.11.2026, nur Zahlen):
   3.353 Aufträge gefunden; 274.622 Dateien in Aufträgen, davon 213.972 lesbar; 34.540 Dateien
   außerhalb von Aufträgen. Größte nicht gelesene Typen: `.dwg` 21.700, **`.odt` 14.150**, `.bak`
@@ -267,14 +268,23 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
   Aufträge in einem Zwischenordner im Bauvorhaben (`…/1015_PDF_…/101500_…`), doppelt verschachtelte
   Kopien (`1071_…/1071_…/107100_…`), mehrere Ordner mit derselben Auftragsnummer, Kategorie-Ordner
   direkt im Bauvorhaben. „Ausgang“ fehlt in fast allen älteren Aufträgen (kein Standard).
-- **Vorgeschlagene nächste Schritte** (noch nicht gebaut, Entscheidung offen):
-  1. `.odt`/`.ods` lesen (14.150 Dateien, vermutlich viele Konzepte und Schreiben).
-  2. Mehrere Ordner mit derselben Auftragsnummer zu einem Projekt zusammenführen (statt „der erste
-     gewinnt“) – erfasst die doppelten Nummern und die Kategorie-Ordner ohne Auftragsordner.
-  3. Danach `PROJECT_FOLDER_DEPTH=5`, damit Aufträge in Zwischenordnern gefunden werden.
-  4. Bauvorhaben-Ebene: Fragen über alle Aufträge eines Bauvorhabens, Dateien direkt im
-     Bauvorhaben-Ordner diesem zuordnen.
-  5. Später: Normen-/Regelwerksordner auf oberster Ebene (`@-Normen`, `ASR`, `AHO …`) als eigene
+- **Gebaut seit dem ersten Lauf:** Mehrere Ordner mit derselben Auftragsnummer sind ein Projekt
+  (README, „Mehrere Ordner mit derselben Nummer“) – die 98 doppelten Nummern und die Kategorie-Ordner
+  ohne Auftragsordner werden mitgelesen; die Ablage-Prüfung meldet sie nur noch als Hinweis. Ein Ordner
+  mit der Nummer eines Auftrags in einem fremden Bauvorhaben (ein Datum) wird nicht dazugelegt. Auf einem
+  Nachbau der Freigabe (erfundene Namen, gleiche Muster) findet `--tiefe 6` alle Aufträge; übrig bleiben
+  nur die Datumsordner („Nummer passt nicht zum Bauvorhaben“). Mit `--tiefe 4`: 14 Aufträge nicht
+  gefunden, `--tiefe 5`: 3.
+- **Vom Büro von Hand zu erledigen:** 6 Ordner, deren Name mit einem Datum oder einer vertippten Nummer
+  beginnt (Liste aus dem Prüflauf, Fehler „Nummer passt nicht zum Bauvorhaben“) – umbenennen, z. B.
+  Datum hinter den Namen oder Nummer korrigieren.
+- **Vorgeschlagene nächste Schritte:**
+  1. `ablage_pruefen.py … --tiefe 6` auf der echten Freigabe laufen lassen, die Liste „Nummer passt
+     nicht zum Bauvorhaben“ ansehen, dann in `projektakte.env` fest `PROJECT_NUMBER_PATTERN=\d{6}` und
+     `PROJECT_FOLDER_DEPTH=6` setzen (mit `auto` gilt die Ebene des bestätigten Vorschlags, nicht 6).
+  2. Bauvorhaben-Ebene (Entscheidung nach den Zahlen von Schritt 1): Fragen über alle Aufträge eines
+     Bauvorhabens, Dateien direkt im Bauvorhaben-Ordner diesem zuordnen.
+  3. Später: Normen-/Regelwerksordner auf oberster Ebene (`@-Normen`, `ASR`, `AHO …`) als eigene
      durchsuchbare Bibliothek.
 - **Offene Entscheidung:** Projekt = Auftrag (6-stellig, so wie die Ablage gegliedert ist) oder
   Bauvorhaben (4-stellig, alle Aufträge zusammen)? Bei 4-stellig würden Mails, die nur die 6-stellige
@@ -291,7 +301,8 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
    Ebene aus dem Vorschlag, „Bitte prüfen“-Hinweise). Bekannte Grenze: Aus Ordnernamen allein ist nicht
    jede Ablage eindeutig – in Prüfungen mit über 150 nachgebauten Ablagen war der Vorschlag meist
    richtig, sonst kein Vorschlag mit Begründung oder ein falscher, der an den Beispielen auffällt.
-   Deshalb immer die Beispiele ansehen, bevor man „Übernehmen“ drückt.
+   Deshalb immer die Beispiele ansehen, bevor man „Übernehmen“ drückt. Mehrere Ordner mit derselben
+   Nummer werden zusammen gelesen (Abschnitt 7a); offen ist nur noch die Bauvorhaben-Ebene.
 3. **Nicht gelesene Dateitypen:** `.doc`, `.xls`/`.xlsx`, `.msg` (Outlook), `.pptx`, `.odt`, `.dwg`.
    Der Strukturbefehl zeigt, wie viele davon in euren Projekten liegen. `.msg` und `.xlsx` sind
    vermutlich die wichtigsten Kandidaten zum Ergänzen.

@@ -1437,7 +1437,8 @@ def _verify(tree: _Tree, root: Path, best: _Scheme, pattern: str, max_depth: int
     unreadable: list[Path] = []
     duplicates: list[tuple[str, Path, Path]] = []
     excluded: list[tuple[str, Path]] = []
-    found = scan_projects(root, pattern, depth, unreadable=unreadable, duplicates=duplicates, excluded=excluded)
+    found = scan_projects(root, pattern, depth, unreadable=unreadable, duplicates=duplicates, excluded=excluded,
+                          foreign=[])  # (the indexing pass warns about folders of another site)
     # the same folder reached through a link is no second project (the scan skips it as well)
     duplicates = [d for d in duplicates if os.path.realpath(d[1]) != os.path.realpath(d[2])]
     return _Verified(depth, everything, final, found, unreadable, duplicates, excluded)
@@ -1525,8 +1526,8 @@ def analyse(root: Path | str, *, max_depth: int = MAX_DEPTH, max_folders: int = 
         examples = "; ".join(f"{_rel(a, root)} und {_rel(b, root)}" for _, a, b in duplicates[:2])
         return _reject(result, f"Viele doppelte Nummern mit dem Schema {pattern} ({len(duplicates)} bei "
                                f"{de_count(len(found), 'Projektordner', 'Projektordnern')}, z. B. {examples}) – "
-                               "gelesen würde jeweils nur der erste Ordner. Nummern eindeutig machen oder "
-                               "PROJECT_NUMBER_PATTERN von Hand einstellen.", started)
+                               "Ordner mit derselben Nummer würden jeweils als ein Projekt gelesen. Nummern "
+                               "eindeutig machen oder PROJECT_NUMBER_PATTERN von Hand einstellen.", started)
     doubts = [text for text, present in (("doppelte Nummern", duplicates), ("abweichende Nummern", best.outliers),
                                          ("ein weiteres Nummernschema", choice.others)) if present]
     if len(found) < GOOD_PROJECTS and doubts:
@@ -1594,9 +1595,10 @@ def file_statistics(projects: list[ProjectFolder], root: Path | str, *, max_file
     last_report = time.monotonic()
     for project in projects:
         row = {"number": project.number, "files": 0, "bytes": 0, "readable": 0, "too_big": 0, "bad_names": 0}
-        stack = [project.path]
+        # every folder of the project (several folders with its number are read as one project)
+        stack = [(f, f) for f in reversed(project.folders)]
         while stack and not truncated:
-            folder = stack.pop()
+            folder, base = stack.pop()
             try:
                 with os.scandir(folder) as it:
                     entries = sorted(it, key=lambda e: e.name)
@@ -1609,7 +1611,7 @@ def file_statistics(projects: list[ProjectFolder], root: Path | str, *, max_file
                     continue
                 try:
                     if entry.is_dir(follow_symlinks=False):
-                        stack.append(Path(entry.path))
+                        stack.append((Path(entry.path), base))
                         continue
                     if entry.is_symlink():
                         if link_problem(Path(entry.path), boundary) or not entry.is_file():
@@ -1628,7 +1630,7 @@ def file_statistics(projects: list[ProjectFolder], root: Path | str, *, max_file
                 row["files"] += 1
                 row["bytes"] += size
                 if ext in SUPPORTED_EXT:
-                    if has_bad_encoding(os.path.relpath(entry.path, project.path)):
+                    if has_bad_encoding(os.path.relpath(entry.path, base)):
                         row["bad_names"] += 1  # cannot be stored – the documents pass skips it
                     elif size <= MAX_FILE_BYTES:
                         row["readable"] += 1
@@ -2123,7 +2125,7 @@ def _agrees(confirmed: dict, rec: dict, result: Analysis, root: Path) -> tuple[b
     many folders the confirmed scheme finds now, if that had to be scanned."""
     if alternatives(confirmed["pattern"]) == alternatives(rec["pattern"]) and rec["depth"] == confirmed["depth"]:
         return True, None
-    stored = scan_projects(root, confirmed["pattern"], confirmed["depth"], unreadable=[], duplicates=[])
+    stored = scan_projects(root, confirmed["pattern"], confirmed["depth"], unreadable=[], duplicates=[], foreign=[])
     return bool(stored) and {p.path for p in stored} == {p.path for p in result.projects}, len(stored)
 
 
@@ -2323,7 +2325,7 @@ def current_check(root: Path, settings) -> dict:
            "pattern": layout.pattern, "depth": layout.depth, "source": layout.source, "problem": layout.problem,
            "state": layout.state, "pending": (layout.proposal or {}).get("pattern"), "projects": None, "examples": []}
     if layout.pattern:
-        found = scan_projects(root, layout.pattern, layout.depth, unreadable=[], duplicates=[])
+        found = scan_projects(root, layout.pattern, layout.depth, unreadable=[], duplicates=[], foreign=[])
         out["projects"] = len(found)
         out["examples"] = [_rel(p.path, root) for p in found[:5]]
     return out
@@ -2419,7 +2421,8 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
             out.append(f"Abweichende Nummern ({de_int(len(p.outliers))}) – zu selten für das Schema, werden nicht "
                        "gelesen: " + " · ".join(p.outliers[:8]) + (" …" if len(p.outliers) > 8 else ""))
         if p.duplicates:
-            out.append(f"Doppelte Nummern ({len(p.duplicates)}) – gelesen wird nur der erste Ordner:")
+            out.append(f"Doppelte Nummern ({len(p.duplicates)}) – die Ordner einer Nummer werden zusammen als ein "
+                       "Projekt gelesen:")
             out.extend(f"  {d['number']}: {d['path']}  und  {d['duplicate']}" for d in p.duplicates[:MAX_LISTED])
         if p.deeper:
             out.append(f"Einzelne passende Ordner tiefer als Ebene {p.depth} (werden mit dieser Tiefe nicht erfasst): "

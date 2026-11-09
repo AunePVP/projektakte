@@ -28,7 +28,7 @@ from . import __version__, db, inbox, structure
 from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .config import DEFAULT_PROJECT_NUMBER_PATTERN
-from .registry import get_project, list_projects, number_regex
+from .registry import get_project, list_projects, number_regex, project_folders
 from .search import hybrid_search
 from .webtext import (SNIPPET_CHARS, breakable_path, highlight, join_spaced_codes, matcher, parse_blocks, passage,
                       render_html, same_heading, snippet, trim_overlap)
@@ -385,6 +385,7 @@ def project_page(request: Request, number: str):
         attachments = _project_attachments(conn, p["number"])
         suggested = conn.execute("SELECT COUNT(*) FROM mails WHERE suggested_project = ? AND deleted = 0 "
                                  "AND assign_status = 'suggested'", (p["number"],)).fetchone()[0]
+        folders = project_folders(conn, p["number"])
     atts_by_mail: dict[int, list[dict]] = {}
     for a in attachments:
         atts_by_mail.setdefault(a["mail_id"], []).append(a)
@@ -394,12 +395,18 @@ def project_page(request: Request, number: str):
         + [{"kind": "mail", "date": m["date"], "title": m["subject"], "id": m["id"],
             "sub": m["sender_name"] or m["sender"], "atts": atts_by_mail.get(m["id"], [])} for m in mails],
         key=lambda e: local_sort_key(e["date"]), reverse=True)
-    try:
-        p["rel"] = str(Path(p["path"]).relative_to(s.projects_dir))
-    except ValueError:
-        p["rel"] = p["path"]
+    # all folders of the project (several folders with its number are read as one project), primary first
+    p["folders"] = [_below_projects_dir(f, s.projects_dir) for f in folders or [p["path"]]]
+    p["rel"] = p["folders"][0]
     return render(request, "project.html", p=p, docs=docs, mails=mails, attachments=attachments,
                   timeline=timeline, suggested=suggested)
+
+
+def _below_projects_dir(path: str, projects_dir) -> str:
+    try:
+        return str(Path(path).relative_to(projects_dir))
+    except ValueError:
+        return path
 
 
 @router.get("/fragen", response_class=HTMLResponse)

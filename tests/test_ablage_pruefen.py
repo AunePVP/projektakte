@@ -1,7 +1,8 @@
 """scripts/ablage_pruefen.py: the office's filing rule (Ziffer/2 Ziffern/1234_Bauvorhaben/123456_Auftrag/
 123456<Trenner><Unterordner>) and what Projektakte reads of it. Folders without a number in front are
 not part of the numbered filing and are ignored – except inside an order, where every subfolder must
-start with the order's number."""
+start with the order's number. What Projektakte reads comes from the app's own scan: several folders
+with one order number are read together as one order (a hint, no error – the number may be wrong)."""
 from __future__ import annotations
 
 import csv
@@ -52,13 +53,14 @@ def test_every_deviation_is_found(tmp_path, capsys):
     lost = order(root, "2/28/2842_Beratung Filiale/1015_PDF_100303/284205_Alter Auftrag")  # in a numbered
     (lost / "284205-CAD" / "284205_Archiv").mkdir()  # inside the lost order: reported with it, not again
     order(root, "2/28/2843_Halle/284301_Halle A")
-    dup = order(root, "2/29/2943_Halle Zwei/284301_Halle B")  # number twice (and misfiled)
-    (dup / "284301-Bilder" / "284301_140306").mkdir()  # a dated photo folder in the skipped duplicate
+    order(root, "2/28/2843_Halle/284301_Halle A-2013-11-04")  # the number twice in its site: read together
+    dup = order(root, "2/29/2943_Halle Zwei/284301_Halle B")  # number twice, in another site: not read
+    (dup / "284301-Bilder" / "284301_140306").mkdir()  # a dated photo folder in the misfiled folder
     (root / "2/28/2844_Lager/284401-Mail").mkdir(parents=True)  # a category without its order folder
     (root / "2/28/2844_Lager/284401-Mail/Mail.eml").write_bytes(b"x")
-    order(root, "1/18/1827_Siemens/182700_Konzept")
-    (root / "1/18/1827_Siemens/231020_Bilder für Konformität").mkdir()  # a date read as an order
-    (root / "1/18/1827_Siemens/231020_Bilder für Konformität/Foto.jpg").write_bytes(b"x")
+    order(root, "1/18/1827_Sonnenwerk/182700_Konzept")
+    (root / "1/18/1827_Sonnenwerk/231020_Bilder für Konformität").mkdir()  # a date read as an order
+    (root / "1/18/1827_Sonnenwerk/231020_Bilder für Konformität/Foto.jpg").write_bytes(b"x")
     (site / "Notiz.pdf").write_bytes(b"x")  # a file in the site folder: in no order
     (root / "2/30").mkdir(parents=True)  # level 2 not starting with the level-1 digit
     (root / "2/28/2845-Halle").mkdir(parents=True)  # dash instead of underscore
@@ -78,17 +80,21 @@ def test_every_deviation_is_found(tmp_path, capsys):
     paths = {kind: [p for p, _ in items] for kind, items in report.issues.items()}
 
     assert paths["nicht_gefunden"] == ["2/28/2842_Beratung Filiale/1015_PDF_100303/284205_Alter Auftrag"]
-    assert paths["doppelt"] == ["2/29/2943_Halle Zwei/284301_Halle B"]
-    assert paths["fremde_nummer"] == ["1/18/1827_Siemens/231020_Bilder für Konformität",
-                                      "2/29/2943_Halle Zwei/284301_Halle B"] or \
-        paths["fremde_nummer"] == ["1/18/1827_Siemens/231020_Bilder für Konformität"]
-    assert paths["kategorie_als_projekt"] == ["2/28/2844_Lager/284401-Mail"]
+    # several folders with one number are read together: a hint (the number may be wrong), no error
+    assert report.issues["doppelt"] == [("2/28/2843_Halle/284301_Halle A-2013-11-04",
+                                         "284301, zusammen gelesen mit 2/28/2843_Halle/284301_Halle A")]
+    assert report.issues["fremde_nummer"] == [
+        ("1/18/1827_Sonnenwerk/231020_Bilder für Konformität", "Bauvorhaben 1827, gelesen als Auftrag 231020"),
+        ("2/29/2943_Halle Zwei/284301_Halle B",
+         "Bauvorhaben 2943 – nicht gelesen, Auftrag 284301 ist 2/28/2843_Halle/284301_Halle A")]
+    # a category folder without its order folder is read as that order (named after its site)
+    assert report.issues["kategorie_als_projekt"] == [("2/28/2844_Lager/284401-Mail", "Auftrag 284401 „Lager“")]
     assert paths["unterordner_ohne_nummer"] == ["2/28/2842_Beratung Filiale/284201_Zwischendecke Filiale/Abgabe"]
     assert paths["unterordner_nummer"] == ["2/28/2842_Beratung Filiale/284201_Zwischendecke Filiale/284299-Text"]
-    outside = dict(report.issues["dateien_ausserhalb"])
+    outside = dict(report.issues["dateien_ausserhalb"])  # the files of the folders read together are read
     assert outside == {"2/28/2842_Beratung Filiale": "1 Datei(en)",
                        "2/28/2842_Beratung Filiale/1015_PDF_100303/284205_Alter Auftrag": "8 Datei(en)",
-                       "2/29/2943_Halle Zwei/284301_Halle B": "8 Datei(en)"}  # the skipped duplicate
+                       "2/29/2943_Halle Zwei/284301_Halle B": "8 Datei(en)"}  # the folder of another site
     assert paths["ebene2"] == ["2/30"]
     assert report.issues["bauvorhaben_name"] == [("2/28/2845-Halle", "Trennzeichen nach der Nummer: „-“ statt „_“")]
     assert paths["bauvorhaben_nummer"] == ["2/28/2950_Fremd"]
@@ -96,13 +102,17 @@ def test_every_deviation_is_found(tmp_path, capsys):
     assert "2/28/2842_Beratung Filiale/1015_PDF_100303" in paths["auftrag_name"]
     assert paths["dateien_im_auftrag"] == ["2/28/2842_Beratung Filiale/284201_Zwischendecke Filiale"]
     assert paths["auftrag_leer"] == ["1/15/1509_Leer/150900_Leer"]
-    assert paths["bauvorhaben_leer"] == ["1/15/1510_Ohne Auftrag", "2/28/2844_Lager", "2/28/2845-Halle"]
+    # (2844_Lager holds no order folder, but its category folder is read as the order)
+    assert paths["bauvorhaben_leer"] == ["1/15/1510_Ohne Auftrag", "2/28/2845-Halle"]
     # folders without a number in front are never reported
     reported = [p for items in paths.values() for p in items]
     assert not any(p.startswith(("@-Normen", "AHO", "2/Damp")) or p.endswith("/Pläne") for p in reported)
     assert "kategorie_unbekannt" not in paths and "kategorie_fehlt" not in paths  # only with --kategorien
     assert "FEHLER  Auftrag wird von Projektakte nicht gefunden: 1" in out
     assert "FEHLER  Ordner im Auftrag ohne Nummer vorne: 1" in out
+    assert "HINWEIS Mehrere Ordner mit derselben Auftragsnummer – werden zusammen gelesen (Nummer prüfen): 1" in out
+    assert "HINWEIS Unterordner ohne seinen Auftragsordner – wird mit seinem Auftrag gelesen: 1" in out
+    assert "davon aus mehreren Ordnern:         1 (werden je als ein Auftrag zusammen gelesen)" in out
     rows = list(csv.reader(target.open(encoding="utf-8-sig"), delimiter=";"))
     assert rows[0] == ["Schwere", "Art", "Pfad", "Detail"] and len(rows) > 15
 
@@ -131,3 +141,75 @@ def test_wrong_calls_and_unreadable_folders(tmp_path, capsys):
     else:
         raise AssertionError("an unusable pattern must be a wrong call")
     assert "Fehler: --muster ist kein gültiger regulärer Ausdruck" in capsys.readouterr().err
+
+
+def test_several_folders_with_one_order_number_are_read_together(tmp_path, capsys):
+    """The cases seen on the office's share: an order in several folders of its site, part folders
+    (119300-Bilder …) without their order folder, part folders with a date (747900-ea-200214). They
+    are read together as one order – hints, no errors, and their files count as read."""
+    root = clean_share(tmp_path / "projekt")
+    site = "1/11/1113_Bau Nord"
+    for name in ("111301_Fortschreibung Konzept", "111301_Heisse Bemessung", "111301_Heisse Bemessung-2013-11-04"):
+        order(root, f"{site}/{name}", cats=["Text"])
+    for part in ("Bilder", "CAD", "LV", "Mail"):  # only part folders, directly in the site
+        (root / f"1/11/1193_Gasse am Markt 5/119300-{part}").mkdir(parents=True)
+        (root / f"1/11/1193_Gasse am Markt 5/119300-{part}/Datei.pdf").write_bytes(b"x")
+    for part in ("ea-200214", "ee-200129"):
+        (root / f"7/74/7479_Halle/747900-{part}").mkdir(parents=True)
+        (root / f"7/74/7479_Halle/747900-{part}/Brief.docx").write_bytes(b"x")
+
+    assert ablage.main([str(root), "--beispiele", "50"]) == 0  # hints only
+    out = capsys.readouterr().out
+    report = ablage.check(root)
+    assert report.counts["projekte"] == 6 and report.counts["mehrere_ordner"] == 3
+    assert report.issues["doppelt"] == [
+        (f"{site}/111301_Heisse Bemessung", f"111301, zusammen gelesen mit {site}/111301_Fortschreibung Konzept"),
+        (f"{site}/111301_Heisse Bemessung-2013-11-04",
+         f"111301, zusammen gelesen mit {site}/111301_Fortschreibung Konzept")]
+    parts = dict(report.issues["kategorie_als_projekt"])
+    assert parts["1/11/1193_Gasse am Markt 5/119300-Bilder"] == "Auftrag 119300 „Gasse am Markt 5“"
+    assert parts["1/11/1193_Gasse am Markt 5/119300-Mail"] == (
+        "Auftrag 119300 „Gasse am Markt 5“, gelesen mit 1/11/1193_Gasse am Markt 5/119300-Bilder")
+    assert parts["7/74/7479_Halle/747900-ee-200129"] == "Auftrag 747900 „Halle“, gelesen mit 7/74/7479_Halle/747900-ea-200214"
+    assert len(parts) == 6
+    assert not report.issues.get("dateien_ausserhalb") and not report.issues.get("fremde_nummer")
+    assert not report.issues.get("bauvorhaben_leer")  # the part folders hold the order of the site
+    assert "Dateien außerhalb von Aufträgen:    0" in out
+    # every file of every folder counts as read: 3 × 1 + 3 orders of the clean share … + 4 + 2
+    in_orders = sum(report.ext_in.values())
+    assert in_orders == 8 + 9 + 8 + 3 + 4 + 2
+
+
+def test_orders_too_deep_are_found_with_a_greater_depth(tmp_path):
+    """Orders in an intermediate folder of the site, or in a nested copy of the site, lie one level deeper:
+    not found with depth 4, read with depth 5 – a nested copy together with the order itself."""
+    root = clean_share(tmp_path / "projekt")
+    order(root, "1/10/1015_Altstadt/1015_PDF_100303/101500_Altbau", cats=["Text"])
+    order(root, "1/10/1071_Schule/107100_Konzept", cats=["Text"])
+    order(root, "1/10/1071_Schule/1071_Schule/107100_Konzept", cats=["Text"])  # a nested copy
+    shallow = ablage.check(root)
+    assert sorted(p for p, _ in shallow.issues["nicht_gefunden"]) == [
+        "1/10/1015_Altstadt/1015_PDF_100303/101500_Altbau", "1/10/1071_Schule/1071_Schule/107100_Konzept"]
+    assert dict(shallow.issues["nicht_gefunden"])["1/10/1071_Schule/1071_Schule/107100_Konzept"].endswith(
+        "die Nummer wird an anderer Stelle gelesen")
+    deep = ablage.check(root, depth=5)
+    assert not deep.issues.get("nicht_gefunden") and not deep.issues.get("dateien_ausserhalb")
+    assert not deep.issues.get("fremde_nummer")
+    assert deep.issues["doppelt"] == [("1/10/1071_Schule/1071_Schule/107100_Konzept",
+                                       "107100, zusammen gelesen mit 1/10/1071_Schule/107100_Konzept")]
+
+
+def test_dated_folders_read_as_orders_deeper_down(tmp_path):
+    """A deeper scan also meets dated folders in folders without a number (1827_X/Fotos/230512_Begehung):
+    they are read as orders of their own and reported against the nearest site above them."""
+    root = clean_share(tmp_path / "projekt")
+    (root / "1/18/1827_Sonnenwerk/Fotos/230512_Begehung").mkdir(parents=True)
+    (root / "1/18/1827_Sonnenwerk/Fotos/2023/230601_Abnahme").mkdir(parents=True)
+    assert not ablage.check(root).issues.get("fremde_nummer")  # depth 4: not read
+    assert ablage.check(root, depth=6).issues["fremde_nummer"] == [
+        ("1/18/1827_Sonnenwerk/Fotos/230512_Begehung", "Bauvorhaben 1827, gelesen als Auftrag 230512"),
+        ("1/18/1827_Sonnenwerk/Fotos/2023/230601_Abnahme", "Bauvorhaben 1827, gelesen als Auftrag 230601")]
+    # a year folder of the site in between is no other site: an old order in it is no foreign number
+    order(root, "1/18/1827_Sonnenwerk/2013_Archiv/Alt/182701_Altauftrag")
+    assert [p for p, _ in ablage.check(root, depth=6).issues["fremde_nummer"]] == [
+        "1/18/1827_Sonnenwerk/Fotos/230512_Begehung", "1/18/1827_Sonnenwerk/Fotos/2023/230601_Abnahme"]

@@ -28,9 +28,27 @@ Roadmap-Schritt.
   Gliederung – kein „Bitte prüfen“-Hinweis mehr, der sie als Projekte vorschlägt.
 - `scripts/ablage_pruefen.py`: prüft eine Ablage der Form Ziffer/2 Ziffern/1234_Bauvorhaben/
   123456_Auftrag/123456-Kategorie und meldet Fehler (betreffen Projektakte: Auftrag nicht gefunden,
-  Nummer doppelt, Dateien außerhalb eines Auftrags) und Hinweise (Abweichungen von der Regel),
-  wahlweise als CSV.
-- 1794 Tests (4 Integrationstests übersprungen, 1 xfail).
+  Nummer passt nicht zum Bauvorhaben, Dateien außerhalb eines Auftrags) und Hinweise (Abweichungen von
+  der Regel), wahlweise als CSV.
+- **Mehrere Ordner mit derselben Projektnummer sind ein Projekt** (vorher wurde nur der zuerst gefundene
+  gelesen): Auftragsordner, Teilordner außerhalb davon (`119300-Bilder` direkt im Bauvorhaben), Kopien und
+  verschachtelte Kopien werden zusammen gelesen. Hauptordner und Name nach einer Formregel
+  (`<Nr>_<Name>` vor nur Nummer vor `<Nr>-<ein Wort>`); ein Projekt nur aus Teilordnern heißt nach seinem
+  Bauvorhaben. DB-Migration 8 (Tabelle `project_folders`, nur hinzugefügt) – bestehende Projekte und
+  Dokumente bleiben, nur die Dateien der weiteren Ordner werden neu gelesen. Projektseite und
+  `/api/projects/{nr}` (`folders`) zeigen alle Ordner; umbenannte weitere Ordner werden verschoben, nicht
+  neu gelesen; statt einer Warnung „Projektnummer doppelt“ je Ordner eine Info-Zeile je Lauf.
+- Ein Ordner mit der Nummer eines Auftrags, der in einem Bauvorhaben mit anderer Nummer liegt (meist ein
+  Datum: `1827_…/Fotos/230512_Begehung`), wird nicht mit dem echten Auftrag `2305_…/230512_…`
+  zusammengelegt, sondern im Protokoll genannt; ein Jahresordner im Bauvorhaben (`1827_…/2013_Archiv/…`)
+  zählt nicht als anderes Bauvorhaben.
+- Behoben: Ein nicht lesbarer Ordner oberhalb eines Projektordners (fehlende Rechte) brach den
+  Dokumentenlauf mit `PermissionError` ab – jetzt bleiben die Dokumente dieses Ordners unverändert und
+  der Lauf geht weiter.
+- Ablage-Prüfung: mehrere Ordner mit einer Nummer und Teilordner ohne ihren Auftragsordner sind jetzt
+  Hinweise (sie werden gelesen); „Nummer passt nicht zum Bauvorhaben“ auch tiefer und nach dem
+  Bauvorhaben, nicht nach einem Jahresordner darin; neue Zeile „davon aus mehreren Ordnern“.
+- 1832 Tests (4 Integrationstests übersprungen, 1 xfail).
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

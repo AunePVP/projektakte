@@ -3,8 +3,9 @@
 {% block content %}
 <p class="crumbs"><a href="/">Projekte</a> › {{ p.number }}</p>
 <h1>{{ p.name }} <span class="muted">{{ p.number }}</span></h1>
-<p class="muted small">Ordner: {{ p.rel }} · {{ docs|length|plural('Dokument', 'Dokumente') }} · {{ mails|length|plural('Mail', 'Mails') }}{% if attachments %} · {{ attachments|length|plural('Anhang', 'Anhänge') }} aus Mails{% endif %}
+<p class="muted small">{% if p.folders|length > 1 %}{{ p.folders|length }} Ordner mit dieser Nummer, zusammen gelesen{% else %}Ordner: {{ p.rel }}{% endif %} · {{ docs|length|plural('Dokument', 'Dokumente') }} · {{ mails|length|plural('Mail', 'Mails') }}{% if attachments %} · {{ attachments|length|plural('Anhang', 'Anhänge') }} aus Mails{% endif %}
 {% if suggested %} · <a href="/eingang?status=suggested">{{ suggested|plural('Mail', 'Mails') }} im Eingang vorgeschlagen</a>{% endif %}</p>
+{% if p.folders|length > 1 %}<ul class="folders muted small">{% for f in p.folders %}<li>{{ f|path }}{% if loop.first %} <span class="pill">Hauptordner</span>{% endif %}</li>{% endfor %}</ul>{% endif %}
 <nav class="tabs"><a href="#fragen">Fragen</a><a href="#zeitachse">Zeitachse</a><a href="#dokumente">Dokumente</a><a href="#anhaenge">Anhänge</a><a href="#mails">Mails</a></nav>
 
 <section id="fragen" class="card">

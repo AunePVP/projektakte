@@ -12,7 +12,7 @@ from . import db, inbox as inbox_queries, structure
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .ask import ask as answer_question
 from .search import hybrid_search
-from .registry import get_project, list_projects
+from .registry import get_project, list_projects, project_folders
 
 log = logging.getLogger("projektakte.api")
 router = APIRouter(prefix="/api")
@@ -45,9 +45,12 @@ def project(request: Request, number: str) -> dict:
     s = _settings(request)
     with db.session(s.db_path) as conn:
         p = get_project(conn, number)
+        folders = project_folders(conn, number) if p else []
     if not p:
         raise HTTPException(404, f"Projekt {number} nicht gefunden")
     p["path"] = _rel(p["path"], s.projects_dir)
+    # every folder of the project (several folders with its number are one project), the primary first
+    p["folders"] = [_rel(f, s.projects_dir) for f in folders]
     return p
 
 

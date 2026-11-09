@@ -134,6 +134,17 @@ MIGRATIONS: list[str] = [
     ALTER TABLE projects ADD COLUMN missing_since TEXT;
     ALTER TABLE projects ADD COLUMN missing_runs INTEGER NOT NULL DEFAULT 0;
     """,
+    # 8 – several folders with the same number are one project (registry.scan_projects): projects.path
+    #     is its primary folder, the further folders are listed here in their order. A database of an
+    #     older version has no rows – every project is its one folder, as before.
+    """
+    CREATE TABLE project_folders (
+        project   TEXT NOT NULL REFERENCES projects(number) ON DELETE CASCADE,
+        path      TEXT NOT NULL,
+        position  INTEGER NOT NULL,
+        PRIMARY KEY (project, path)
+    );
+    """,
 ]
 
 

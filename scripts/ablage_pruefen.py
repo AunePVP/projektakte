@@ -10,14 +10,18 @@ Regel (anpassbar im Block REGELN unten):
 Ordner ohne Zahl vorne werden nicht geprüft (und ihre Dateien nicht vermisst) – außer im
 Auftragsordner: Dort muss jeder Unterordner mit der Auftragsnummer beginnen.
 
-Liest nur Ordner- und Dateinamen, nie Inhalte, und verändert nichts. Meldet zwei Arten von
-Abweichungen:
+Liest nur Ordner- und Dateinamen, nie Inhalte, und verändert nichts. Was Projektakte liest, ermittelt
+das Skript mit dem Scan der App selbst: Mehrere Ordner mit derselben Auftragsnummer sind ein Auftrag
+und werden zusammen gelesen (auch Unterordner wie 119300-Bilder, die ohne ihren Auftragsordner im
+Bauvorhaben liegen). Meldet zwei Arten von Abweichungen:
 
-    FEHLER   betrifft Projektakte oder die Regel im Auftrag: ein Auftrag wird nicht gefunden, eine
-             Nummer ist doppelt, ein Ordner mit fremder 6-stelliger Zahl (z. B. ein Datum) wird als
-             eigener Auftrag gelesen, ein Unterordner im Auftrag hat keine Nummer, Dateien in
-             nummerierten Ordnern liegen außerhalb eines Auftrags …
-    HINWEIS  ein nummerierter Ordner weicht von der Form ab (Trennzeichen, Ebene, Nummer passt nicht …)
+    FEHLER   betrifft Projektakte oder die Regel im Auftrag: ein Auftrag wird nicht gefunden, ein
+             Ordner mit fremder 6-stelliger Zahl (z. B. ein Datum) wird als Auftrag gelesen, ein
+             Unterordner im Auftrag hat keine Nummer, Dateien in nummerierten Ordnern liegen außerhalb
+             eines Auftrags …
+    HINWEIS  ein nummerierter Ordner weicht von der Form ab (Trennzeichen, Ebene, Nummer passt nicht …),
+             mehrere Ordner haben dieselbe Auftragsnummer (werden zusammen gelesen – stimmt die
+             Nummer?), ein Unterordner liegt ohne seinen Auftragsordner im Bauvorhaben
 
 Aufruf (im Repository, mit der Python-Umgebung von Projektakte):
 
@@ -31,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import logging
 import os
 import re
 import sys
@@ -42,15 +47,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # run from anyw
 
 from projektakte.documents import MAX_FILE_BYTES, has_bad_encoding, printable  # noqa: E402
 from projektakte.extract import SUPPORTED_EXT  # noqa: E402
-from projektakte.registry import project_head, scan_projects  # noqa: E402
+from projektakte.registry import PART, head_kind, project_head, scan_projects, site_fit  # noqa: E402
 
 # ------------------------------------------------------------------------------------------- REGELN
 # The office's filing rule – adjust here if the numbering changes.
 PATTERN = r"\d{6}"  # PROJECT_NUMBER_PATTERN: the orders (Aufträge) are the projects
 DEPTH = 4  # PROJECT_FOLDER_DEPTH: Ziffer / 2 Ziffern / Bauvorhaben / Auftrag
 ORDER_DIGITS, SITE_DIGITS = 6, 4
-# typical subfolder names of an order: a folder "<number>-<one of these>" outside its order folder is a
-# category folder that lost its order folder (it is read as an order of its own)
+# typical subfolder names of an order (checked only with --kategorien). Which folders are part folders
+# outside their order folder (119300-Bilder in the site) is decided by Projektakte's own rule, not by
+# this list: "<number>-<one word>" (registry.folder_kind)
 CATEGORIES = ("Ausgang", "Bilder", "CAD", "LV", "Mail", "Sonstiges", "Tab", "Text")
 LEVEL1 = re.compile(r"^(\d)$")  # 2
 LEVEL2 = re.compile(r"^(\d{2})$")  # 28
@@ -63,13 +69,13 @@ NOISE = {"thumbs.db", "desktop.ini", ".ds_store"}  # files Windows/macOS create 
 # kind → (severity, title); the order here is the order of the report
 KINDS = {
     "nicht_gefunden": ("FEHLER", "Auftrag wird von Projektakte nicht gefunden"),
-    "doppelt": ("FEHLER", "Auftragsnummer doppelt – nur der erste Ordner wird gelesen"),
-    "fremde_nummer": ("FEHLER", "Ordner mit 6-stelliger Zahl passt nicht zum Bauvorhaben – wird als eigener "
-                      "Auftrag gelesen (z. B. ein Datum)"),
-    "kategorie_als_projekt": ("FEHLER", "Unterordner ohne seinen Auftragsordner – wird als eigener Auftrag gelesen"),
+    "fremde_nummer": ("FEHLER", "Ordner mit 6-stelliger Zahl passt nicht zum Bauvorhaben (z. B. ein Datum) – "
+                      "Nummer prüfen"),
     "unterordner_ohne_nummer": ("FEHLER", "Ordner im Auftrag ohne Nummer vorne"),
     "dateien_ausserhalb": ("FEHLER", "Dateien in nummerierten Ordnern außerhalb eines Auftrags – werden nicht gelesen"),
     "nicht_lesbar": ("FEHLER", "Ordner nicht lesbar (Rechte?) – Inhalt fehlt in Projektakte"),
+    "doppelt": ("HINWEIS", "Mehrere Ordner mit derselben Auftragsnummer – werden zusammen gelesen (Nummer prüfen)"),
+    "kategorie_als_projekt": ("HINWEIS", "Unterordner ohne seinen Auftragsordner – wird mit seinem Auftrag gelesen"),
     "ebene1": ("HINWEIS", "Ebene 1: nummerierter Ordner ist nicht eine Ziffer"),
     "ebene2": ("HINWEIS", "Ebene 2: nummerierter Ordner ist nicht zwei Ziffern (passend zur Ebene 1)"),
     "bauvorhaben_name": ("HINWEIS", "Ebene 3: nummerierter Ordner nicht in der Form 1234_Name"),
@@ -125,26 +131,42 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
     (unknown ones, and the ones most orders have but this one lacks); None: only their number."""
     report = Report(root)
     head = project_head(pattern)
-    duplicates: list[tuple[str, Path, Path]] = []
-    found = scan_projects(root, pattern, depth, duplicates=duplicates)
-    projects = {str(p.path): p for p in found}
+    foreign: list[tuple[str, Path, Path]] = []
+    # the app's scan: folders with one number are one project; a folder with the number of an order in a
+    # site of another number is not read with it (foreign)
+    found = scan_projects(root, pattern, depth, foreign=foreign)
+    projects = {str(folder): p for p in found for folder in p.folders}  # every folder read → its project
+    strangers = {str(folder) for _, folder, _ in foreign}  # read by no project
     report.counts["projekte"] = len(found)
-    for number, first, skipped in duplicates:
-        report.add("doppelt", skipped, f"{number}, gelesen wird {report.rel(first)}")
-    misplaced: set[str] = set()  # category folders read as projects – reported once, not as orders as well
+    report.counts["mehrere_ordner"] = sum(1 for p in found if p.further)
+    by_number = {p.number for p in found}
+    misplaced: set[str] = set()  # folders read as (part of) an order that are no order folder themselves
+    parts: set[str] = set()  # part folders outside their order folder (reported as such, not by their form)
+    part_labels: dict[str, set[str]] = defaultdict(set)  # order → names of its part folders outside it
     for p in found:
-        m = CATEGORY.match(p.path.name)
-        site = NUMBER_START.match(p.path.parent.name)
-        if m and m.group(2) in CATEGORIES and p.path.name[ORDER_DIGITS] == "-":
-            report.add("kategorie_als_projekt", p.path, f"Auftrag {p.number} „{m.group(2)}“")
-            misplaced.add(str(p.path))
-        elif site and len(site.group(1)) == SITE_DIGITS and not p.number.startswith(site.group(1)):
-            # a six-digit number that is no order of this site – often a date (231020_Bilder …)
-            report.add("fremde_nummer", p.path, f"Bauvorhaben {site.group(1)}, gelesen als Auftrag {p.number}")
-            misplaced.add(str(p.path))
-    skipped_paths = {str(s) for _, _, s in duplicates}
+        for folder in p.folders:
+            m = head.match(folder.name)
+            kind = head_kind(m)
+            together = f", gelesen mit {report.rel(p.path)}" if folder != p.path else ""
+            if site_fit(folder, p.number, root) is False:
+                # a six-digit number that is no order of its site – often a date (231020_Bilder …, also deeper:
+                # 1827_X/Fotos/230512_Begehung); a year folder in between (1827_X/2013_Archiv/182701_…) is fine
+                report.add("fremde_nummer", folder, f"Bauvorhaben {_site_number(folder, root) or '?'}, gelesen als "
+                           f"Auftrag {p.number}" + together)
+                misplaced.add(str(folder))
+            elif kind == PART:
+                report.add("kategorie_als_projekt", folder, f"Auftrag {p.number} „{p.name}“" + together)
+                misplaced.add(str(folder))
+                parts.add(str(folder))
+                part_labels[p.number].add(m.group("name").strip())
+            elif folder != p.path:
+                report.add("doppelt", folder, f"{p.number}, zusammen gelesen mit {report.rel(p.path)}")
+    for number, folder, primary in foreign:  # the number of an order of another site: not read at all
+        report.add("fremde_nummer", folder, f"Bauvorhaben {_site_number(folder, root) or '?'} – nicht gelesen, "
+                   f"Auftrag {number} ist {report.rel(primary)}")
     wanted = set(categories or ())
-    orders: list[tuple[Path, set[str]]] = []
+    orders: dict[str, tuple[Path, set[str]]] = {}  # order → its first order folder, the categories it has
+    sites_with_orders: set[str] = set()  # sites holding a folder read as an order or in the order form
 
     def walk(folder: Path, level: int, chain: dict, in_project: bool) -> int:
         """Check ``folder`` and everything below it; returns the number of files below it."""
@@ -155,7 +177,6 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
         is_order = str(folder) in projects and str(folder) not in misplaced
         files_here = total = 0
         cats_here: set[str] = set()
-        order_child = False
         for e in entries:
             name = e.name
             path = Path(e.path)
@@ -196,8 +217,9 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
                 sub_chain["order"] = project.number
             inside = in_project or project is not None
             numbered = name[:1].isdigit()
+            if (project is not None or ORDER.match(name)) and chain.get("site_path"):
+                sites_with_orders.add(chain["site_path"])  # also deeper: an intermediate folder, a nested copy
             if ORDER.match(name):
-                order_child = True
                 if not inside and not chain.get("group"):
                     sub_chain["group"] = report.rel(path)  # an order folder Projektakte does not read
             if is_order:  # a folder directly inside an order: must start with the order's number
@@ -214,34 +236,40 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
                     elif label:
                         report.add("kategorie_unbekannt", path, label)
             elif not in_project and not chain.get("ignored"):
-                if numbered:
-                    _rule(report, path, name, child_level, chain, sub_chain, project is not None)
-                else:
+                if not numbered:
                     sub_chain["ignored"] = True  # no number in front: not part of the numbered filing
-            if str(path) in skipped_paths:  # a duplicate: reported as such, its folders (109402_140306 …) with it
+                elif str(path) not in parts:  # (a part folder is reported as such, not by its form)
+                    _rule(report, path, name, child_level, chain, sub_chain,
+                          project is not None or str(path) in strangers, depth)
+            if str(path) in strangers:  # reported as "fremde_nummer"; what lies inside belongs to it
                 sub_chain["lost"] = True
+                sub_chain["group"] = report.rel(path)
             elif (not inside and not chain.get("lost") and not sub_chain.get("ignored") and ORDER.match(name)
-                    and head.match(name)):
+                    and (lost := head.match(name))):
                 # only the outermost: folders such as 104900_Archiv inside a lost order belong to it
-                report.add("nicht_gefunden", path, f"liegt auf Ebene {child_level}, gelesen wird bis Ebene {depth}")
+                elsewhere = "; die Nummer wird an anderer Stelle gelesen" if lost.group("num").upper() in by_number else ""
+                report.add("nicht_gefunden", path, f"liegt auf Ebene {child_level}, gelesen wird bis Ebene {depth}"
+                           + elsewhere)
                 sub_chain["lost"] = True
             total += walk(path, child_level, sub_chain, inside)
         total += files_here
-        if is_order:
-            orders.append((folder, cats_here))
+        if is_order:  # the categories of an order read from several folders count together
+            orders.setdefault(projects[str(folder)].number, (folder, set()))[1].update(cats_here)
             if files_here:
                 report.add("dateien_im_auftrag", folder, f"{files_here} Datei(en)")
             if not total:
                 report.add("auftrag_leer", folder)
-        if chain.get("site_path") == str(folder) and not order_child:
+        if chain.get("site_path") == str(folder) and str(folder) not in sites_with_orders:
             report.add("bauvorhaben_leer", folder)
         return total
 
     walk(root, 0, {}, False)
     if wanted:  # "standard" = what most orders have (a category of a newer template is no standard yet)
-        present = Counter(c for _, cats in orders for c in cats)
+        for number, (_, cats) in orders.items():  # part folders outside the order folder count as well
+            cats.update(part_labels.get(number, set()) & wanted)
+        present = Counter(c for _, cats in orders.values() for c in cats)
         report.standard = [c for c in categories if orders and present[c] * 2 >= len(orders)]
-        for folder, cats in orders:
+        for folder, cats in orders.values():
             missing = set(report.standard) - cats
             if missing:
                 report.missing_categories.update(missing)
@@ -251,6 +279,17 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
     return report
 
 
+def _site_number(folder: Path, root: Path) -> str | None:
+    """The number of the nearest folder above ``folder`` (below ``root``) in the form of a site
+    (1234_Name), e.g. 1827 for 1/18/1827_X/Fotos/230512_Begehung – or None."""
+    for above in folder.parents:
+        if above == root or not above.is_relative_to(root):
+            return None
+        if SITE.match(above.name):
+            return above.name[:SITE_DIGITS]
+    return None
+
+
 def _separator(name: str, digits: int) -> str:
     start = NUMBER_START.match(name)
     if start and len(start.group(1)) == digits and start.group(2) != "_":
@@ -258,9 +297,10 @@ def _separator(name: str, digits: int) -> str:
     return ""
 
 
-def _rule(report: Report, path: Path, name: str, level: int, chain: dict, sub: dict, found: bool) -> None:
+def _rule(report: Report, path: Path, name: str, level: int, chain: dict, sub: dict, found: bool,
+          depth: int = DEPTH) -> None:
     """The filing rule for a numbered folder above the order level; records what it is in ``sub``.
-    ``found``: Projektakte reads it as a project (an order)."""
+    ``found``: Projektakte reads it as a project (an order); ``depth``: PROJECT_FOLDER_DEPTH."""
     digits = NUMBER_START.match(name).group(1)
     if level == 1:
         m = LEVEL1.match(name)
@@ -290,13 +330,14 @@ def _rule(report: Report, path: Path, name: str, level: int, chain: dict, sub: d
     elif level == 4 and chain.get("site"):
         if len(digits) == ORDER_DIGITS:
             if not digits.startswith(chain["site"]):
-                if not found:  # read as an order: reported as "fremde_nummer" already
+                if not found:  # read as an order or left out as foreign: reported as "fremde_nummer" already
                     report.add("auftrag_name", path, f"Nummer passt nicht zum Bauvorhaben {chain['site']}")
             elif not ORDER.match(name):
                 report.add("auftrag_name", path, _separator(name, ORDER_DIGITS))
         else:
-            report.add("auftrag_name", path, "keine 6-stellige Auftragsnummer – darin liegende Aufträge werden "
-                                             "nicht gefunden" if len(digits) == SITE_DIGITS else "")
+            lost = " – darin liegende Aufträge werden nicht gefunden" if level >= depth else ""
+            report.add("auftrag_name", path, f"keine 6-stellige Auftragsnummer{lost}" if len(digits) == SITE_DIGITS
+                       else "")
 
 
 # ------------------------------------------------------------------------------------------- output
@@ -310,6 +351,9 @@ def format_report(report: Report, *, pattern: str, depth: int, examples: int, se
            f"{seconds:.0f} s", "",
            f"Was Projektakte liest (PROJECT_NUMBER_PATTERN={pattern}, PROJECT_FOLDER_DEPTH={depth})",
            f"  Projekte (Aufträge) gefunden:       {_de(report.counts['projekte'])}"]
+    if report.counts["mehrere_ordner"]:
+        out.append(f"  davon aus mehreren Ordnern:         {_de(report.counts['mehrere_ordner'])} (werden je als ein "
+                   "Auftrag zusammen gelesen)")
     in_projects = sum(report.ext_in.values())
     readable = sum(n for ext, n in report.ext_in.items() if ext in SUPPORTED_EXT)
     outside = sum(report.outside.values())
@@ -394,10 +438,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\r… {_de(folders)} Ordner, {_de(files)} Dateien", end="", file=sys.stderr, flush=True)
 
     started = time.monotonic()
-    report = check(root, pattern=args.muster, depth=args.tiefe,
-                   categories=(tuple(c.strip() for c in args.kategorien.split(",") if c.strip())
-                               if args.kategorien else None),
-                   sizes=args.groessen, progress=progress if sys.stderr.isatty() else None)
+    app_log = logging.getLogger("projektakte")
+    level = app_log.level
+    app_log.setLevel(logging.ERROR)  # what the app's scan warns about is in the report
+    try:
+        report = check(root, pattern=args.muster, depth=args.tiefe,
+                       categories=(tuple(c.strip() for c in args.kategorien.split(",") if c.strip())
+                                   if args.kategorien else None),
+                       sizes=args.groessen, progress=progress if sys.stderr.isatty() else None)
+    finally:
+        app_log.setLevel(level)
     if sys.stderr.isatty():
         print("\r" + " " * 60 + "\r", end="", file=sys.stderr)
     print(format_report(report, pattern=args.muster, depth=args.tiefe, examples=max(0, args.beispiele),
