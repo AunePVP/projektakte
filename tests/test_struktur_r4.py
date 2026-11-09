@@ -541,3 +541,24 @@ def test_file_statistics_keep_davon_with_the_readable_files(tmp_path, capsys):
     i = next(n for n, line in enumerate(lines) if line.strip().startswith("liest Projektakte:"))
     assert lines[i + 1].strip().startswith("davon zu groß")
     assert lines[i + 2].strip().startswith("nicht lesbar, Name mit falscher Zeichenkodierung")
+
+
+# ============================================================================ a real office layout
+def test_digit_tree_with_order_numbers_and_category_folders(tmp_path):
+    """An office's layout: 2/28/2842_<Bauvorhaben>/284201_<Auftrag>/284201-Ausgang, -Mail, -Text … – the
+    six-digit orders are the projects at depth 4; the category folders with the order's own number are
+    its outline (no point to check that proposes them as projects)."""
+    cats = ["Ausgang", "Bilder", "CAD", "LV", "Mail", "Sonstiges", "Tab", "Text"]
+    n = 0
+    for first in (1, 2):
+        for second in (first * 10 + 2, first * 10 + 8):
+            for k in (7, 42, 63):
+                base = second * 100 + k
+                top = f"{first}/{second}/{base}_Beratung {OBJ[k % 7]}_ Hauptstr_ 1_ Heilbronn"
+                for sub in range(1 + k % 3):
+                    order = f"{base}{sub:02d}"
+                    mk(tmp_path, *(f"{top}/{order}_Auftrag {sub} {OBJ[sub]}/{order}-{c}" for c in cats))
+                    n += 1
+    p = analyse(tmp_path).proposal
+    assert (p.pattern, p.depth, p.projects) == (r"\d{6}", 4, n)
+    assert not p.notes

@@ -24,7 +24,9 @@ Roadmap-Schritt.
   verwendet); „Bitte prüfen“-Hinweise bei Angebotsordnern, Schemata mit mehr Ablagestruktur und
   Kundenordnern mit nummerierten Unterprojekten; ein leerer Einhängepunkt löscht keinen Vorschlag;
   `/api/status` ohne absoluten Pfad der Freigabe.
-- 1790 Tests (4 Integrationstests übersprungen, 1 xfail).
+- Unterordner mit derselben Nummer wie ihr Projekt (`284201-Mail` in `284201_…`) gelten als dessen
+  Gliederung – kein „Bitte prüfen“-Hinweis mehr, der sie als Projekte vorschlägt.
+- 1791 Tests (4 Integrationstests übersprungen, 1 xfail).
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

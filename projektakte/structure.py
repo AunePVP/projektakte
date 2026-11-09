@@ -1252,6 +1252,12 @@ def _structure_note(best: _Scheme, hints: list[dict], depth: int) -> str | None:
     return None
 
 
+def _same_number(child, parent) -> bool:
+    """Does a subfolder carry exactly its project folder's number (284201-Ausgang, 284201-Mail in
+    284201_Zwischendecke …)? Such folders are the project's own outline, never projects of their own."""
+    return parent is not None and child.prefix == parent.prefix and child.groups == parent.groups
+
+
 def _inner_note(matches: list[_Node], root: Path, depth: int) -> str | None:
     """Rule 7, a point to check: the numbered subfolders inside the proposed project folders are several
     times (:data:`INNER_RATIO`) as many, carry names of their own – not one label per sub-number as an
@@ -1259,7 +1265,8 @@ def _inner_note(matches: list[_Node], root: Path, depth: int) -> str | None:
     keep folders or files of their own: they may be the projects, the proposed folders their customers
     (1020 Stadt Aachen/1020-01 Kita …). Reads at most :data:`SAMPLE_MEMBERS` of them (names only)."""
     kids = [(c, m) for m in matches for c in (m.children or ())
-            if c.token is not None and _number_kind(c.token.prefix, c.token.groups) is None]
+            if c.token is not None and _number_kind(c.token.prefix, c.token.groups) is None
+            and not _same_number(c.token, m.token)]  # "284201-Mail" in 284201_…: the project's own outline
     proposed = sum(m.weight for m in matches)
     count = sum(c.weight for c, _ in kids)
     if not kids or count < INNER_RATIO * proposed:

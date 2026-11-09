@@ -235,6 +235,27 @@ zusammenfassen: „Frage zu X wurde mit der richtigen Quelle beantwortet / nicht
 | nach Modellwechsel Suche schlecht | Projektakte rechnet Vektoren bei geändertem Embedding-Dienst automatisch neu; Indexierung abwarten |
 | Projekte werden nicht gefunden | `python -m projektakte.structure`, Statusseite „Projektordner“ |
 
+## 7a. Eure Ablage (so weit bekannt)
+
+Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
+
+```
+/mnt/projekt/2/28/2842_<Bauvorhaben>/284201_<Auftrag>/284201-Ausgang
+                                                     /284201-Bilder, -CAD, -LV, -Mail, -Sonstiges, -Tab, -Text
+```
+
+- Erste Ziffer, dann die ersten zwei Ziffern als Sammelordner, darunter das Bauvorhaben (4-stellig),
+  darunter die Aufträge (6-stellig = Bauvorhaben + 2 Ziffern) mit festen Kategorie-Ordnern.
+- Mit einem Nachbau dieser Struktur erkennt `python -m projektakte.structure`: `PROJECT_NUMBER_PATTERN=\d{6}`,
+  `PROJECT_FOLDER_DEPTH=4`, alle Aufträge gefunden, Kategorie-Ordner gehören zum Auftrag. Das muss noch
+  auf der echten Freigabe bestätigt werden (Befehl in Abschnitt 7.7).
+- **Offene Entscheidung:** Projekt = Auftrag (6-stellig, so wie die Ablage gegliedert ist) oder
+  Bauvorhaben (4-stellig, alle Aufträge zusammen)? Bei 4-stellig würden Mails, die nur die 6-stellige
+  Nummer nennen, nicht mehr automatisch über die Nummer zugeordnet.
+- **Dateitypen:** In `-Mail` liegen vermutlich Outlook-Dateien (`.msg`), in `-Text` evtl. `.doc`, in
+  `-Tab` Excel. Diese liest Projektakte noch nicht (siehe Abschnitt 8, Punkt 3) – mit echten Zahlen
+  zeigt das der Strukturbefehl.
+
 ## 8. Offene Punkte, nach Wichtigkeit
 
 1. **Schritt 17: mit der lokalen KI messen und Schwellwerte einstellen** (Abschnitt 7). Erst danach
