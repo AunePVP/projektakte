@@ -125,11 +125,15 @@ def deadline_warnings(settings) -> list[str]:
 
 def log_startup(settings, auth) -> None:
     """One INFO line with the version and the effective configuration – URLs without credentials,
-    no secrets."""
+    no secrets – including the effective project layout (number scheme, folder depth)."""
     from . import __version__
+    from .structure import current_layout
 
     for warning in deadline_warnings(settings):
         log.warning("Konfiguration: %s", warning)
+    layout = current_layout(settings)
+    if layout.warning:
+        log.warning("Projektordner: %s", layout.warning)
 
     if auth.disabled:
         access = "AUS (AUTH_DISABLED=1)"
@@ -138,10 +142,10 @@ def log_startup(settings, auth) -> None:
     log.info("Projektakte %s – Konfiguration: APP_ENV=%s, AI_MODE=%s, DEMO_MODE=%s, DATA_DIR=%s, "
              "PROJECTS_DIR=%s, MAIL_DIR=%s, LLM=%s (%s, Timeout %gs), Embeddings=%s (%s, Timeout %gs), "
              "Reranker=%s (Timeout %gs), längste Frage bis %gs (Proxy-Zeitlimit darüber), plMail=%s, "
-             "Zuordnung=%s, Zugangsschutz=%s, Proxy-Vertrauen=%s",
+             "Zuordnung=%s, Zugangsschutz=%s, Proxy-Vertrauen=%s, Projektnummern=%s",
              __version__, settings.app_env, settings.ai_mode, "an" if settings.demo_mode else "aus",
              settings.data_dir, settings.projects_dir, settings.mail_dir, public_url(settings.llm_url),
              settings.llm_model, settings.llm_timeout, public_url(settings.embed_url), settings.embed_model,
              settings.embed_timeout, public_url(settings.rerank_url), settings.rerank_timeout,
              ask_worst_case_seconds(settings), public_url(settings.plmail_url) if settings.plmail_enabled else "aus",
-             settings.assign_mode, access, trusted_proxies(settings))
+             settings.assign_mode, access, trusted_proxies(settings), layout.summary())

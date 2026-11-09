@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .config import DEFAULT_PROJECT_FOLDER_DEPTH, PROJECT_FOLDER_DEPTH_MAX, pattern_problem
 from .documents import (_sqlite_time, hide_project_documents, link_problem, refresh_fts_titles,
                         remove_project_documents, restore_project_documents, warn_once)
 
@@ -38,6 +39,19 @@ def number_regex(pattern: str) -> re.Pattern:
     return re.compile(rf"(?<![0-9A-Za-z])(?:{pattern})(?![0-9A-Za-z])", re.IGNORECASE)
 
 
+def project_head(pattern: str) -> re.Pattern:
+    """A folder name that starts with a project number: ``num`` is the number, ``name`` the rest
+    (separators after the number dropped). Raises ``re.error`` for an unusable pattern."""
+    return re.compile(rf"^(?P<num>{pattern})(?![0-9A-Za-z])[\s_\-–—:]*(?P<name>.*)$", re.IGNORECASE)
+
+
+def clamp_depth(depth: int | None) -> int:
+    """A folder depth within 1 … PROJECT_FOLDER_DEPTH_MAX (None: the default)."""
+    if depth is None:
+        return DEFAULT_PROJECT_FOLDER_DEPTH
+    return max(1, min(PROJECT_FOLDER_DEPTH_MAX, int(depth)))
+
+
 def projects_root_problem(root: Path) -> str | None:
     """Why PROJECTS_DIR cannot be read right now (German, for log and status) – or None."""
     root = Path(root)
@@ -53,15 +67,20 @@ def projects_root_problem(root: Path) -> str | None:
     return None
 
 
-def scan_projects(root: Path, pattern: str, max_depth: int = 2, *,
-                  unreadable: list[Path] | None = None) -> list[ProjectFolder]:
+def scan_projects(root: Path, pattern: str, max_depth: int = DEFAULT_PROJECT_FOLDER_DEPTH, *,
+                  unreadable: list[Path] | None = None,
+                  duplicates: list[tuple[str, Path, Path]] | None = None) -> list[ProjectFolder]:
     """Find project folders below ``root`` (e.g. ``2024/BS-2024-0137 Grundschule …``).
 
     A folder whose name starts with a project number is a project; its subfolders are not searched
-    for further projects. Hidden folders and links pointing outside ``root`` are skipped. Folders
-    that cannot be listed are appended to ``unreadable``. Nothing is ever written.
+    for further projects. Other folders are searched down to ``max_depth`` levels below ``root``
+    (PROJECT_FOLDER_DEPTH: 1 = only directly in ``root``). Hidden folders and links pointing outside
+    ``root`` are skipped. Folders that cannot be listed are appended to ``unreadable``; a second folder
+    with a number already found is skipped – logged, or appended to ``duplicates`` as (number, first
+    folder, skipped folder) if that list is given. Nothing is ever written.
     """
-    head = re.compile(rf"^(?P<num>{pattern})(?![0-9A-Za-z])[\s_\-–—:]*(?P<name>.*)$", re.IGNORECASE)
+    head = project_head(pattern)
+    max_depth = clamp_depth(max_depth)
     found: dict[str, ProjectFolder] = {}
     root = Path(root)
     if not root.is_dir():
@@ -94,7 +113,10 @@ def scan_projects(root: Path, pattern: str, max_depth: int = 2, *,
             if m:
                 number = m.group("num").upper()
                 if number in found:
-                    log.warning("Projektnummer %s doppelt: %s und %s", number, found[number].path, child)
+                    if duplicates is None:
+                        log.warning("Projektnummer %s doppelt: %s und %s", number, found[number].path, child)
+                    else:
+                        duplicates.append((number, found[number].path, child))
                     continue
                 found[number] = ProjectFolder(number, m.group("name").strip() or number, child)
             elif depth < max_depth:
@@ -165,23 +187,37 @@ def sync_projects(conn: sqlite3.Connection, folders: list[ProjectFolder], *,
     return stats
 
 
-def sync_from_folder(conn: sqlite3.Connection, root: Path, pattern: str) -> dict:
+def unchanged_stats(active: int, problem: str) -> dict:
+    """Stats of a project sync that was skipped (``warning``: German, for log and status page)."""
+    return {"projects": active, "added": 0, "updated": 0, "deactivated": 0, "documents_removed": 0,
+            "warning": f"{problem}; Projekte und Dokumente wurden nicht abgeglichen"}
+
+
+def active_count(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT COUNT(*) FROM projects WHERE active = 1").fetchone()[0]
+
+
+def sync_from_folder(conn: sqlite3.Connection, root: Path, pattern: str, *,
+                     max_depth: int = DEFAULT_PROJECT_FOLDER_DEPTH) -> dict:
     """Scan PROJECTS_DIR and store the result – unless the folder looks unavailable.
 
     A missing or unreadable folder, or one that suddenly contains no projects although active
     projects are known (share not mounted yet), changes nothing: the stats then carry ``warning``
-    and the caller skips the documents as well."""
-    active = conn.execute("SELECT COUNT(*) FROM projects WHERE active = 1").fetchone()[0]
+    and the caller skips the documents as well. So does an unusable ``pattern``."""
+    active = active_count(conn)
+    if bad := pattern_problem(pattern):
+        problem = f"PROJECT_NUMBER_PATTERN={pattern} ist unbrauchbar: {bad}"
+        log.warning("%s – Projekte und Dokumente bleiben unverändert", problem)
+        return unchanged_stats(active, problem)
     problem = projects_root_problem(root)
     unreadable: list[Path] = []
-    folders = [] if problem else scan_projects(root, pattern, unreadable=unreadable)
+    folders = [] if problem else scan_projects(root, pattern, max_depth, unreadable=unreadable)
     if not problem and not folders and active:
         problem = (f"Projektordner {root} enthält keine Projekte mehr (bisher {active} aktiv) – "
                    "Laufwerk nicht eingebunden?")
     if problem:
         log.warning("%s – Projekte und Dokumente bleiben unverändert", problem)
-        return {"projects": active, "added": 0, "updated": 0, "deactivated": 0, "documents_removed": 0,
-                "warning": f"{problem}; Projekte und Dokumente wurden nicht abgeglichen"}
+        return unchanged_stats(active, problem)
     stats = sync_projects(conn, folders, unreadable=unreadable)
     if unreadable:
         stats["unreadable"] = [str(p) for p in unreadable]

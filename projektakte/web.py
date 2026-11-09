@@ -24,10 +24,11 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from markupsafe import Markup, escape
 
-from . import __version__, db, inbox
+from . import __version__, db, inbox, structure
 from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
-from .registry import get_project, list_projects
+from .config import DEFAULT_PROJECT_NUMBER_PATTERN
+from .registry import get_project, list_projects, number_regex
 from .search import hybrid_search
 from .webtext import (SNIPPET_CHARS, breakable_path, highlight, join_spaced_codes, matcher, parse_blocks, passage,
                       render_html, same_heading, snippet, trim_overlap)
@@ -246,10 +247,23 @@ def auth_disabled_for(request: Request) -> bool:
 
 
 def code_pattern_of(request: Request | None) -> str | None:
-    """The configured shape of project numbers (PROJECT_NUMBER_PATTERN): what a number typed with
-    spaces ("BS 2024 0233") is joined into for search links and highlighting."""
+    """The effective shape of project numbers (PROJECT_NUMBER_PATTERN, with "auto" the stored detection;
+    structure.NO_MATCH while none is known): what a number typed with spaces ("BS 2024 0233") is joined
+    into for search links and highlighting. Looked up once per request."""
     settings = getattr(getattr(getattr(request, "app", None), "state", None), "settings", None)
-    return getattr(settings, "project_number_pattern", None)
+    if settings is None:
+        return None
+    state = getattr(request, "state", None)
+    cached = getattr(state, "project_number_shape", None) if state is not None else None
+    if cached is not None:
+        return cached
+    pattern = structure.number_pattern(settings)
+    if state is not None:
+        try:
+            state.project_number_shape = pattern
+        except AttributeError:
+            pass
+    return pattern
 
 
 @pass_context
@@ -423,15 +437,28 @@ _IDENTIFIER_TOKEN = re.compile(r"[^\W_]+(?:[-/.][^\W_]+)*")
 MAX_PROJECT_LINKS = 3
 
 
+@lru_cache(maxsize=16)
+def _number_finder(pattern: str | None) -> re.Pattern | None:
+    try:
+        return number_regex(pattern or DEFAULT_PROJECT_NUMBER_PATTERN)
+    except re.error:
+        return None
+
+
 def projects_named_in(conn, query: str, code_pattern: str | None = None) -> list[dict]:
     """Projects whose number appears in a search query ('BS-2024-0233', also typed with spaces as
-    'bs 2024 0233' → link to the project page; ``code_pattern``: PROJECT_NUMBER_PATTERN)."""
+    'bs 2024 0233' → link to the project page; ``code_pattern``: the effective PROJECT_NUMBER_PATTERN).
+    Candidates are what has the shape of a project number (also 'P12345', '2024 017') and, as
+    before, every token with digits and a hyphen."""
+    joined = join_spaced_codes(query or "", code_pattern)
+    finder = _number_finder(code_pattern)
+    shaped = [m.group(0) for m in finder.finditer(joined)] if finder else []
+    tokens = [t for t in _IDENTIFIER_TOKEN.findall(joined) if any(c.isdigit() for c in t) and "-" in t]
     found: dict[str, dict] = {}
-    for token in _IDENTIFIER_TOKEN.findall(join_spaced_codes(query or "", code_pattern)):
-        if any(c.isdigit() for c in token) and "-" in token:
-            p = get_project(conn, token)
-            if p:
-                found.setdefault(p["number"], p)
+    for token in dict.fromkeys(shaped + tokens):
+        p = get_project(conn, token)
+        if p:
+            found.setdefault(p["number"], p)
         if len(found) >= MAX_PROJECT_LINKS:
             break
     return list(found.values())
@@ -449,11 +476,11 @@ def search_page(request: Request, q: str = "", project: str = "", weak: str = ""
         if query:
             res = hybrid_search(conn, request.app.state.ai, str(s.db_path), query, project=number or None,
                                 k=SEARCH_HITS, rerank_top_k=s.rerank_top_k, synonyms_file=s.synonyms_file)
-            named = projects_named_in(conn, query, s.project_number_pattern)
+            named = projects_named_in(conn, query, code_pattern_of(request))
         projects = list_projects(conn)
     if res is not None:
         view = search_view(res, min_score=getattr(s, "search_min_rerank", 0.05), show_weak=weak == "1",
-                           query=query, code_pattern=s.project_number_pattern)
+                           query=query, code_pattern=code_pattern_of(request))
     return render(request, "search.html", q=query, project=number, projects=projects, res=res, view=view,
                   named_projects=named, all_projects_url=search_url(query, None, weak="1" if weak == "1" else ""),
                   weak_url=search_url(query, number, weak="1"), strong_url=search_url(query, number))

@@ -8,11 +8,72 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
 DEFAULT_PROJECT_NUMBER_PATTERN = r"BS-\d{4}-\d{4}"
+# PROJECT_NUMBER_PATTERN=auto: the scheme is detected from the folder names once and stored (structure.py)
+AUTO = "auto"
+# PROJECT_FOLDER_DEPTH: project folders sit directly in PROJECTS_DIR (1) or up to n-1 levels below it
+# (year folders, customer folders); 2 = directly or one level below
+DEFAULT_PROJECT_FOLDER_DEPTH = 2
+PROJECT_FOLDER_DEPTH_MAX = 6
+
+
+def pattern_problem(pattern: str) -> str | None:
+    """Why ``pattern`` cannot serve as PROJECT_NUMBER_PATTERN (German, for log and status page) – or
+    None. It must be a regular expression on its own (no unbalanced parenthesis that would leak out of
+    the group it is placed in), must not use the group names ``num``/``name`` of the folder scan and
+    must not match an empty text (every folder would be a project)."""
+    try:
+        re.compile(pattern)
+        re.compile(rf"(?P<num>{pattern})(?P<name>.*)")
+    except (re.error, RecursionError, OverflowError) as exc:
+        return f"kein gültiger regulärer Ausdruck ({exc})"
+    if re.fullmatch(f"(?:{pattern})", "", re.IGNORECASE) is not None:
+        return "passt auch auf leeren Text – jeder Ordner wäre ein Projekt"
+    return None
+
+
+def _project_number_pattern(env: Mapping[str, str], warnings: list[str]) -> str:
+    """PROJECT_NUMBER_PATTERN: a regular expression, ``auto``, or the default. An unusable expression is
+    kept (the project sync then pauses with a clear message, see indexer) and named at start-up."""
+    raw = (env.get("PROJECT_NUMBER_PATTERN") or "").strip()  # a stray blank in the env file is no part of it
+    if not raw:
+        return DEFAULT_PROJECT_NUMBER_PATTERN
+    if raw.lower() == AUTO:
+        return AUTO
+    if problem := pattern_problem(raw):
+        warnings.append(f"PROJECT_NUMBER_PATTERN={raw} ist unbrauchbar: {problem} – Projekte werden nicht "
+                        "abgeglichen, bis das korrigiert ist (python -m projektakte.structure schlägt ein "
+                        "Schema vor)")
+    return raw
+
+
+def _project_folder_depth(env: Mapping[str, str], auto: bool, warnings: list[str]) -> int | None:
+    """PROJECT_FOLDER_DEPTH: 1 to PROJECT_FOLDER_DEPTH_MAX, or None = taken from the automatic
+    detection (only with PROJECT_NUMBER_PATTERN=auto; there also when it is not set)."""
+    raw = (env.get("PROJECT_FOLDER_DEPTH") or "").strip()
+    fallback = None if auto else DEFAULT_PROJECT_FOLDER_DEPTH
+    if not raw:
+        return fallback
+    if raw.lower() == AUTO:
+        if not auto:
+            warnings.append(f"PROJECT_FOLDER_DEPTH=auto gilt nur zusammen mit PROJECT_NUMBER_PATTERN=auto – "
+                            f"verwendet wird {DEFAULT_PROJECT_FOLDER_DEPTH}")
+        return fallback
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if not 1 <= value <= PROJECT_FOLDER_DEPTH_MAX:
+        allowed = f"1 bis {PROJECT_FOLDER_DEPTH_MAX}" + (" oder auto" if auto else "")
+        used = "die automatisch erkannte Tiefe" if auto else str(DEFAULT_PROJECT_FOLDER_DEPTH)
+        warnings.append(f"PROJECT_FOLDER_DEPTH={raw} ist ungültig (erlaubt: {allowed}) – verwendet wird {used}")
+        return fallback
+    return value
 
 
 def _bool(value: str | None, default: bool = False) -> bool:
@@ -175,6 +236,14 @@ class Settings:
     extract_memory_mb: int = 2048
     extract_cpu_seconds: float = 120.0
     extract_wall_seconds: float = 3600.0
+    # levels below PROJECTS_DIR at which project folders are looked for (PROJECT_FOLDER_DEPTH);
+    # None: the depth found by the automatic detection (PROJECT_NUMBER_PATTERN=auto, see structure.py)
+    project_folder_depth: int | None = DEFAULT_PROJECT_FOLDER_DEPTH
+
+    @property
+    def project_pattern_auto(self) -> bool:
+        """PROJECT_NUMBER_PATTERN=auto: the scheme comes from the folder names (structure.py)."""
+        return self.project_number_pattern == AUTO
 
     @property
     def plmail_enabled(self) -> bool:
@@ -232,13 +301,16 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         "extract_cpu_seconds": _timeout(e, "EXTRACT_CPU_SECONDS", 120.0, warnings),
         "extract_wall_seconds": _timeout(e, "EXTRACT_WALL_SECONDS", 3600.0, warnings),
     }
+    pattern = _project_number_pattern(e, warnings)
+    folder_depth = _project_folder_depth(e, pattern == AUTO, warnings)
     return Settings(
         port=_int(e.get("PORT"), 8000),
         data_dir=data_dir,
         app_env=app_env,
         projects_dir=Path(e.get("PROJECTS_DIR") or default_projects),
         mail_dir=Path(e.get("MAIL_DIR") or default_mails),
-        project_number_pattern=e.get("PROJECT_NUMBER_PATTERN") or DEFAULT_PROJECT_NUMBER_PATTERN,
+        project_number_pattern=pattern,
+        project_folder_depth=folder_depth,
         demo_mode=demo_mode,
         ai_mode=(e.get("AI_MODE") or "real").strip().lower(),
         llm_url=(e.get("LLM_URL") or "http://192.168.178.62:8000/v1").rstrip("/"),

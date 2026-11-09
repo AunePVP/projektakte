@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 
-from . import db, extract_worker
+from . import db, extract_worker, structure
 from .ai.services import AIServices
 from .assign import assign_mails
 from .config import Settings
@@ -18,7 +18,7 @@ from .documents import index_all_documents, reprocess_attachments
 from .mails.eml_source import sync_eml_folder
 from .mails.jmap_source import JMAPClient, sync_plmail
 from .mails.store import sweep_cache
-from .registry import sync_from_folder
+from .registry import active_count, sync_from_folder, unchanged_stats
 from .vectors import embed_pending
 
 log = logging.getLogger("projektakte.indexer")
@@ -67,7 +67,17 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
         if (demo := _demo_data(conn, settings)) is not None:
             stats["demo_purge"] = demo
         phase("Projekte")
-        stats["projects"] = sync_from_folder(conn, settings.projects_dir, settings.project_number_pattern)
+        # the effective layout: PROJECT_NUMBER_PATTERN, or with "auto" the stored detection (detected
+        # and stored here the first time); without a usable scheme nothing is synced (like an unmounted share)
+        layout, structure_info = structure.layout_for_index(conn, settings)
+        if structure_info:
+            stats["structure"] = structure_info
+        if layout.pattern is None:
+            log.warning("%s – Projekte und Dokumente bleiben unverändert", layout.problem)
+            stats["projects"] = unchanged_stats(active_count(conn), layout.problem)
+        else:
+            stats["projects"] = sync_from_folder(conn, settings.projects_dir, layout.pattern,
+                                                 max_depth=layout.depth)
         conn.commit()
         llm = ai.llm if ai else None
         phase("Dokumente")
@@ -92,12 +102,15 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
             phase("Embeddings")
             stats["embeddings"] = embed_pending(conn, ai.embed)
         phase("Zuordnung")
-        stats["assignment"] = assign_mails(conn, settings.project_number_pattern,
-                                           min_share=settings.assign_min_share,
-                                           min_lead=settings.assign_min_lead,
-                                           vector_key=str(settings.db_path),
-                                           mode=settings.assign_mode,
-                                           min_similarity=settings.assign_min_similarity)
+        if layout.pattern is None:  # mails wait (stay "pending") until project numbers can be recognised
+            stats["assignment"] = {"note": "nicht ausgeführt – kein gültiges Projektnummern-Schema"}
+        else:
+            stats["assignment"] = assign_mails(conn, layout.pattern,
+                                               min_share=settings.assign_min_share,
+                                               min_lead=settings.assign_min_lead,
+                                               vector_key=str(settings.db_path),
+                                               mode=settings.assign_mode,
+                                               min_similarity=settings.assign_min_similarity)
     stats["seconds"] = round(time.time() - started, 2)
     log.info("Indexierung fertig: %s", stats)
     return stats

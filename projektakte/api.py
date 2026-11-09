@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from . import db, inbox as inbox_queries
+from . import db, inbox as inbox_queries, structure
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .ask import ask as answer_question
 from .search import hybrid_search
@@ -229,8 +229,10 @@ def status(request: Request) -> dict:
             "chunks": one("SELECT COUNT(*) FROM chunks"),
             "chunks_without_vector": one("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL"),
         }
+        # which folders count as projects: effective PROJECT_NUMBER_PATTERN and PROJECT_FOLDER_DEPTH
+        layout = structure.current_layout(s, conn).to_dict()
     return {"indexing": request.app.state.indexer.status(), "counts": counts,
-            "ai_mode": s.ai_mode, "demo_mode": s.demo_mode, "assign_mode": s.assign_mode}
+            "ai_mode": s.ai_mode, "demo_mode": s.demo_mode, "assign_mode": s.assign_mode, "layout": layout}
 
 
 @router.post("/reindex", status_code=202)

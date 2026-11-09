@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import __version__, db
+from . import __version__, db, structure
 from .assign import suggest_for_text
 from .mails.jmap_source import PROJECT_CAP, PROJECT_PROP
 
@@ -72,8 +72,10 @@ def suggest(request: Request, req: SuggestRequest) -> dict:
         raise HTTPException(400, "Betreff, Text oder Anhangnamen fehlen")
     base = _base_url(request)
     with db.session(s.db_path) as conn:
+        # numbers in the mail are found with the effective scheme (configured, or detected with "auto");
+        # while there is none, only the content vote suggests
         items = suggest_for_text(
-            conn, request.app.state.ai, str(s.db_path), s.project_number_pattern,
+            conn, request.app.state.ai, str(s.db_path), structure.number_pattern(s, conn),
             subject=req.subject[:1000], body=req.body[:MAX_TEXT], attachments=[a[:300] for a in req.attachments[:50]],
             sender=req.sender[:300], limit=max(1, min(req.limit, 10)),
             min_share=s.assign_min_share, min_lead=s.assign_min_lead,
