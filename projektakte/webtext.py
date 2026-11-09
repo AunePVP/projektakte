@@ -424,6 +424,7 @@ _QUERY_ENDINGS = ("e", "en", "es", "n", "s")
 _TEXT_ENDINGS = ("e", "em", "en", "es", "n", "s")
 _ADJECTIVE_ENDINGS = ("t", "d", "ig", "lich", "isch")  # beauftragt, vorsitzend, sachverständig
 MIN_HEAD_CHARS = 5  # shorter words (Raum, Weg, Lage) do not mark compounds by their head
+MAX_WORD_CHARS = 80  # longer "words" (a mail subject without spaces, base64) are no compounds to split
 
 
 def _head_forms(word: str) -> set[str]:
@@ -514,7 +515,10 @@ class QueryMatcher:
                     and _compound_head(t[:-len(sw)], sw, capital if cls is None else cls):
                 return True  # the text names the head: Baubesprechung → Besprechung (not short heads
                 #              such as Anlage, Raum, nor Rauchableitung → Leitung)
-        for i in range(1, len(w) - MIN_HEAD_CHARS + 1):  # compound head: Genehmigung → Baugenehmigung(en)
+        if len(w) > MAX_WORD_CHARS or not self.heads:
+            return any(sw == a or w == a or (len(a) >= 4 and w.startswith(a)) for a in self.alts)
+        longest = max(len(h) for h in self.heads)  # only cuts that leave a known head can match
+        for i in range(max(1, len(w) - longest), len(w) - MIN_HEAD_CHARS + 1):  # Genehmigung → Baugenehmigung(en)
             head = w[i:]  # (not Leitung → Ableitung)
             if head not in self.heads:
                 continue

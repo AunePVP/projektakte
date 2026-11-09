@@ -1735,6 +1735,26 @@ def _time_relations(event: QueryTerm, text: str) -> set[str]:
     return out
 
 
+def _year_of(day: tuple, u: "Unit") -> int | None:
+    """The year of a date written without one ("am 1. September", "23.01."): the one that puts the day
+    nearest to the source's own date – a mail of 31.12.2024 proposing "den 11. März" means 2025, a mail
+    of 15.03.2025 about "die Begehung am 11. März" means 2025 as well. Unknown without a dated source –
+    then it matches no asked year."""
+    src = u.source.date
+    if src is None:
+        return None
+    _, month, dom = day
+    best = None
+    for year in (src.year - 1, src.year, src.year + 1):
+        try:
+            distance = abs((date(year, month, dom) - date(src.year, src.month, src.day)).days)
+        except ValueError:  # 29.02. in a year without it
+            continue
+        if best is None or distance < best[0]:
+            best = (distance, year)
+    return best[1] if best else None
+
+
 def qualifier_matched(ql: Qualifier, u: "Unit") -> bool:
     """Does the sentence name the asked qualifier – in itself, or (when it names none of its kind) in its
     section heading or source? "Die Abnahme der Feststellanlage im Wohnbereich B …" does not answer a
@@ -1749,7 +1769,8 @@ def qualifier_matched(ql: Qualifier, u: "Unit") -> bool:
         for text in levels:
             named = _dates_in(text)
             if named:
-                return any(d == asked or (d[0] is None and d[1:] == asked[1:]) for d, _ in named)
+                return any(d == asked or (d[0] is None and d[1:] == asked[1:] and _year_of(d, u) == asked[0])
+                           for d, _ in named)
         return u.source.date is not None and (u.source.date.year, u.source.date.month, u.source.date.day) == asked
     if ql.kind == "time":
         whole = " ".join(levels)
@@ -2060,10 +2081,13 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
         if s.project:
             project_units.setdefault(s.project, []).extend(units[s.n])
     out: list[Scored] = []
+    # "die Adresse der Prüfingenieurin": her own address, not any address in a report she wrote (the site)
+    possessors = {t.term for t in q.roles if re.search(_PERSON_ATTR + r"\s+(?:der|des|vom|von\s+der|von\s+dem)\s+"
+                                                       + re.escape(t.word), fold(q.text))}
     for s in sources:
         if q.projects and s.project not in q.projects:
             continue
-        authored = {t.term for t in q.roles if _authored(t, s, aliases)}
+        authored = {t.term for t in q.roles if t.term not in possessors and _authored(t, s, aliases)}
         if s.sender:  # a person named in the question wrote this mail
             sender = set(words(s.sender))
             authored |= {t.term for t in q.terms if t.noun and (t.word in sender or t.term in sender)}
@@ -2205,6 +2229,15 @@ def _type_bonus(q: Question, types: frozenset[str]) -> float:
     return 1.0 if q.prefer in types or not q.prefer else 0.5
 
 
+# attributes of a person: asked of a role ("die Anschrift des Bauherrn"), they must be named with the role
+# itself – a document the role wrote does not make its other addresses or names the role's own
+_PERSON_ATTR = r"\b(?:adresse|anschrift|postanschrift|telefon\w*|handynummer|mobilnummer|e-?mail\w*|mailadresse|" \
+               r"kontakt\w*|sitz|buro|vorname|nachname|name)\b"
+
+# words that ask for findings in general – they need a thing they are about when the question names one
+_GENERIC_TOPIC = re.compile(r"(?:mang|beanstand|feststell|festgestell|bemang|kritik|kritis|moni|befund|anmerk)")
+
+
 def _answerable(q: Question, sc: Scored, attr_hit: bool) -> bool:
     """Fail closed: the sentence must cover the topic, and a question for a value must find one;
     a decision question needs a sentence that states a decision."""
@@ -2225,6 +2258,11 @@ def _answerable(q: Question, sc: Scored, attr_hit: bool) -> bool:
             not q.project_words or any(query_term_in(t, sc.unit.terms) for t in q.project_words))
     if sc.coverage < MIN_COVERAGE - 1e-9:
         return False
+    objects = [t for t in q.terms if t.noun and not t.weak and not _is_role(t) and not _GENERIC_TOPIC.match(t.term)]
+    around = sc.unit.terms | sc.unit.ctx_terms | sc.unit.label_terms | sc.unit.source.header_terms
+    if objects and not any(t.term in sc.matched or query_term_in(t, around) for t in objects):
+        return False  # "Welche Mängel … an der Brandmeldeanlage?" – not a defect of the Feststellanlage:
+        #               the defect word, the party and "festgestellt" alone do not make the topic
     # "Nutzbare Breite 1,0 m." in the draft named "…Fluchtbalkon…": attribute and value here, topic above
     return sc.inline or sc.authored or sc.unit.section_topic or (q.temporal and not q.types) or (attr_hit and bool(sc.types))
 

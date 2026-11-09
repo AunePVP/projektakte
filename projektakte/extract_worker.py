@@ -100,7 +100,9 @@ class Limits:
 
     def cpu_limit(self) -> str:
         """``Extracted.limit`` of a result cut short by the CPU limit."""
-        return f"cpu={self.cpu_seconds:g}"
+        value = float(self.cpu_seconds)
+        short = f"{value:g}"  # "120", "1.5" – but exact where "%g" would round (100.0001 re-read every pass)
+        return f"cpu={short if float(short) == value else repr(value)}"
 
     def lifts(self, limit: str) -> bool:
         """Are these limits higher than the one that cut a result short (``Extracted.limit``, e.g.

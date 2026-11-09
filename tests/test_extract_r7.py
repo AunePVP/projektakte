@@ -97,6 +97,8 @@ def test_limits_lift_only_the_limit_that_cut_a_result_short():
     limits = Limits(memory_mb=2048, cpu_seconds=120)
     assert limits.memory_limit() == "memory=2048" and limits.cpu_limit() == "cpu=120"
     assert Limits(cpu_seconds=1.5).cpu_limit() == "cpu=1.5"
+    precise = Limits(cpu_seconds=100.0001)  # "%g" would write 100 and re-read a refused file on every pass
+    assert precise.cpu_limit() == "cpu=100.0001" and not precise.lifts(precise.cpu_limit())
     assert limits.lifts("memory=256") and limits.lifts("cpu=1")
     assert not limits.lifts("memory=2048") and not limits.lifts("memory=4096")
     assert not limits.lifts("cpu=120") and not limits.lifts("cpu=600")
