@@ -11,8 +11,11 @@ that way as well), pipe tables (``| Angabe | Inhalt |`` with ``|---|---|``, DOCX
   word boundaries, and of a mail it shows the body only (:func:`mail_body`: no Betreff/Von/Datum
   lines, salutation or closing – the label of the hit names subject, sender and date),
 * :func:`highlight` – ``<mark>`` for the query words. Identifiers (project numbers, file numbers,
-  "T90", "DIN 4102") are matched as a whole, never as single parts, and never inside dates; a code
-  typed with spaces ("BS 2024 0233") counts as the written code (:func:`join_spaced_codes`),
+  "T90", "DIN 4102") are matched as a whole, never as single parts, and never inside dates; a
+  project number typed with spaces ("BS 2024 0233") counts as the written number – only in the
+  configured shape of a project number (:func:`join_spaced_codes`). Parts of compounds are marked
+  only where the word really splits ("Baubesprechung" marks "Besprechung", "Rauchableitung" not
+  "Leitung"),
 * :func:`trim_overlap` – the paragraph that chunking repeats at the start of the next section is
   shown only once on the document page.
 
@@ -24,9 +27,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
+from itertools import product
 
 from markupsafe import Markup, escape
 
+from .config import DEFAULT_PROJECT_NUMBER_PATTERN
 from .textutil import QUESTION_WORDS, STOPWORDS, fold, query_terms, stem
 
 SNIPPET_CHARS = 400
@@ -251,24 +256,62 @@ _SEP = re.compile(r"[-/.]")
 _DOTTED_NUMBER = re.compile(r"^\d+(?:\.\d+)+$")  # dates, decimals, thousands, section numbers
 _ISO_DATE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
 MIN_IDENTIFIER_CHARS = 3  # "T90", "F30", "0137" – a lone "1" is no identifier
-# A reference code typed with spaces: "BS 2024 0233", "bs 2023 0412", "BS2024 0233" – letters, then two
-# to four groups of digits (the shape of textutil's reference codes). A single group stays apart
-# ("DIN 4102"), lower-case letters count only as a short code ("bs 2023 0412", not "seite 12 13").
-_SPACED_CODE = re.compile(r"(?<![^\W_])([^\W\d_]{1,6})([-/]?|\s?)(\d{2,6}(?:(?:\s+|[-/])\d{2,6}){1,3})(?![^\W_])")
-_SPACES = re.compile(r"\s+")
+# A run of letters and up to four groups of digits, apart or joined: "BS 2024 0233", "bs 2023 0412",
+# "BS2024 0233", "BS 2024-0233" – but also "DIN 14095 2007", "KW 12 13", "BS-2024-0233 2025".
+_CODE_RUN = re.compile(r"(?<![^\W_])([^\W\d_]{1,6})((?:(?:[-/]|\s+)?\d{1,6})(?:(?:[-/]|\s+)\d{1,6}){0,3})(?![^\W_])")
+_RUN_GROUP = re.compile(r"([-/]|\s+)?(\d+)")
+# What may stand for a space between the parts of a code: the usual hyphen first ('BS 2024 0233' →
+# 'BS-2024-0233'), then a slash or nothing, as the configured number shape asks for.
+_SPACE_AS = ("-", "/", "")
+_GLUED_AS = ("", "-")  # letters written onto the digits ('BS2024 0233') stay so if the shape allows it
 
 
-def join_spaced_codes(text: str) -> str:
-    """Reference codes typed with spaces in their written form: 'BS 2024 0233' → 'BS-2024-0233'.
-    Then they match the code in a text as a whole (not '2024' alone), name the project like
-    'BS-2024-0233' does, and their letters are not taken for an abbreviation (BS → Brandschutz)."""
+@lru_cache(maxsize=16)
+def _code_shape(pattern: str | None) -> re.Pattern | None:
+    """The shape of a project number (PROJECT_NUMBER_PATTERN; default: config) as a regex, or None
+    if the configured pattern is unusable."""
+    try:
+        return re.compile(f"(?:{pattern or DEFAULT_PROJECT_NUMBER_PATTERN})", re.IGNORECASE)
+    except re.error:
+        return None
+
+
+def _join_run(prefix: str, digits: str, shape: re.Pattern) -> str | None:
+    """The run ``prefix`` + ``digits`` with the spaces of a project number joined, or None."""
+    groups = _RUN_GROUP.findall(digits)  # (gap before the group, group)
+    spaced = [i for i, (gap, _) in enumerate(groups) if gap.isspace()]
+    if not spaced:
+        return None
+    written = prefix + "".join(gap + group for gap, group in groups[:spaced[0]])
+    if spaced[0] and shape.fullmatch(written):  # a number written out is never extended
+        return None
+    for k in range(len(groups), spaced[0], -1):  # the longest run that makes a number
+        options = [_SPACE_AS if gap.isspace() else (gap,) if gap else _GLUED_AS for gap, _ in groups[:k]]
+        for gaps in product(*options):
+            joined = prefix + "".join(g + group for g, (_, group) in zip(gaps, groups[:k]))
+            if shape.fullmatch(joined):
+                return joined + "".join(gap + group for gap, group in groups[k:])
+    return None
+
+
+def join_spaced_codes(text: str, code_pattern: str | None = None) -> str:
+    """Project numbers typed with spaces in their written form: 'BS 2024 0233' → 'BS-2024-0233'.
+    Then they match the number in a text as a whole (not '2024' alone), name the project like
+    'BS-2024-0233' does, and their letters are not taken for an abbreviation (BS → Brandschutz).
+
+    Only what then has the shape of a project number (``code_pattern``: PROJECT_NUMBER_PATTERN,
+    default as configured out of the box) is joined. Ordinary text keeps its spaces – a norm
+    ("DIN 14095 2007", "DIN VDE 0100-560"), an abbreviation with numbers ("BMA 2022 2023",
+    "KW 12 13", "ca 30 40") – and so does a number that is written out already ("BS-2024-0233 2025"
+    is the number and a year, not one longer number)."""
+    shape = _code_shape(code_pattern)
+    if shape is None or not text:
+        return text or ""
+
     def join(m: re.Match) -> str:
-        prefix, sep, digits = m.groups()
-        short_code = len(prefix) <= 3 and fold(prefix) not in STOPWORDS and fold(prefix) not in QUESTION_WORDS
-        if not any(c.isspace() for c in m.group(0)) or not (prefix.isupper() or short_code):
-            return m.group(0)
-        return f"{prefix}{'/' if sep == '/' else '-'}{_SPACES.sub('-', digits)}"
-    return _SPACED_CODE.sub(join, text or "")
+        joined = _join_run(m.group(1), m.group(2), shape)
+        return m.group(0) if joined is None else joined
+    return _CODE_RUN.sub(join, text)
 
 
 def _segments(token: str) -> list[tuple[int, int, str]]:
@@ -285,6 +328,33 @@ def _whole_only(token: str) -> bool:
     return bool(_DOTTED_NUMBER.match(token) or _ISO_DATE.match(token))
 
 
+# Verb prefixes (folded). A word that is only such a prefix plus another word is a derivation, not a
+# compound: "ausgeführt" is no kind of "geführt", "Überprüfung" none of "Prüfung", "Zufahrt" none of "Fahrt".
+_VERB_PREFIXES = frozenset(("zuruck", "zusammen", "statt", "durch", "fest", "frei", "nach", "teil", "uber", "auf",
+                            "aus", "bei", "ein", "her", "hin", "mit", "vor", "weg", "ab", "an", "um", "zu",
+                            "miss", "emp", "ent", "ver", "zer", "be", "er", "ge"))
+# … and those of them that no noun ends with: at the end of a compound's first part they belong to the
+# head – a Rauchableitung is a Rauch-Ableitung (no "Leitung"), a Brandabschnitt a Brand-Abschnitt.
+_HEAD_PREFIXES = ("zusammen", "zuruck", "durch", "nach", "uber", "vor", "bei", "mit", "ab", "zu")
+# Inseparable prefixes form nouns from verbs only, mostly in -ung: Treppenhaus-Belüftung, not -Lüftung.
+# Nouns may end with the same letters (Probe, Übergabe, Fundament), so only before an -ung noun that
+# has no prefix of its own (Probebetrieb, Übergabebesprechung keep their heads).
+_INSEPARABLE = ("miss", "emp", "ent", "ver", "zer", "be")
+_OWN_PREFIX = _INSEPARABLE + ("er", "ge")
+
+
+def _compound_head(modifier: str, head: str) -> bool:
+    """Is the folded word ``head`` the head of the compound ``modifier + head``? A compound part is
+    only marked where the word really splits there: Baubesprechung → Besprechung, Hochhausrichtlinie →
+    Richtlinie, Feuerlöscherwartung → Wartung – but not Rauchableitung → Leitung, ausgeführt →
+    geführt or Treppenhausbelüftung → Lüftung. Prefix-like endings of nouns (Hoch-haus, Treppen-raum,
+    Feuer-löscher) do not prevent a split."""
+    if modifier in _VERB_PREFIXES or modifier.endswith(_HEAD_PREFIXES):
+        return False
+    return not (modifier.endswith(_INSEPARABLE) and head.endswith(("ung", "ungen"))
+                and not head.startswith(_OWN_PREFIX))
+
+
 class QueryMatcher:
     """What a search query matches in a text – shared by highlighting, snippets and the search page.
 
@@ -296,8 +366,8 @@ class QueryMatcher:
       does not mark Löschwasser) – and single-word abbreviations/synonyms (BMA → Brandmeldeanlage).
     """
 
-    def __init__(self, query: str):
-        query = join_spaced_codes(query or "")  # "BS 2024 0233" is the code BS-2024-0233
+    def __init__(self, query: str, code_pattern: str | None = None):
+        query = join_spaced_codes(query or "", code_pattern)  # "BS 2024 0233" is the number BS-2024-0233
         self.identifiers: list[tuple[str, ...]] = []
         rest: list[str] = []
         for m in _COMPOUND.finditer(query):
@@ -338,10 +408,11 @@ class QueryMatcher:
                 return True
             if len(t) >= 4 and w.startswith(t):  # word forms, compounds starting with the word
                 return True
-            if len(t) >= 5 and w.endswith(t):  # compound head: Genehmigung → Baugenehmigung
-                return True
-            if len(sw) >= 6 and len(t) - len(sw) >= 3 and t.endswith(sw):  # the text names the head:
-                return True  # Baubesprechung → Besprechung (not short heads such as Anlage, Raum)
+            if len(t) >= 5 and w.endswith(t) and _compound_head(w[:-len(t)], t):  # compound head:
+                return True  # Genehmigung → Baugenehmigung (not Leitung → Ableitung)
+            if len(sw) >= 6 and len(t) - len(sw) >= 3 and t.endswith(sw) and _compound_head(t[:-len(sw)], sw):
+                return True  # the text names the head: Baubesprechung → Besprechung (not short heads
+                #              such as Anlage, Raum, nor Rauchableitung → Leitung)
         return any(sw == a or w == a or (len(a) >= 4 and w.startswith(a)) for a in self.alts)
 
     def _identifier_span(self, token: str, idents: list[tuple[str, ...]]) -> tuple[int, int] | None:
@@ -394,15 +465,16 @@ class QueryMatcher:
 
 
 @lru_cache(maxsize=256)
-def matcher(query: str) -> QueryMatcher:
-    return QueryMatcher(query)
+def matcher(query: str, code_pattern: str | None = None) -> QueryMatcher:
+    """The (cached) matcher of a query; ``code_pattern``: shape of project numbers (PROJECT_NUMBER_PATTERN)."""
+    return QueryMatcher(query, code_pattern)
 
 
 # ------------------------------------------------------------------------------------- output
-def highlight(text: str, query: str) -> Markup:
+def highlight(text: str, query: str, code_pattern: str | None = None) -> Markup:
     """Escape ``text`` and mark the words of the search query (<mark>)."""
     text = text or ""
-    spans = matcher(query or "").spans(text)
+    spans = matcher(query or "", code_pattern).spans(text)
     if not spans:
         return Markup(escape(text))
     out, pos = [], 0
@@ -534,7 +606,7 @@ def mail_body(plain: str) -> str:
     return text or plain
 
 
-def snippet(text: str, query: str = "", width: int = SNIPPET_CHARS) -> str:
+def snippet(text: str, query: str = "", width: int = SNIPPET_CHARS, code_pattern: str | None = None) -> str:
     """Clean text of a chunk cut to about ``width`` characters around the words of ``query`` –
     the passage that matches, not the beginning of the chunk. '…' marks cut text; it never starts
     or ends inside a word. Of a mail only the body counts (no header lines, greeting or closing):
@@ -542,7 +614,7 @@ def snippet(text: str, query: str = "", width: int = SNIPPET_CHARS) -> str:
     plain = mail_body(plain_text(text))
     if len(plain) <= width:
         return plain
-    spans = matcher(query or "").spans(plain)
+    spans = matcher(query or "", code_pattern).spans(plain)
     start, end, last_end = _window(plain, spans, width) if spans else (0, width, 0)
     if end < len(plain):  # end at a sentence or word boundary, after the last match
         end = _end_at_boundary(plain, start, end, max(last_end, start + width // 3), width)
@@ -572,16 +644,16 @@ def trim_overlap(text: str, following: str) -> str:
 
 
 def passage(snippet_text: str | None, full_text: str | None, query: str = "",
-            width: int = SNIPPET_CHARS) -> str:
+            width: int = SNIPPET_CHARS, code_pattern: str | None = None) -> str:
     """Text shown for a source of an answer: the passage the answer pipeline chose (made clean,
     '…' where it was cut out of the chunk) or, without one, the snippet around the question."""
     raw = (snippet_text or "").strip()
     if raw and query and full_text and len(full_text) > len(raw) + 20 and full_text.startswith(raw):
         # only the beginning of the chunk (older results): if the question's words are not in it but
         # further down, show the passage around them instead
-        m = matcher(query)
+        m = matcher(query, code_pattern)
         if not m.spans(plain_text(raw)) and m.spans(plain_text(full_text)):
-            return snippet(full_text, query, width)
+            return snippet(full_text, query, width, code_pattern)
     core = plain_text(raw).strip()
     lead = core.startswith((ELLIPSIS, "..."))
     trail = core.endswith((ELLIPSIS, "..."))
@@ -591,7 +663,7 @@ def passage(snippet_text: str | None, full_text: str | None, query: str = "",
         core = core[:-1] if core.endswith(ELLIPSIS) else core[:-3]
     core = core.strip()
     if not core:
-        return snippet(full_text or "", query, width)
+        return snippet(full_text or "", query, width, code_pattern)
     flat_full = " ".join(plain_text(full_text or "").split())
     flat_core = " ".join(core.split())
     at = flat_full.find(flat_core) if flat_full else -1

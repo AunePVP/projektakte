@@ -1,8 +1,12 @@
-<article class="card inbox-item" id="mail-{{ m.id }}">
+{#- ``m.repeated`` (or ``repeated`` after a decision): an earlier page showed and counted this open card
+    already; this page shows it once more, subdued, so no page hides an open mail. -#}
+{%- set again = m.repeated or repeated -%}
+<article class="card inbox-item{% if again %} repeated{% endif %}" id="mail-{{ m.id }}">
   <div class="inbox-head">
     <a href="/mails/{{ m.id }}"><strong>{{ m.subject or '(ohne Betreff)' }}</strong></a>
     <span class="muted small">{{ m.date|de_date(true) }} · {{ m.sender_name or m.sender }}{% if m.attachments %} · 📎 {{ m.attachments|join(', ') }}{% endif %}</span>
   </div>
+  {% if again %}<p class="muted small repeated-note">Bereits auf einer vorigen Seite gezeigt und dort mitgezählt – noch offen.</p>{% endif %}
   {% if notice %}<p class="note {{ notice_kind or 'info' }}" role="status">{{ notice }}</p>{% endif %}
   <p class="preview">{{ m.preview }}</p>
   {% if m.assign_status == 'suggested' %}

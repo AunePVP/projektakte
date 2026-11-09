@@ -107,6 +107,10 @@ blockquote { margin: .25rem 0 0; padding: .3rem .6rem; border-left: 3px solid va
 .inbox-item .suggestion { margin: .3rem 0; }
 .inbox-item.done { border-color: #bfe0cc; background: #f5fbf7; }
 .inbox-item.failed { border-color: #ecd9a0; background: #fffaf0; }
+/* shown once more: an earlier page showed and counted this open mail already */
+.inbox-item.repeated { border-style: dashed; background: var(--bg); }
+.inbox-item.repeated .preview { color: var(--muted); }
+.inbox-item .repeated-note { margin: .3rem 0 0; font-style: italic; }
 .filters { display: flex; flex-wrap: wrap; gap: .3rem; margin: .6rem 0; }
 .filters a { padding: .3rem .7rem; border: 1px solid var(--line); border-radius: 999px; background: var(--card);
   color: var(--text); white-space: nowrap; }

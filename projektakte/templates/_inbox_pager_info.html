@@ -1,3 +1,3 @@
 <span id="inbox-pager-info"{% if oob %} hx-swap-oob="true"{% endif %}>
-{%- if shown.done %}Seite bearbeitet{% else %}{{ shown.first|de_num }}–{{ shown.last|de_num }} von {{ shown.total|de_num }}{% endif -%}
+{%- if shown.done %}{% if shown.repeated %}nur Mails einer vorigen Seite{% else %}Seite bearbeitet{% endif %}{% else %}{{ shown.first|de_num }}–{{ shown.last|de_num }} von {{ shown.total|de_num }}{% endif -%}
 </span>

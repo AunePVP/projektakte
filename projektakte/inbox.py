@@ -9,7 +9,8 @@ is still open; with an offset the next page would then skip as many mails as wer
 
 A rejected suggestion stays on its page as an actionable card although it now sorts further back
 (behind the suggestions) or, in the filter "Mit Vorschlag", left the filter. Its page counts it;
-the following pages get its id (:func:`carried`) and neither show nor count it a second time.
+the following pages get its id (:func:`carried`) and do not count it a second time. A page whose
+key range it now falls into still shows it (marked as shown before): no page hides an open mail.
 """
 from __future__ import annotations
 
@@ -96,17 +97,13 @@ def _where(status: str) -> tuple[str, tuple]:
 
 
 def page_rows(conn: sqlite3.Connection, *, status: str = "", limit: int = PAGE_SIZE, offset: int = 0,
-              start: SortKey | None = None, before: SortKey | None = None,
-              last: bool = False, exclude: list[int] | tuple[int, ...] = ()) -> list[dict]:
+              start: SortKey | None = None, before: SortKey | None = None, last: bool = False) -> list[dict]:
     """One page of inbox mails in inbox order (with suggested project name and attachment names).
 
     ``start``: the page begins at this key (inclusive) – keyset paging; ``before``: the ``limit``
     mails right before this key; ``last``: the last ``limit`` mails; otherwise ``offset`` (API).
-    ``exclude``: ids of mails an earlier page still shows (:func:`carried`)."""
+    Every open mail of the range is returned – also one an earlier page still shows (:func:`carried`)."""
     where, args = _where(status)
-    if exclude:
-        where += f" AND m.id NOT IN ({','.join('?' * len(exclude))})"
-        args = (*args, *exclude)
     limit = max(1, limit)
     if before is not None or last:
         if before is not None:
@@ -159,18 +156,21 @@ def count_ids(conn: sqlite3.Connection, ids: list[int], *, status: str = "") -> 
     return left, in_filter
 
 
-def carried(conn: sqlite3.Connection, ids: list[int], *, behind: SortKey, status: str = "") -> list[int]:
+def carried(conn: sqlite3.Connection, ids: list[int], *, behind: SortKey, status: str = "",
+            inclusive: bool = False) -> list[int]:
     """Of the mails ``ids`` (cards of a page, or carried from earlier pages): those still open that
-    count for a page although they sort behind ``behind`` now – a rejected suggestion moves behind the
-    suggestions – or no longer match the filter ``status``. The pages after ``behind`` must neither
-    show nor count them again."""
+    count for a page although they sort behind ``behind`` now (or at it, with ``inclusive``) – a
+    rejected suggestion moves behind the suggestions – or no longer match the filter ``status``. The
+    pages after ``behind`` must not count them again; one that falls into their range is shown there
+    once more, marked as shown before."""
     ids = list(dict.fromkeys(int(i) for i in ids))
     if not ids:
         return []
     wanted = statuses_for(status)
     out = {row["id"] for row in conn.execute(
         f"SELECT id, assign_status, date FROM mails WHERE deleted = 0 AND id IN ({','.join('?' * len(ids))})", ids)
-        if row["assign_status"] in INBOX_STATUSES and (row["assign_status"] not in wanted or sort_key(row) < behind)}
+        if row["assign_status"] in INBOX_STATUSES and (
+            row["assign_status"] not in wanted or sort_key(row) < behind or (inclusive and sort_key(row) == behind))}
     return [i for i in ids if i in out][:MAX_PAGE_IDS]
 
 

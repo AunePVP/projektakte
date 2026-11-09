@@ -5,17 +5,23 @@ The templates contain no inline scripts, style blocks or style attributes (Conte
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
 import math
 import re
+import secrets
 import sqlite3
 from datetime import date, datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
 from markupsafe import Markup, escape
 
 from . import __version__, db, inbox
@@ -23,8 +29,8 @@ from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .registry import get_project, list_projects
 from .search import hybrid_search
-from .webtext import (breakable_path, highlight, join_spaced_codes, matcher, parse_blocks, passage, render_html,
-                      same_heading, snippet, trim_overlap)
+from .webtext import (SNIPPET_CHARS, breakable_path, highlight, join_spaced_codes, matcher, parse_blocks, passage,
+                      render_html, same_heading, snippet, trim_overlap)
 
 log = logging.getLogger("projektakte.web")
 
@@ -198,22 +204,23 @@ def answer_view(result) -> dict:
 
 
 # ------------------------------------------------------------------------------------- search
-def literal_identifier_hit(h, query: str) -> bool:
+def literal_identifier_hit(h, query: str, code_pattern: str | None = None) -> bool:
     """Does a hit literally contain an identifier of the query (project number, file number, "T90")?
     Rerankers – the fake one on purpose, real cross-encoders in practice – score a bare identifier
-    low, but such a hit is exactly what was searched for."""
-    return matcher(query).has_identifier(getattr(h, "text", ""), getattr(h, "title", ""),
-                                         getattr(h, "rel_path", ""), getattr(h, "label", ""))
+    low, but such a hit is exactly what was searched for. ``code_pattern``: PROJECT_NUMBER_PATTERN
+    (a project number typed with spaces counts as written)."""
+    return matcher(query, code_pattern).has_identifier(getattr(h, "text", ""), getattr(h, "title", ""),
+                                                       getattr(h, "rel_path", ""), getattr(h, "label", ""))
 
 
-def search_view(res, *, min_score: float, show_weak: bool, query: str = "") -> dict:
+def search_view(res, *, min_score: float, show_weak: bool, query: str = "", code_pattern: str | None = None) -> dict:
     """Split search hits into matching and weak ones. Only the reranker gives a comparable score;
     without it (fallback) every hit counts as matching. A hit that literally contains an identifier
     of the query is never weak."""
     if res.reranked:
         strong, weak = [], []
         for h in res.hits:
-            ok = (h.rerank or 0.0) >= min_score or (query and literal_identifier_hit(h, query))
+            ok = (h.rerank or 0.0) >= min_score or (query and literal_identifier_hit(h, query, code_pattern))
             (strong if ok else weak).append(h)
     else:
         strong, weak = list(res.hits), []
@@ -238,12 +245,35 @@ def auth_disabled_for(request: Request) -> bool:
     return bool(getattr(auth, "disabled", False))
 
 
+def code_pattern_of(request: Request | None) -> str | None:
+    """The configured shape of project numbers (PROJECT_NUMBER_PATTERN): what a number typed with
+    spaces ("BS 2024 0233") is joined into for search links and highlighting."""
+    settings = getattr(getattr(getattr(request, "app", None), "state", None), "settings", None)
+    return getattr(settings, "project_number_pattern", None)
+
+
+@pass_context
+def _highlight_filter(ctx, text: str, query: str) -> Markup:
+    return highlight(text, query, code_pattern_of(ctx.get("request")))
+
+
+@pass_context
+def _snippet_filter(ctx, text: str, query: str = "", width: int = SNIPPET_CHARS) -> str:
+    return snippet(text, query, width, code_pattern_of(ctx.get("request")))
+
+
+@pass_context
+def _passage_global(ctx, snippet_text: str | None, full_text: str | None, query: str = "",
+                    width: int = SNIPPET_CHARS) -> str:
+    return passage(snippet_text, full_text, query, width, code_pattern_of(ctx.get("request")))
+
+
 templates.env.filters.update(de_date=de_date, de_num=de_num, plural=plural, filesize=filesize,
-                             cite_links=cite_links, highlight=highlight, snippet=snippet,
+                             cite_links=cite_links, highlight=_highlight_filter, snippet=_snippet_filter,
                              path=breakable_path)
 templates.env.globals.update(ASSIGN_LABELS=ASSIGN_LABELS, METHOD_LABELS=METHOD_LABELS, DOC_STATUS=DOC_STATUS,
                              INBOX_FILTERS=INBOX_FILTERS, version=__version__, answer_view=answer_view,
-                             auth_disabled_for=auth_disabled_for, passage=passage, file_url=file_url)
+                             auth_disabled_for=auth_disabled_for, passage=_passage_global, file_url=file_url)
 
 
 # ------------------------------------------------------------------------------------- helpers
@@ -393,11 +423,11 @@ _IDENTIFIER_TOKEN = re.compile(r"[^\W_]+(?:[-/.][^\W_]+)*")
 MAX_PROJECT_LINKS = 3
 
 
-def projects_named_in(conn, query: str) -> list[dict]:
+def projects_named_in(conn, query: str, code_pattern: str | None = None) -> list[dict]:
     """Projects whose number appears in a search query ('BS-2024-0233', also typed with spaces as
-    'bs 2024 0233' → link to the project page)."""
+    'bs 2024 0233' → link to the project page; ``code_pattern``: PROJECT_NUMBER_PATTERN)."""
     found: dict[str, dict] = {}
-    for token in _IDENTIFIER_TOKEN.findall(join_spaced_codes(query or "")):
+    for token in _IDENTIFIER_TOKEN.findall(join_spaced_codes(query or "", code_pattern)):
         if any(c.isdigit() for c in token) and "-" in token:
             p = get_project(conn, token)
             if p:
@@ -419,11 +449,11 @@ def search_page(request: Request, q: str = "", project: str = "", weak: str = ""
         if query:
             res = hybrid_search(conn, request.app.state.ai, str(s.db_path), query, project=number or None,
                                 k=SEARCH_HITS, rerank_top_k=s.rerank_top_k, synonyms_file=s.synonyms_file)
-            named = projects_named_in(conn, query)
+            named = projects_named_in(conn, query, s.project_number_pattern)
         projects = list_projects(conn)
     if res is not None:
         view = search_view(res, min_score=getattr(s, "search_min_rerank", 0.05), show_weak=weak == "1",
-                           query=query)
+                           query=query, code_pattern=s.project_number_pattern)
     return render(request, "search.html", q=query, project=number, projects=projects, res=res, view=view,
                   named_projects=named, all_projects_url=search_url(query, None, weak="1" if weak == "1" else ""),
                   weak_url=search_url(query, number, weak="1"), strong_url=search_url(query, number))
@@ -439,81 +469,128 @@ def inbox_url(status: str = "", page: int = 1, **cursor: str) -> str:
     return "/eingang" + ("?" + urlencode(params, safe=",") if params else "")
 
 
-def _inbox_page_rows(conn, status: str, total: int, *, ab: str, vor: str, ende: str,
-                     page: str, exclude: list[int] | None = None) -> list[dict]:
+# Carried cards (``gezeigt``): a rejected suggestion stays actionable on its page and is counted there,
+# although it now sorts further back. The "Weiter" link names it, so the page it now falls into shows
+# it once more – marked, without counting it again – and positions go on after it. The value is signed:
+# only the application's own links mark cards or move the count; any other value is ignored, and no
+# value at all can hide a mail (every open mail of a page's key range is shown).
+_PROCESS_SECRET = secrets.token_hex(32)  # without SECRET_KEY: links of this process only (like sessions)
+CARRY_SIG_CHARS = 22  # 128 bits of HMAC-SHA256, URL-safe base64
+
+
+@lru_cache(maxsize=8)
+def _carry_key(secret: str) -> bytes:
+    root = hashlib.sha256((secret or _PROCESS_SECRET).encode("utf-8")).digest()
+    return hmac.new(root, b"projektakte/eingang-gezeigt/v1", hashlib.sha256).digest()
+
+
+def _carry_sig(request: Request, status: str, ids_text: str) -> str:
+    key = _carry_key(getattr(_settings(request), "secret_key", "") or "")
+    mac = hmac.new(key, f"{status}|{ids_text}".encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(mac).decode("ascii")[:CARRY_SIG_CHARS]
+
+
+def sign_carried(request: Request, status: str, ids: list[int]) -> str:
+    """``gezeigt`` value for the cards earlier pages showed and counted: '127,133.<signature>'."""
+    if not ids:
+        return ""
+    text = inbox.encode_ids(ids)
+    return f"{text}.{_carry_sig(request, status, text)}"
+
+
+def read_carried(request: Request, status: str, value: str | None) -> list[int]:
+    """Ids of a ``gezeigt`` value made by :func:`sign_carried` for this filter; [] for anything else."""
+    text, sep, sig = (value or "").rpartition(".")
+    if not sep or len(sig) != CARRY_SIG_CHARS or not sig.isascii():
+        return []
+    if not hmac.compare_digest(sig, _carry_sig(request, status, text)):
+        return []
+    return inbox.decode_ids(text)
+
+
+def _inbox_page_rows(conn, status: str, total: int, *, ab: str, vor: str, ende: str, page: str) -> list[dict]:
     """One page read by key, plus the first mail of the next page if there is one (to link it).
-    ``exclude``: cards an earlier page still shows (``gezeigt``, see :func:`inbox.carried`)."""
+    Every open mail of the range is part of it – also a card an earlier page still shows."""
     size = inbox.PAGE_SIZE
     start, before = inbox.decode_key(ab), inbox.decode_key(vor)
-    ex = exclude or ()
     if before is not None:
-        rows = inbox.page_rows(conn, status=status, limit=size, before=before, exclude=ex)
+        rows = inbox.page_rows(conn, status=status, limit=size, before=before)
         if len(rows) == size:  # fewer: the page before reaches the beginning – show the first page
-            following = inbox.page_rows(conn, status=status, limit=2, start=inbox.sort_key(rows[-1]), exclude=ex)
+            following = inbox.page_rows(conn, status=status, limit=2, start=inbox.sort_key(rows[-1]))
             return rows + following[1:]
     elif start is not None:
-        rows = inbox.page_rows(conn, status=status, limit=size + 1, start=start, exclude=ex)
+        rows = inbox.page_rows(conn, status=status, limit=size + 1, start=start)
         if rows or not total:
             return rows
         ende = "1"  # the cursor lies behind the last open mail (decided meanwhile)
     if ende == "1":
-        return inbox.page_rows(conn, status=status, limit=size, last=True, exclude=ex)
+        return inbox.page_rows(conn, status=status, limit=size, last=True)
     if page:  # old links with a page number
         pages = max(1, math.ceil(total / size))
         offset = (min(max(1, _int(page, 1)), pages) - 1) * size
-        return inbox.page_rows(conn, status=status, limit=size + 1, offset=offset, exclude=ex)
-    return inbox.page_rows(conn, status=status, limit=size + 1, exclude=ex)
+        return inbox.page_rows(conn, status=status, limit=size + 1, offset=offset)
+    return inbox.page_rows(conn, status=status, limit=size + 1)
 
 
-def inbox_range(first: int, last: int, total: int, pager: bool = False) -> dict:
+def inbox_range(first: int, last: int, total: int, pager: bool = False, repeated: int = 0) -> dict:
     """What the summary line and the pager say about the shown part of the inbox: positions
-    ``first``–``last`` of ``total`` open mails (``done``: nothing of the page is left open). A page
-    with a pager keeps the "first–last of total" form after decisions even when the total falls to
-    one page – "29 Mails" would claim that all of them are on this page."""
-    return {"first": first, "last": last, "total": total, "done": last < first,
+    ``first``–``last`` of ``total`` open mails (``done``: nothing the page counts is left open) and
+    ``repeated`` open cards of earlier pages that the page shows once more without counting them. A
+    page with a pager keeps the "first–last of total" form after decisions even when the total falls
+    to one page – "29 Mails" would claim that all of them are on this page."""
+    return {"first": first, "last": last, "total": total, "done": last < first, "repeated": repeated,
             "paged": total > inbox.PAGE_SIZE or first > 1 or pager, "pager": pager}
 
 
 @router.get("/eingang", response_class=HTMLResponse)
 def inbox_page(request: Request, status: str = "", ab: str = "", vor: str = "", ende: str = "",
                page: str = "", gezeigt: str = ""):
-    """``gezeigt``: cards the page before still shows although they sort onto this page now (a
-    rejected suggestion) – "Weiter" passes them on, and this page neither shows nor counts them."""
+    """``gezeigt``: cards that earlier pages showed and counted although they sort onto this page or
+    behind it now (a rejected suggestion) – signed, passed on by "Weiter". This page still shows
+    such a card, marked as shown before, but does not count it again."""
     s = _settings(request)
     status = status if status in INBOX_STATUSES else ""
     size = inbox.PAGE_SIZE
-    earlier = inbox.decode_ids(gezeigt)
-    carry: list[int] = []  # of those: the ones that count before this page
+    # only a page after the first follows earlier pages: its "Weiter" cursor (``ab``) comes along
+    earlier = read_carried(request, status, gezeigt) if ab else []
+    carry: list[int] = []  # of those: the ones that count before this page …
     carry_on: list[int] = []  # … and before the next page
     with db.session(s.db_path) as conn:
         counts = inbox.counts_by_status(conn)
         total = counts[status]
-        rows = _inbox_page_rows(conn, status, total, ab=ab, vor=vor, ende=ende, page=page, exclude=earlier)
+        rows = _inbox_page_rows(conn, status, total, ab=ab, vor=vor, ende=ende, page=page)
         mails, following = rows[:size], rows[size:size + 1]
         first = 0
         if mails:
             first_key = inbox.sort_key(mails[0])
-            carry = inbox.carried(conn, earlier, behind=first_key, status=status) if earlier else []
-            carry_on = inbox.carried(conn, carry, behind=inbox.sort_key(mails[-1]), status=status) if carry else []
+            if earlier:
+                carry = inbox.carried(conn, earlier, behind=first_key, status=status, inclusive=True)
+                carry_on = inbox.carried(conn, carry, behind=inbox.sort_key(mails[-1]), status=status)
             first = inbox.count_before(conn, first_key, status=status) + len(carry) + 1
             if carry:  # a rejected card that left the filter was counted on top of the total there
                 left, in_filter = inbox.count_ids(conn, carry, status=status)
                 total += left - in_filter
         projects = list_projects(conn)
+    for m in mails:
+        m["repeated"] = m["id"] in carry
+    counted = [m for m in mails if not m["repeated"]]
+    repeated = [m for m in mails if m["repeated"]]
     first_key = inbox.sort_key(mails[0]) if mails else None
     last_key = inbox.sort_key(mails[-1]) if mails else None
-    last = first + len(mails) - 1 if mails else 0
+    last = first + len(counted) - 1 if mails else 0
     next_key = inbox.sort_key(following[0]) if following else None
-    back = (inbox_url(status, ab=inbox.encode_key(first_key), gezeigt=inbox.encode_ids(carry))
+    back = (inbox_url(status, ab=inbox.encode_key(first_key), gezeigt=sign_carried(request, status, carry))
             if mails and first > 1 else inbox_url(status))
-    shown = inbox_range(first, last, total)
+    shown = inbox_range(first, last, total, repeated=len(repeated))
     page_state = None
     if mails:
         page_state = {"seite_status": status, "seite_von": inbox.encode_key(first_key),
                       "seite_bis": inbox.encode_key(last_key), "seite_pager": "1" if shown["paged"] else "",
-                      "seite_ids": inbox.encode_ids(mails)}
+                      "seite_ids": inbox.encode_ids(counted)}
         if carry:
-            page_state["seite_gezeigt"] = inbox.encode_ids(carry)
+            page_state["seite_gezeigt"] = sign_carried(request, status, carry)
+        if repeated:
+            page_state["seite_wieder"] = inbox.encode_ids(repeated)
         if next_key:  # a decision renews the "Weiter" link (rejected cards that moved behind the page)
             page_state["seite_weiter"] = inbox.encode_key(next_key)
     return render(request, "inbox.html", mails=mails, projects=projects, assign_mode=s.assign_mode,
@@ -521,46 +598,50 @@ def inbox_page(request: Request, status: str = "", ab: str = "", vor: str = "", 
                   filter_urls={k: inbox_url(k) for k in INBOX_FILTERS},
                   start_url=inbox_url(status) if first > 1 else None,
                   prev_url=inbox_url(status, vor=inbox.encode_key(first_key)) if first > 1 else None,
-                  next_url=(inbox_url(status, ab=inbox.encode_key(next_key), gezeigt=inbox.encode_ids(carry_on))
-                            if next_key else None),
+                  next_url=(inbox_url(status, ab=inbox.encode_key(next_key),
+                                      gezeigt=sign_carried(request, status, carry_on)) if next_key else None),
                   end_url=inbox_url(status, ende="1") if next_key else None)
 
 
-def _page_summary(conn, state: dict) -> dict | None:
+def _page_summary(request: Request, conn, state: dict) -> dict | None:
     """The summary line of the inbox page a decision came from (sent with the HTMX request as
     ``seite_*``): position of the mails still open on that page and the total of its filter.
 
-    "Still open" are the cards of the page (``seite_ids``) that can still be decided. A rejected
+    "Still open" are the cards the page counts (``seite_ids``) that can still be decided. A rejected
     suggestion is one of them although its sort key changed (it moves behind the suggestions, and
     in the filter "Mit Vorschlag" it no longer belongs to the filter – it is counted on top of the
     filter's total then, so the line never claims fewer open mails than the page shows). Pages
     rendered without ids fall back to the key range of the page.
 
-    Such cards of earlier pages (``gezeigt``) count before this page. With ``weiter`` (the start of
-    the next page) the answer also carries the new "Weiter" link (``next_url``): it passes on the
-    cards that now sort behind this page, so the next page neither shows nor counts them again."""
+    Such cards of earlier pages (``gezeigt``, signed) count before this page; the page shows those
+    that fall into its range once more (``wieder``) without counting them. With ``weiter`` (the start
+    of the next page) the answer also carries the new "Weiter" link (``next_url``): it passes on the
+    cards that now sort behind this page, so the next page does not count them again."""
     first_key, last_key = inbox.decode_key(state.get("von")), inbox.decode_key(state.get("bis"))
     status = state.get("status") or ""
     if first_key is None or last_key is None or status not in ("", *INBOX_STATUSES):
         return None
     total = inbox.counts_by_status(conn)[status]
     before = inbox.count_before(conn, first_key, status=status)
+    earlier = read_carried(request, status, state.get("gezeigt"))
+    again = sorted(set(inbox.decode_ids(state.get("wieder"))) & set(earlier))
+    repeated, repeated_in_filter = inbox.count_ids(conn, again, status=status)
     ids = inbox.decode_ids(state.get("ids"))
     if ids:
         left, in_filter = inbox.count_ids(conn, ids, status=status)
         total += left - in_filter
-    else:
-        left = inbox.count_between(conn, first_key, last_key, status=status)
-    earlier = inbox.decode_ids(state.get("gezeigt"))
+    else:  # the key range holds the cards shown once more as well
+        left = max(0, inbox.count_between(conn, first_key, last_key, status=status) - repeated_in_filter)
     if earlier:
         e_left, e_in_filter = inbox.count_ids(conn, earlier, status=status)
         total += e_left - e_in_filter
-        before += len(inbox.carried(conn, earlier, behind=first_key, status=status))
-    shown = inbox_range(before + 1, before + left, total, pager=state.get("pager") == "1")
+        before += len(inbox.carried(conn, earlier, behind=first_key, status=status, inclusive=True))
+    shown = inbox_range(before + 1, before + left, total, pager=state.get("pager") == "1", repeated=repeated)
     next_key = inbox.decode_key(state.get("weiter"))
     if next_key is not None:
         carry = inbox.carried(conn, earlier + ids, behind=last_key, status=status)
-        shown["next_url"] = inbox_url(status, ab=inbox.encode_key(next_key), gezeigt=inbox.encode_ids(carry))
+        shown["next_url"] = inbox_url(status, ab=inbox.encode_key(next_key),
+                                      gezeigt=sign_carried(request, status, carry))
     return shown
 
 
@@ -582,7 +663,7 @@ def resolve_project_input(conn, text: str | None) -> str | None:
     return text
 
 
-def _decide(conn, mail_id: int, action: str, project: str, user: str | None, mode: str,
+def _decide(request: Request, conn, mail_id: int, action: str, project: str, user: str | None, mode: str,
             page_state: dict | None = None) -> dict:
     """Apply a decision; DecisionError becomes ``error``. LookupError (mail gone) propagates.
     ``page_state`` (cursor of the page the decision came from) yields its new summary line."""
@@ -599,17 +680,18 @@ def _decide(conn, mail_id: int, action: str, project: str, user: str | None, mod
     mail = inbox.mail_row(conn, mail_id) or {"id": mail_id, "subject": "", "assign_status": None}
     return {"action": action, "result": result, "error": error, "name": name, "mail": mail,
             "counts": inbox.counts_by_status(conn), "typed": project if action == "assign" else "",
-            "summary": _page_summary(conn, page_state) if page_state else None}
+            "summary": _page_summary(request, conn, page_state) if page_state else None}
 
 
-def _card_context(outcome: dict, back: str) -> dict:
+def _card_context(outcome: dict, back: str, repeated: bool = False) -> dict:
     """Template and context of the inbox card after a decision.
 
     Real decisions (assigned, no project) become a green "done" card. A rejected suggestion or a
-    failed decision keeps the mail actionable in the inbox (neutral card with the buttons)."""
+    failed decision keeps the mail actionable in the inbox (neutral card with the buttons; a card
+    shown once more from an earlier page keeps that mark)."""
     mail, result, error = outcome["mail"], outcome["result"], outcome["error"]
     ctx = {"mail": mail, "m": mail, "result": result, "error": error, "name": outcome["name"], "back": back,
-           "counts": outcome["counts"], "summary": outcome.get("summary")}
+           "counts": outcome["counts"], "summary": outcome.get("summary"), "repeated": repeated}
     if result and result["assign_status"] in ("confirmed", "none", "assigned"):
         return {**ctx, "card": "done"}
     if mail and mail["assign_status"] in INBOX_STATUSES:
@@ -625,18 +707,20 @@ def _card_context(outcome: dict, back: str) -> dict:
 def inbox_decide(request: Request, mail_id: int, action: str = Form(...), project: str = Form(""),
                  back: str = Form("/eingang"), seite_status: str = Form(""), seite_von: str = Form(""),
                  seite_bis: str = Form(""), seite_pager: str = Form(""), seite_ids: str = Form(""),
-                 seite_gezeigt: str = Form(""), seite_weiter: str = Form("")):
+                 seite_gezeigt: str = Form(""), seite_wieder: str = Form(""), seite_weiter: str = Form("")):
     """A decision from an inbox card or the mail page. HTMX requests carry the cursor of their page
     (``seite_*``, set on the card list) so the summary line of that page is updated as well."""
     s = _settings(request)
     back = safe_back(back)
     user = getattr(request.state, "user", None)
     page_state = ({"status": seite_status, "von": seite_von, "bis": seite_bis, "pager": seite_pager,
-                   "ids": seite_ids, "gezeigt": seite_gezeigt, "weiter": seite_weiter}
+                   "ids": seite_ids, "gezeigt": seite_gezeigt, "wieder": seite_wieder, "weiter": seite_weiter}
                   if is_htmx(request) and seite_von else None)
+    repeated = bool(page_state) and mail_id in inbox.decode_ids(seite_wieder) and mail_id in read_carried(
+        request, seite_status, seite_gezeigt)
     try:
         with db.session(s.db_path) as conn:
-            outcome = _decide(conn, mail_id, action, project, user, s.assign_mode, page_state)
+            outcome = _decide(request, conn, mail_id, action, project, user, s.assign_mode, page_state)
     except LookupError:
         raise HTTPException(404, "Mail nicht gefunden") from None
     except sqlite3.OperationalError as exc:
@@ -645,7 +729,7 @@ def inbox_decide(request: Request, mail_id: int, action: str = Form(...), projec
         log.warning("Entscheidung zu Mail %s nicht gespeichert – Datenbank belegt: %s", mail_id, exc)
         return _busy_response(request, mail_id, back, project if action == "assign" else "")
     if is_htmx(request):
-        return templates.TemplateResponse(request, "_inbox_update.html", _card_context(outcome, back))
+        return templates.TemplateResponse(request, "_inbox_update.html", _card_context(outcome, back, repeated))
     if outcome["error"]:
         return render(request, "error.html", status_code=400, title="Zuordnung nicht möglich",
                       message=outcome["error"], back=back, back_label="Zurück")

@@ -71,9 +71,9 @@ def test_join_spaced_codes():
     assert join_spaced_codes("bs 2023 0412 Brandwand") == "bs-2023-0412 Brandwand"
     assert join_spaced_codes("BS2024 0233") == "BS-2024-0233"
     assert join_spaced_codes("BS 2024-0233 und BS 2024 0311") == "BS-2024-0233 und BS-2024-0311"
-    assert join_spaced_codes("BA 412/2023") == "BA-412/2023"
-    for unchanged in ("BS-2024-0233", "BA-412/2023", "DIN 4102", "DIN 4102 4", "Seite 12 13", "ab 2023 2024",
-                      "Notlicht 8 Stunden", "2024 0233", "BS 2024", "T30 RS"):
+    # only the configured shape of a project number is joined (round 5); a file number keeps its space
+    for unchanged in ("BS-2024-0233", "BA-412/2023", "BA 412/2023", "DIN 4102", "DIN 4102 4", "Seite 12 13",
+                      "ab 2023 2024", "Notlicht 8 Stunden", "2024 0233", "BS 2024", "T30 RS"):
         assert join_spaced_codes(unchanged) == unchanged
 
 
@@ -104,6 +104,11 @@ def _fill_inbox(client, n_suggested: int, n_open: int) -> None:
 
 def _ids(page: str) -> list[int]:
     return [int(x) for x in re.findall(r'<article class="card inbox-item[^"]*" id="mail-(\d+)"', page)]
+
+
+def _repeated(page: str) -> list[int]:
+    """Cards an earlier page showed and counted already (round 5: shown again, marked, not counted)."""
+    return [int(x) for x in re.findall(r'<article class="card inbox-item repeated" id="mail-(\d+)"', page)]
 
 
 def _page_state(page: str) -> dict:
@@ -151,17 +156,19 @@ def test_rejected_card_is_not_repeated_on_the_next_page(rw, n_open):
     # the answer renews the "Weiter" link: it passes on the rejected card that still is on page 1
     nxt = _link(r, "next")
     assert 'id="inbox-next"' in r and nxt and f"gezeigt={ids[0]}" in nxt
-    seen, url, start, pages = [ids[0]] + ids[14:], nxt, 38, []
+    seen, url, start, pages, again = [ids[0]] + ids[14:], nxt, 38, [], []
     while url:
         page = rw.get(url).text
-        cards = _ids(page)
-        assert ids[0] not in cards
-        assert _summary(page).startswith(f"{start}–{start + len(cards) - 1} von {left} Mails"), _summary(page)
+        again += _repeated(page)  # shown once more where it sorts now, but not counted again
+        cards = [i for i in _ids(page) if i not in _repeated(page)]
+        if cards:
+            assert _summary(page).startswith(f"{start}–{start + len(cards) - 1} von {left} Mails"), _summary(page)
         seen += cards
         pages.append(cards)
         start += len(cards)
         url = _link(page, "next")
-    assert start - 1 == left and len(pages) == (1 if n_open == 60 else 2)
+    assert again == [ids[0]]
+    assert start - 1 == left and len([p for p in pages if p]) == (1 if n_open == 60 else 2)
     assert sorted(seen) == sorted(_open_ids(rw)) and len(seen) == len(set(seen)), "nothing skipped, nothing twice"
     # the link as first rendered (no renewal, e.g. a second tab) skips nothing either
     assert set(pages[0]) <= set(_ids(rw.get(stale_next).text))
@@ -177,9 +184,9 @@ def test_decisions_on_the_next_page_keep_counting_from_the_carried_card(rw):
     assert _summary(r).startswith("1–46 von 66 Mails")
     page2_url = _link(r, "next")
     page2 = rw.get(page2_url).text
-    assert _summary(page2).startswith("47–66 von 66 Mails") and ids[0] not in _ids(page2)
+    assert _summary(page2).startswith("47–66 von 66 Mails") and _repeated(page2) == [ids[0]]
     state = _page_state(page2)
-    assert state["seite_gezeigt"] == str(ids[0]) and "seite_weiter" not in state  # last page
+    assert state["seite_gezeigt"].startswith(f"{ids[0]}.") and "seite_weiter" not in state  # last page
     r = _post(rw, _ids(page2)[0], page2, "none")
     assert _summary(r).startswith("47–65 von 65 Mails"), _summary(r)
     # without JavaScript the decision returns to the same page, which still leaves the card out
@@ -188,7 +195,7 @@ def test_decisions_on_the_next_page_keep_counting_from_the_carried_card(rw):
     r = rw.post(f"/eingang/{_ids(page2)[1]}", data={"action": "none", "back": back}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == back
     again = rw.get(back).text
-    assert ids[0] not in _ids(again) and _summary(again).startswith("47–64 von 64 Mails"), _summary(again)
+    assert _repeated(again) == [ids[0]] and _summary(again).startswith("47–64 von 64 Mails"), _summary(again)
     # once the rejected card is decided on page 1, the renewed link no longer carries it
     r = _post(rw, ids[0], page1, "none")
     assert "gezeigt" not in (_link(r, "next") or "")

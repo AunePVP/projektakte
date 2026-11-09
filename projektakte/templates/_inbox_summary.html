@@ -1,12 +1,21 @@
 {#- Summary line of an inbox page (``shown`` from web.inbox_range); after every HTMX decision it is
-    sent again out of band with the numbers of the mails still open. -#}
+    sent again out of band with the numbers of the mails still open. Cards an earlier page showed and
+    counted already (``shown.repeated``) are named, not counted again. -#}
 <p class="muted small" id="inbox-summary"{% if oob %} hx-swap-oob="true"{% endif %}>
 {%- if shown.done -%}
+{%- if shown.repeated -%}
+Auf dieser Seite nur noch {{ shown.repeated|plural('Mail', 'Mails') }} von einer vorigen Seite · noch {{ shown.total|plural('Mail', 'Mails') }} im Eingang
+{%- else -%}
 Alle Mails dieser Seite sind bearbeitet · noch {{ shown.total|plural('Mail', 'Mails') }} im Eingang
-{%- if shown.total %} · <a href="{{ back or '/eingang' }}">Nächste Mails laden</a>{% endif %}
-{%- elif shown.paged -%}
+{%- endif -%}
+{#- after decisions (``oob``) reloading the page brings the following mails onto it -#}
+{%- if oob and shown.total > shown.repeated %} · <a href="{{ back or '/eingang' }}">Nächste Mails laden</a>{% endif %}
+{%- else -%}
+{%- if shown.paged -%}
 {{ shown.first|de_num }}–{{ shown.last|de_num }} von {{ shown.total|plural('Mail', 'Mails') }} · Vorschläge zuerst, dann die neuesten
 {%- else -%}
 {{ shown.total|plural('Mail', 'Mails') }} · Vorschläge zuerst, dann die neuesten
+{%- endif -%}
+{%- if shown.repeated %} · dazu {{ shown.repeated|plural('Mail', 'Mails') }} von einer vorigen Seite{% endif -%}
 {%- endif -%}
 </p>

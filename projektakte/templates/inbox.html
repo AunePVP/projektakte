@@ -30,6 +30,9 @@
   {% if end_url %}<a class="button secondary" href="{{ end_url }}">Ende »</a>{% endif %}
 </nav>
 {% endif %}
+{% elif counts[status] %}
+{#- only if the inbox changed while the page was read: never claim it is empty while mails are open -#}
+<p class="empty">Auf dieser Seite ist keine offene Mail mehr – noch {{ counts[status]|plural('Mail', 'Mails') }} im Eingang. <a href="{{ filter_urls[status] }}">Zum Anfang</a></p>
 {% elif status %}
 <p class="empty">Keine Mails mit diesem Filter. <a href="/eingang">Alle anzeigen</a></p>
 {% else %}
