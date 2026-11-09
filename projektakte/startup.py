@@ -132,8 +132,12 @@ def log_startup(settings, auth) -> None:
     for warning in deadline_warnings(settings):
         log.warning("Konfiguration: %s", warning)
     layout = current_layout(settings)
-    if layout.warning:
+    if layout.warning:  # a newer proposal next to the confirmed scheme
         log.warning("Projektordner: %s", layout.warning)
+    if layout.auto and layout.pattern is None and layout.state in ("pending", "rejected"):
+        log.warning("Projektordner: %s", layout.problem)
+    for notice in layout.notices:
+        log.warning("Projektordner: %s", notice)
 
     if auth.disabled:
         access = "AUS (AUTH_DISABLED=1)"

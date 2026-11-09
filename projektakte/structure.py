@@ -9,11 +9,16 @@ everything inside it is read, whatever its subfolders are called. This module
   (which types Projektakte reads and which not) and, given the database, the indexed text per
   project – does a project fit into a language model's context window?
 * resolves the *effective* layout: the configured pattern, or with ``PROJECT_NUMBER_PATTERN=auto``
-  the result detected once and stored in the ``meta`` table. A stored detection is never replaced
-  on its own: a later, different detection is only reported (log, status page) – a half-mounted
-  share must never change which folders count as projects – until someone accepts it
-  (``python -m projektakte.structure --uebernehmen``).
+  the scheme a person confirmed. A detection from folder names alone can be confidently wrong, so
+  it is only ever a *proposal* (stored in the ``meta`` table with the evidence a person needs to
+  judge it); nothing is read as a project until it is confirmed – on the status page
+  („Übernehmen“) or with ``python -m projektakte.structure --uebernehmen`` – and a confirmed scheme
+  never changes on its own: a later, different detection becomes a new proposal next to it, a
+  rejected one is not offered again until the detection changes.
 * is the command line tool ``python -m projektakte.structure`` (German output).
+
+Names that are no valid UTF-8 (a share mounted without iocharset=utf8) are read with their real
+path but shown, stored and printed with � (:func:`registry.printable`).
 
 Detection follows explicit rules (each one can be named in the report):
 
@@ -30,22 +35,37 @@ Detection follows explicit rules (each one can be named in the report):
    numbering of its own and decided by rule 4.)
 4. *Containers.* A candidate whose folders consist mostly of folders of a deeper candidate (directly
    or through year folders) is a container level (customer numbers, …); the projects are the deepest
-   such level whose folders are no containers. Folders with numbered internal subfolders are projects.
+   such level whose folders are no containers. Folders with numbered internal subfolders are projects,
+   and so are folders whose numbered subfolders are records of one kind (the same label in several
+   folders, no folders of their own: PB-22-1001 Prüfbericht, G30001 Gutachten, 2024-017-001 Bauteil).
+   A container groups folders: folders that keep files of their own are containers only when (almost)
+   all their subfolders belong to the deeper scheme.
 5. *Outliers do not widen a scheme.* A digit count or separator variant is accepted only when at
    least :data:`VARIANT_MIN_COUNT` folders and :data:`VARIANT_MIN_SHARE` of the candidate use it;
    others stay exceptions and are listed. Numbers without letters need at least 4 digits, or a
    running number of at least 3 digits after a first group (2024-017, 24-017). Numbers must be unique.
    A scheme of bare digits that could also match a year (or year range, or date) excludes those with
-   a guard (``(?!(?:19|20)\\d\\d(?!\\d))\\d{4}``), so year folders never become projects.
-6. *One scheme.* Different schemes are never joined automatically. Schemes below an archive folder
-   (Archiv, Alt …) or an office folder (Angebote, Rechnungen, Verwaltung, Akquise, Vorlagen, Normen)
-   yield to a scheme elsewhere; the report names them as a hint with the alternation to set by hand.
-7. *Confidence.* A scheme is proposed (and stored in auto mode) only with at least
+   a guard (``(?!(?:19|20)\\d\\d(?!\\d))\\d{4}``), so year folders never become projects. A guard
+   never drops projects silently: the folders it keeps out at the level of the projects are counted
+   with the app's scan – a few are named, more mean the numbers reach the year range: the guard is
+   left out, or, if year folders hold the projects, the scheme is refused. The index pass checks the
+   guard of the effective scheme again (new folders 1900 … after the confirmation) and the status
+   page names what it keeps out.
+6. *One scheme.* Different schemes are never joined automatically. Schemes below an office folder
+   (Angebote, Anfragen, Ausschreibungen, Rechnungen, Verwaltung, Buchhaltung, Akquise, Honorar…,
+   Kalkulation, Vorlagen, Normen, Austausch – anywhere in the name: Honorarangebote, Ausgangsrechnungen)
+   are never proposed; schemes below a customer register (Kunden …) or an archive folder (Archiv,
+   Alt …) yield to a scheme elsewhere. The report names them as a hint with the alternation to set by
+   hand. A folder with a project number of its own is never taken for such a folder.
+7. *Confidence.* A scheme is proposed (in auto mode: offered for confirmation) only with at least
    :data:`MIN_PROJECTS` folders (below :data:`GOOD_PROJECTS` without any doubt), unique numbers (at
    most one or :data:`MAX_DUPLICATE_SHARE` duplicates; numbers that restart are no scheme at all), a
    real share of the folders next to them, and at least :data:`DOMINANCE` times as many folders as
    any competing scheme. Decisions use shares, not absolute sizes, so they do not change when the
-   office grows; the inside of project folders is read from an evenly spread sample only.
+   office grows; the inside of project folders is read from an evenly spread sample only, and project
+   folders and the other folders next to them are counted in the same sample (a folder that was
+   not opened is no exception). The depth is set by the levels that hold a real share of the
+   projects; matches in office folders never raise it, matches in archive and customer folders do.
 8. *Links* are followed inside the share like the app's scan does, but every real folder is listed
    once (links to ancestors, loops and second paths to a folder are skipped).
 """
@@ -53,6 +73,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import getpass
+import hashlib
 import json
 import logging
 import math
@@ -74,7 +96,8 @@ from .config import (AUTO, DEFAULT_PROJECT_FOLDER_DEPTH, DEFAULT_PROJECT_NUMBER_
                      load_settings, pattern_problem)
 from .documents import MAX_FILE_BYTES, link_problem
 from .extract import SUPPORTED_EXT
-from .registry import ProjectFolder, clamp_depth, project_head, projects_root_problem, scan_projects
+from .registry import (ENCODING_HINT, ProjectFolder, alternatives, clamp_depth, has_bad_encoding, loose_pattern,
+                       printable, project_head, projects_root_problem, scan_projects)
 
 log = logging.getLogger("projektakte.structure")
 
@@ -94,8 +117,9 @@ YEAR_LOSS_SHARE = 0.05  # bare-digit numbers that look like years: tolerated as 
 SAMPLE_MEMBERS = 40  # folders of one candidate whose subfolders are listed (container or project?)
 MAX_OPEN_PER_LEVEL = 500  # other folders opened per level (evenly spread sample beyond that)
 MAX_GROUPS = 4  # digit groups of a leading token
-DEPTH_MIN_SHARE = 0.1  # a level with single stray matches does not raise the proposed depth …
-DEPTH_MIN_COUNT = 2  # … unless it holds at least this many projects
+DEPTH_MIN_SHARE = 0.1  # a level with only this share of the matches does not raise the proposed depth
+CONTAINER_SHARE = 0.5  # container: more than this (median) share of its subfolders belong to the deeper scheme …
+CONTAINER_SHARE_WITH_FILES = 0.75  # … at least this for folders that keep files of their own (as projects do)
 MAX_HINTS = 3  # further schemes named in the report
 MAX_FILES = 200_000  # files counted by the file statistics (all projects together)
 MAX_LISTED = 15  # rows of the text report per list
@@ -104,15 +128,9 @@ CONTEXT_WINDOWS = (("32k", 32_000), ("128k", 128_000), ("1M", 1_000_000))
 CONTEXT_RESERVE = 4_000  # tokens kept free for instructions, the question and the answer
 # a pattern that never matches: the shape of project numbers for search pages while none is known
 NO_MATCH = r"(?!)"
-# PROJECT_NUMBER_PATTERN=auto: a stored detection is checked again at most this often (and at every
-# pass while a different detection is pending) – only to report a difference, never to switch; while
-# nothing is stored, a detection that found no clear scheme is repeated at most this often as well
+# PROJECT_NUMBER_PATTERN=auto: the share is analysed again at most this often (sooner when a person asks
+# for it) – the result is a proposal next to the confirmed scheme, never a switch
 RECHECK_INTERVAL = timedelta(hours=1)
-
-STORED_KEY = "project_layout_auto"  # meta: JSON of the accepted detection
-DIFFERS_KEY = "project_layout_auto_differs"  # meta: JSON of a later detection that differs
-CHECKED_KEY = "project_layout_auto_checked"  # meta: time of the last detection (UTC, ISO)
-NONE_KEY = "project_layout_auto_none"  # meta: JSON of the last detection without a clear scheme
 
 ACCEPT_HINT = "python -m projektakte.structure --uebernehmen"
 EXIT_SCHEME, EXIT_NO_SCHEME, EXIT_UNREADABLE, EXIT_USAGE = 0, 1, 2, 3
@@ -185,17 +203,31 @@ _SEP_ORDER = "-_. "
 _SEP_ALONE = {"-": "-", "_": "_", ".": r"\.", " ": r"\s"}
 _SEP_IN_CLASS = {"-": "-", "_": "_", ".": ".", " ": r"\s"}
 _SEP_NAMES = {"-": "Bindestrich", "_": "Unterstrich", ".": "Punkt", " ": "Leerzeichen"}
-# folders whose contents are no current projects: older numberings (rule 6) …
-_ARCHIVE_NAME = re.compile(r"(?:archiv|alt(?:e|akten|projekte|bestand)?\b|old\b)", re.IGNORECASE)
-# … and the office's own records with numberings of their own (offers, invoices, templates, norms)
-_SIDE_NAME = re.compile(r"(?:angebot|rechnung|verwaltung|buchhaltung|akquise|vorlage|normen)", re.IGNORECASE)
-_NAME_START = re.compile(r"^[\W\d_]+")
+# folders whose contents are no current projects (rule 6), named anywhere in the folder name (German
+# compounds: Projektarchiv, Ausgangsrechnungen, Honorarangebote): older numberings …
+_ARCHIVE_NAME = re.compile(r"archiv|(?<![a-zäöüß])(?:alt(?:e|akten|projekte|bestand)?|old)(?![a-zäöüß])",
+                           re.IGNORECASE)
+# … the office's own records with numberings of their own (offers, inquiries, tenders, invoices,
+# templates, norms, exchange copies) …
+_SIDE_NAME = re.compile(r"angebot|anfrage|ausschreibung|rechnung|verwaltung|buchhaltung|akquise|honorar|"
+                        r"kalkulation|vorlage|normen|austausch", re.IGNORECASE)
+# … and customer registers: projects may well be filed there, but a numbering found there yields to
+# one found elsewhere (customer numbers next to project numbers)
+_CUSTOMER_NAME = re.compile(r"kunde", re.IGNORECASE)
+_BRANCH_ORDER = ("main", "customers", "archive")  # where projects are looked for, best first; never "side"
+_BRANCH_TEXT = {"archive": "unter einem Archivordner – ältere Nummerierung?",
+                "side": "in einer Nebenablage (Angebote, Anfragen, Rechnungen …) – meist keine Projekte",
+                "customers": "in einem Kundenordner – Kundennummern?"}
+_LABEL_START = re.compile(r"^[\s_\-–—:.,]+")
 # German plural of the kinds of numbers that are no project numbers (rule 2)
 _KIND_TEXT = {"Jahr": "Jahreszahlen", "Jahresbereich": "Jahresbereiche", "Monat": "Monatsangaben",
               "Datum": "Datumsangaben", "kurz": "kurze Gliederungsnummern"}
 # guards against the date-like numbers a bare-digit scheme could match (rule 5)
 _YEAR_GUARD = r"(?!(?:19|20)\d\d(?!\d))"
 _DATE_GUARD = r"(?!(?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d))"
+# what a guard excludes, for the explanation (singular, plural)
+_GUARD_KIND = {"Jahr": ("Jahreszahl", "Jahreszahlen"), "Jahresbereich": ("Jahresbereich", "Jahresbereiche"),
+               "Datum": ("Datum", "Datumsangaben")}
 
 
 @dataclass(frozen=True)
@@ -206,6 +238,7 @@ class _Token:
     groups: tuple[str, ...]
     seps: tuple[str, ...]  # separators between the groups
     glued: bool  # a letter follows the last group directly (no number boundary there)
+    end: int = 0  # position after the last group in the name
 
     def number(self, k: int) -> str:
         """The number made of the first ``k`` groups, as the scan reports it (upper case)."""
@@ -233,7 +266,7 @@ def _token(name: str) -> _Token | None:
     if not groups:
         return None
     glued = pos < len(name) and name[pos].isascii() and name[pos].isalpha()
-    return _Token(prefix, psep, tuple(groups), tuple(seps), glued)
+    return _Token(prefix, psep, tuple(groups), tuple(seps), glued, pos)
 
 
 def _year(g: str) -> bool:
@@ -335,6 +368,7 @@ class _Node:
     children: list[_Node] | None = None  # None: not listed
     unreadable: bool = False
     dropped: bool = False  # a second path to a folder listed already (link)
+    files: int = 0  # files directly in the folder (known once it is listed)
     _tok: object = field(default=_UNSET, repr=False)
     _branch: str | None = field(default=None, repr=False)
 
@@ -356,7 +390,8 @@ class _Node:
 
     @property
     def branch(self) -> str:
-        """'archive' or 'side' below an archive or office folder (the topmost one decides), else 'main'."""
+        """'archive', 'side' or 'customers' below an archive, office or customer folder (the topmost one
+        decides), else 'main'."""
         if self._branch is None:
             parent = self.parent
             if parent is None or parent.depth == 0:
@@ -364,10 +399,30 @@ class _Node:
             elif parent.branch != "main":
                 self._branch = parent.branch
             else:
-                name = _NAME_START.sub("", parent.name)
-                self._branch = ("archive" if _ARCHIVE_NAME.match(name) else "side" if _SIDE_NAME.match(name)
-                                else "main")
+                self._branch = _cabinet(parent)
         return self._branch
+
+    @property
+    def label(self) -> str:
+        """The name after the leading number, normalised ('PB-22-1001 Prüfbericht' → 'prüfbericht')."""
+        tok = self.token
+        return _LABEL_START.sub("", self.name[tok.end:]).strip().casefold() if tok else ""
+
+
+def _cabinet(node: _Node) -> str:
+    """What a folder's name says about its contents: 'archive', 'side', 'customers' or 'main'. A
+    folder with a project-like number of its own is a record, never a cabinet (2024-017 Angebot …)."""
+    tok = node.token
+    if tok is not None and _number_kind(tok.prefix, tok.groups) is None:
+        return "main"
+    name = node.name
+    if _ARCHIVE_NAME.search(name):
+        return "archive"
+    if _SIDE_NAME.search(name):
+        return "side"
+    if _CUSTOMER_NAME.search(name):
+        return "customers"
+    return "main"
 
 
 @dataclass
@@ -405,6 +460,7 @@ def _list(tree: _Tree, node: _Node, root_path: Path, boundary: Path, max_folders
     through a link gives way when it is found on its real path (rule 8). Raises OSError for the root."""
     path = root_path / node.rel if node.rel else root_path
     entries: list[tuple[str, bool, str]] = []
+    files = 0
     cut = False
     tree.listings += 1
     try:
@@ -421,6 +477,8 @@ def _list(tree: _Tree, node: _Node, root_path: Path, boundary: Path, max_folders
                         continue
                     if entry.is_dir():
                         entries.append((entry.name, link, entry.path))
+                    elif entry.is_file():
+                        files += 1
                 except OSError:
                     continue
     except OSError:
@@ -430,6 +488,7 @@ def _list(tree: _Tree, node: _Node, root_path: Path, boundary: Path, max_folders
         tree.unreadable.append(node.rel)
         return
     entries.sort()
+    node.files = files
     room = max(0, max_folders - tree.listed)
     if len(entries) > room:
         entries, cut = entries[:room], True
@@ -573,6 +632,12 @@ class _Cand:
 
     @property
     def text(self) -> str:
+        notes = [note for _, note in self.guards()]
+        return self.text_plain + (f" ({', '.join(notes)})" if notes else "")
+
+    @property
+    def text_plain(self) -> str:
+        """The scheme in words without its guards."""
         parts = []
         if self.prefix:
             parts.append(f"„{self.prefix}“")
@@ -582,8 +647,7 @@ class _Cand:
             if i:
                 parts.append(_sep_text(self.seps[i - 1]))
             parts.append(_digits_text(lo, hi))
-        notes = [note for _, note in self.guards()]
-        return ", ".join(parts) + (f" ({', '.join(notes)})" if notes else "")
+        return ", ".join(parts)
 
     @property
     def specificity(self) -> int:
@@ -694,26 +758,49 @@ def _level_candidates(nodes: list[_Node]) -> tuple[list[_Cand], list[_Cand]]:
 
 
 # ------------------------------------------------------------------------------------- choosing the scheme
+def _record_series(cand: _Cand) -> bool:
+    """Numbered records of one kind: most folders carry the same label after the number in several
+    parent folders (PB-22-1001 Prüfbericht, G30001 Gutachten, 2024-017-001 Bauteil) and hold no
+    folders of their own – project folders carry names of their own (2024-017 Kita Regenbogen) or
+    their own structure (Pläne, Schriftverkehr)."""
+    labels = Counter(m.label for m in cand.members if m.label)
+    if not labels:
+        return False
+    label, n = labels.most_common(1)[0]
+    parents = {m.parent for m in cand.members if m.label == label}
+    opened = [m for m in cand.members if m.children is not None and not m.unreadable]
+    leaves = sum(1 for m in opened if not m.children)
+    return (n >= VARIANT_MIN_COUNT and 2 * n >= len(cand.members) and len(parents) >= 2
+            and bool(opened) and 2 * leaves >= len(opened))
+
+
 def _container_of(outer: _Cand, inner: _Cand) -> bool:
     """Rule 4: are the folders of ``outer`` containers of ``inner``'s folders? Yes if most of them
     consist mostly of such folders (directly or in year folders). Folders with numbered internal
-    subfolders are projects."""
+    subfolders are projects, and so are folders whose numbered subfolders are a series of records of
+    one kind. A container groups folders: folders that mostly keep files of their own count as
+    containers only when (almost) all their subfolders are such folders."""
     inside = set(inner.members)
     opened = [m for m in outer.members if m.children is not None and not m.unreadable]
     if not opened:
         return False
     if 2 * sum(1 for m in opened if any(_internal(c) for c in m.children or ())) >= len(opened):
         return False
+    if _record_series(inner):
+        return False
     shares = []
     for m in opened:
         kids = m.children or []
         bearing = sum(1 for c in kids if c in inside or (c.children and any(g in inside for g in c.children)))
         shares.append(bearing / len(kids) if kids else 0.0)
-    return statistics.median(shares) >= 0.5
+    share = statistics.median(shares)
+    if 2 * sum(1 for m in opened if m.files) > len(opened):
+        return share >= CONTAINER_SHARE_WITH_FILES
+    return share > CONTAINER_SHARE  # mostly: more than half
 
 
 def _branch(nodes: list[_Node]) -> str:
-    """'archive' or 'side' if most folders lie below an archive or office folder, else 'main'."""
+    """'archive', 'side' or 'customers' if most folders lie below such a folder, else 'main'."""
     kind, n = Counter(node.branch for node in nodes).most_common(1)[0] if nodes else ("main", 0)
     return kind if 2 * n > len(nodes) else "main"
 
@@ -754,10 +841,6 @@ class _Scheme:
     @property
     def outliers(self) -> list[_Node]:
         return [o for c in self.cands for o in c.outliers]
-
-    @property
-    def guarded_years(self) -> bool:
-        return any(g == _YEAR_GUARD for c in self.cands for g, _ in c.guards())
 
     @property
     def specificity(self) -> int:
@@ -821,16 +904,19 @@ def _choose(tree: _Tree) -> _Choice:
     unclear = [c for c in invalid if len(c.items) >= MIN_PROJECTS and not c.problem.startswith("nur ")
                and 2 * sum(1 for n in c.items if _member_ancestor(n, owner) is None) > len(c.items)]
     unclear_branch = {id(c): _branch(c.items) for c in unclear}
-    branch = "main" if any(s.branch == "main" for s in schemes) else "archive"
+    # projects are looked for in the ordinary folders first, then in customer folders, then in archives
+    branch = next((b for b in _BRANCH_ORDER if any(s.branch == b for s in schemes)), "main")
+    above = _BRANCH_ORDER[:_BRANCH_ORDER.index(branch)]
     pool = [s for s in schemes if s.branch == branch]
-    blocking = [c for c in unclear if unclear_branch[id(c)] in ("main", branch)]
+    blocking = [c for c in unclear if unclear_branch[id(c)] in (*above, branch)]
     best, reason = (pool[0] if pool else None), None
-    if best is not None and branch == "archive" and any(unclear_branch[id(c)] == "main" for c in blocking):
-        c = max((c for c in blocking if unclear_branch[id(c)] == "main"), key=lambda c: len(c.items))
+    if best is not None and any(unclear_branch[id(c)] in above for c in blocking):
+        c = max((c for c in blocking if unclear_branch[id(c)] in above), key=lambda c: len(c.items))
+        where = ("gilt als ältere Nummerierung" if branch == "archive" else
+                 "liegt nur in Kundenordnern")
         reason = (f"Kein Nummernschema ist eindeutig genug – {c.pattern} (Ebene {c.level}, "
                   f"{de_count(len(c.items), 'Ordner', 'Ordner')}{_where_text(c.items)}): {c.problem}. Das Schema "
-                  f"{best.pattern}{_scheme_where(best)} gilt als ältere Nummerierung und wird nicht allein "
-                  "vorgeschlagen.")
+                  f"{best.pattern}{_scheme_where(best)} {where} und wird nicht allein vorgeschlagen.")
         best = None
     elif best is not None:
         rivals = [(s.est, s.pattern, s.members, None) for s in pool[1:]]
@@ -846,15 +932,14 @@ def _choose(tree: _Tree) -> _Choice:
     elif schemes:
         side = schemes[0]
         reason = (f"Nummerierte Ordner gibt es nur in Nebenablagen ({side.pattern}{_scheme_where(side)}) – "
-                  "Angebote, Rechnungen und Vorlagen sind keine Projekte.")
+                  "Angebote, Anfragen, Rechnungen und Vorlagen sind keine Projekte.")
     others = [s for s in schemes if s is not best]
     for s in schemes:
         verdict = "gewählt" if s is best else "Hinweis" if best is not None else "Kandidat"
         why = None
         if s is not best and best is not None:
-            why = {"archive": "unter einem Archivordner – ältere Nummerierung?",
-                   "side": "in einer Nebenablage (Angebote, Rechnungen …)"}.get(
-                s.branch, f"seltener als {best.pattern}")
+            why = _BRANCH_TEXT.get(s.branch, f"seltener als {best.pattern}") if s.branch != best.branch else (
+                f"seltener als {best.pattern}")
         infos += [_cand_info(c, verdict, why) for c in s.cands]
     infos += [_cand_info(c, "abgelehnt", c.problem) for c in invalid if len(c.items) > 1]
     order = {"gewählt": 0, "Kandidat": 1, "Hinweis": 2, "Sammelordner": 3, "in Projektordnern": 4, "abgelehnt": 5}
@@ -886,6 +971,15 @@ class _Scan:
     duplicates: list[tuple[str, _Node, _Node]]
     exceptions: list[_Node]  # folders without the number next to project folders (Archiv, _Vorlagen …)
 
+    @property
+    def matched_est(self) -> float:
+        """Project folders the share holds by estimate (sampling on the way down taken into account)."""
+        return sum(n.weight for n, _ in self.matches)
+
+    @property
+    def exceptions_est(self) -> float:
+        return sum(n.weight for n in self.exceptions)
+
 
 def _simulate(root: _Node, head: re.Pattern, max_depth: int) -> _Scan:
     found: dict[str, _Node] = {}
@@ -910,28 +1004,37 @@ def _simulate(root: _Node, head: re.Pattern, max_depth: int) -> _Scan:
 
     walk(root, 1)
     bearing = {a for node, _ in matches for a in node.ancestors()}  # folders containing projects
-    exceptions = [n for n in others if n not in bearing and n.parent in bearing]
+    # a folder that was not opened (beyond the sample) may hold projects itself: it is no exception –
+    # so matches and exceptions rest on the same sample and the share does not depend on the size
+    exceptions = [n for n in others if n not in bearing and n.parent in bearing
+                  and (n.children is not None or n.unreadable or n.depth >= max_depth)]
     return _Scan(matches, duplicates, exceptions)
 
 
-def _proposed_depth(depths: Counter) -> int:
+def _proposed_depth(nodes: list[_Node], side: bool = False) -> int:
     """The deepest level that holds a real share of the projects – a single stray match far below
-    (a template folder named like a project) does not make every scan look that deep. (The caller
-    raises 1 to the default 2 when that finds the same folders.)"""
+    (a copy in an exchange folder) does not make every scan look that deep, matches in office
+    folders (offers, invoices, templates) never do (unless ``side``: the depth for a hint that names
+    them), matches in archive and customer folders always count. (The caller raises 1 to the
+    default 2 when that finds the same folders.)"""
+    counted = nodes if side else [n for n in nodes if n.branch != "side"] or nodes
+    depths = Counter(n.depth for n in counted)
     total = sum(depths.values())
-    levels = [d for d, n in depths.items() if n >= DEPTH_MIN_COUNT or n >= DEPTH_MIN_SHARE * total]
+    always = {n.depth for n in counted if n.branch != "main"}
+    levels = [d for d, n in depths.items() if n >= DEPTH_MIN_SHARE * total or d in always]
     return max(levels or depths)
 
 
-def _depth_for(root: _Node, head: re.Pattern, max_depth: int) -> tuple[int, _Scan]:
+def _depth_for(root: _Node, head: re.Pattern, max_depth: int, side: bool = False) -> tuple[int, _Scan]:
     everything = _simulate(root, head, max_depth)
     if not everything.matches:
         return min(max_depth, DEFAULT_PROJECT_FOLDER_DEPTH), everything
-    depth = _proposed_depth(Counter(n.depth for n, _ in everything.matches))
+    depth = _proposed_depth([n for n, _ in everything.matches], side)
     if depth < DEFAULT_PROJECT_FOLDER_DEPTH <= max_depth:
         # the default finds the very same folders today and also projects put into a year folder later
+        # (the same folders – a copy in an exchange folder that sorts first is no "same" result)
         at_default = _simulate(root, head, DEFAULT_PROJECT_FOLDER_DEPTH)
-        if {n for _, n in at_default.matches} == {n for _, n in _simulate(root, head, depth).matches}:
+        if {n for n, _ in at_default.matches} == {n for n, _ in _simulate(root, head, depth).matches}:
             depth = DEFAULT_PROJECT_FOLDER_DEPTH
     return depth, everything
 
@@ -954,6 +1057,9 @@ class Proposal:
     unreadable: list[str]
     outliers: list[str] = field(default_factory=list)  # same kind of number, variant without backing
     hints: list[dict] = field(default_factory=list)  # further schemes (archive, offers …) with alternation
+    guard: dict | None = None  # folders the scheme's guard excludes (kind, count, examples) or left it out
+    notes: list[str] = field(default_factory=list)  # what a person should look at before confirming (German)
+    inner: dict | None = None  # numbered subfolders inside the project folders (count, examples)
 
 
 @dataclass
@@ -972,6 +1078,7 @@ class Analysis:
     alternatives: list[dict] = field(default_factory=list)  # further schemes (same as proposal.hints)
     seconds: float = 0.0
     listings: int = 0  # folders opened
+    bad_names: dict | None = None  # folder names that are no valid UTF-8: count, examples
     projects: list[ProjectFolder] = field(default_factory=list, repr=False)
 
     @property
@@ -979,9 +1086,21 @@ class Analysis:
         return EXIT_UNREADABLE if self.problem else EXIT_SCHEME if self.proposal else EXIT_NO_SCHEME
 
     def to_dict(self) -> dict:
+        """Everything but the project list – names that are no valid UTF-8 shown with �."""
         data = dataclasses.asdict(self)
         data.pop("projects")
-        return data
+        return clean(data)
+
+
+def clean(value):
+    """``value`` (str, list, dict …) with every text made printable – for JSON, the database, a page."""
+    if isinstance(value, str):
+        return printable(value)
+    if isinstance(value, dict):
+        return {clean(k) if isinstance(k, str) else k: clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [clean(v) for v in value]
+    return value
 
 
 def _rel(path: Path, root: Path) -> str:
@@ -1030,13 +1149,26 @@ def _no_scheme_reason(tree: _Tree, choice: _Choice) -> str:
             "Ebene nötig, z. B. 2024-017 Kita, 2024-018 Schule …).")
 
 
-def _hint(tree: _Tree, best: _Scheme, other: _Scheme, max_depth: int) -> dict:
-    combined = f"(?:{best.pattern}|{other.pattern})"
-    depth, _ = _depth_for(tree.root, project_head(combined), max_depth)
+def _unreadable_text(tree: _Tree) -> str:
+    """A sentence about folders that could not be listed – they may hold the projects – or ''."""
+    if not tree.unreadable:
+        return ""
+    names = ", ".join(tree.unreadable[:3]) + (" …" if len(tree.unreadable) > 3 else "")
+    return (f"{de_count(len(tree.unreadable), 'Ordner war', 'Ordner waren')} nicht lesbar ({names}) – "
+            "Berechtigungen des Lesekontos prüfen. ")
+
+
+def _hint(tree: _Tree, best: _Scheme, other: _Scheme, max_depth: int, pattern: str | None = None) -> dict:
+    """A further scheme with the alternation (and depth) to set by hand if it holds projects, too –
+    ``pattern``: the proposed expression (the scheme's own unless its guard was left out)."""
+    combined = f"(?:{pattern or best.pattern}|{other.pattern})"
+    depth, _ = _depth_for(tree.root, project_head(combined), max_depth, side=True)
+    parents = {m.parent for m in best.members}
+    beside = sum(1 for m in other.members if m.parent in parents)
     return {"pattern": other.pattern, "description": other.text, "folders": round(other.est),
             "estimated": round(other.est) != len(other.members), "where": _where(other.members),
             "branch": other.branch, "examples": [n.name for n in other.members[:3]],
-            "combined": combined, "depth": depth}
+            "combined": combined, "depth": depth, "beside": 2 * beside >= len(other.members)}
 
 
 def _reject(result: Analysis, reason: str, started: float) -> Analysis:
@@ -1046,6 +1178,154 @@ def _reject(result: Analysis, reason: str, started: float) -> Analysis:
             info["verdict"], info["reason"] = "Kandidat", "zu unsicher (siehe oben)"
     result.seconds = round(time.monotonic() - started, 2)
     return result
+
+
+# --- guards (rule 5): a guard must never drop projects silently
+# a year range with any separator, a full date and a bare year – checked in this order, so that a
+# range (2019-1900) is not named a year
+_KIND_PROBES = (("Jahresbereich", re.compile(r"(?:19|20)\d\d[-_.\s]?(?:19|20)\d\d(?!\d)")),
+                ("Datum", re.compile(r"(?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)")),
+                ("Jahr", re.compile(r"(?:19|20)\d\d(?!\d)")))
+MAX_GUARD_EXAMPLES = 8
+
+
+def guard_kind(names: Iterable[str]) -> tuple[str, str]:
+    """(singular, plural) of what a guard keeps out of these folder names: 'Jahreszahl' …"""
+    kinds = Counter(next((kind for kind, rx in _KIND_PROBES if rx.match(name)), "") for name in names)
+    kind = kinds.most_common(1)[0][0] if kinds else ""
+    return _GUARD_KIND.get(kind, ("Jahreszahl oder Datum", "Jahreszahlen oder Datumsangaben"))
+
+
+_KIND_ARTICLE = {"Jahreszahl": ("eine Jahreszahl", "Jahreszahlen"), "Jahresbereich": ("ein Jahresbereich", "Jahresbereichen"),
+                 "Datum": ("ein Datum", "Datumsangaben")}
+
+
+def guard_text(count: int, examples: list[str], kind: str, dropped: bool = False) -> str:
+    """German line about the folders a guard excludes (or would exclude, had it not been left out)."""
+    shown = ", ".join(examples[:5]) + (" …" if count > min(5, len(examples)) else "")
+    if dropped:
+        one, many = _KIND_ARTICLE.get(kind, ("eine Jahreszahl oder ein Datum", "Jahreszahlen oder Datumsangaben"))
+        return (f"Ohne Ausschluss von {many}: {de_count(count, 'Ordner', 'Ordner')} neben den Projektordnern "
+                f"beginnen mit einer Nummer, die auch {one} sein könnte, und werden als Projekte gelesen "
+                f"({shown}).")
+    return f"{de_count(count, 'Ordner würde', 'Ordner würden')} als {kind} ausgeschlossen und nicht gelesen: {shown}"
+
+
+@dataclass
+class _GuardCheck:
+    pattern: str  # the expression to use: with the guard, or without it when it would drop projects
+    info: dict | None = None  # kind, count, examples, dropped
+    refusal: str | None = None
+    loose: str | None = None  # the expression without its guard (None: it has none)
+    clash: list[str] = field(default_factory=list)  # folders holding projects the loose expression matches
+
+
+def _guard_refusal(pattern: str, count: int, examples: list[str], clash: list[str]) -> str:
+    singular, plural = guard_kind(Path(e).name for e in examples)
+    return (f"Projektnummern und {plural} sind nicht zu unterscheiden: {de_count(count, 'Ordner beginnt', 'Ordner beginnen')} "
+            f"mit einer Nummer, die nach dem Schema {pattern} als {singular} gilt und nicht gelesen würde (z. B. "
+            f"{', '.join(examples[:3])}); ohne diesen Ausschluss würden aber die Ordner {', '.join(clash[:3])}, in "
+            "denen die Projektordner liegen, selbst als Projekte gelesen.")
+
+
+def _check_guard(tree: _Tree, best: _Scheme) -> _GuardCheck:
+    """Rule 5: a guard keeps years (dates, year ranges) out of a bare-digit scheme. The folders it
+    excludes at the level of the projects – next to project folders, holding none – are counted.
+    A few are named in the proposal; more are projects whose numbers reach the year range: then the
+    guard is left out, unless the folders holding the projects (year folders) would match without
+    it – then the scheme cannot tell projects from years and is refused."""
+    pattern = best.pattern
+    loose = loose_pattern(pattern)
+    if loose is None:
+        return _GuardCheck(pattern)
+    head, loose_head = project_head(pattern), project_head(loose)
+    members = set(best.members)
+    holding = {a for m in members for a in m.ancestors() if a.depth}
+    clash = [a.rel for a in sorted((a for a in holding if loose_head.match(a.name)), key=lambda a: a.rel)]
+    # (the candidate's folders were grouped by their digits – the guard may exclude some of them too)
+    excluded = [n for level in sorted({c.level for c in best.cands}) for n in tree.level(level)
+                if n not in holding and not any(a in members for a in n.ancestors())
+                and loose_head.match(n.name) and not head.match(n.name)]
+    if not excluded:
+        return _GuardCheck(pattern, loose=loose, clash=clash)
+    count = round(sum(n.weight for n in excluded))
+    examples = [n.rel for n in excluded[:MAX_GUARD_EXAMPLES]]
+    info = _guard_info(count, examples, dropped=False)
+    if not _guard_loses(count, best.est):
+        return _GuardCheck(pattern, info, loose=loose, clash=clash)
+    if clash:
+        return _GuardCheck(pattern, info, _guard_refusal(pattern, count, examples, clash), loose, clash)
+    info["dropped"] = True
+    return _GuardCheck(loose, info, loose=loose, clash=clash)
+
+
+def _guard_info(count: int, examples: list[str], *, dropped: bool) -> dict:
+    singular, plural = guard_kind(Path(e).name for e in examples)
+    return {"kind": singular, "kinds": plural, "count": count, "examples": examples[:MAX_GUARD_EXAMPLES],
+            "dropped": dropped}
+
+
+def _guard_loses(count: float, projects: float) -> bool:
+    """Would a guard keep out more than a few stray folders (2, or YEAR_LOSS_SHARE of the projects)?"""
+    return count > max(2, YEAR_LOSS_SHARE * projects)
+
+
+@dataclass
+class _Verified:
+    """A scheme checked against the listed tree and the app's own scan."""
+    depth: int
+    everything: _Scan
+    final: _Scan
+    found: list[ProjectFolder]
+    unreadable: list[Path]
+    duplicates: list[tuple[str, Path, Path]]
+    excluded: list[tuple[str, Path]]  # folders its guard keeps out next to project folders (whole share)
+
+
+def _verify(tree: _Tree, root: Path, best: _Scheme, pattern: str, max_depth: int) -> _Verified | str:
+    """Depth, clash with the folders holding the projects, share of the project folders among the
+    folders next to them, and the app's own scan (rule 7) – or the German reason why not."""
+    head = project_head(pattern)
+    depth, everything = _depth_for(tree.root, head, max_depth)
+    holding = {a for m in best.members for a in m.ancestors()}
+    if clash := [n for n, _ in everything.matches if n in holding]:
+        return (f"Das Schema {pattern} passt auch auf die Ordner, in denen die Projektordner liegen "
+                f"({', '.join(n.rel for n in clash[:3])}) – diese würden selbst als Projekte gelesen.")
+    final = _simulate(tree.root, head, depth)
+    # the share of project folders next to them, both counted in the same sample
+    n_est, ex_est = final.matched_est, final.exceptions_est
+    need = MIN_SHARE_FEW if n_est < GOOD_PROJECTS else MIN_SHARE
+    if n_est + ex_est and n_est < need * (n_est + ex_est):
+        return (f"Nur {round(100 * n_est / (n_est + ex_est))} % der Ordner neben den Projektordnern passen zum Schema "
+                f"{pattern} ({_passing_text(n_est, len(final.matches), 'passender', 'passende')}, "
+                f"{_passing_text(ex_est, len(final.exceptions), 'anderer', 'andere')}) – zu wenig für ein sicheres "
+                "Schema.")
+    unreadable: list[Path] = []
+    duplicates: list[tuple[str, Path, Path]] = []
+    excluded: list[tuple[str, Path]] = []
+    found = scan_projects(root, pattern, depth, unreadable=unreadable, duplicates=duplicates, excluded=excluded)
+    # the same folder reached through a link is no second project (the scan skips it as well)
+    duplicates = [d for d in duplicates if os.path.realpath(d[1]) != os.path.realpath(d[2])]
+    return _Verified(depth, everything, final, found, unreadable, duplicates, excluded)
+
+
+def _inner_numbering(matches: list[_Node]) -> dict | None:
+    """Numbered subfolders inside the (opened) project folders – no dates or short outline numbers:
+    a person sees at once whether 1020 Stadt Aachen holds 1020-01 Kita (projects) or 01 Pläne."""
+    kids = [c for m in matches for c in (m.children or ())
+            if c.token is not None and _number_kind(c.token.prefix, c.token.groups) is None]
+    if not kids:
+        return None
+    examples: dict[str, str] = {}  # one example per label: 2024-017_01 Pläne once, 1020-01 Kita, 1020-02 Schule …
+    for c in kids:
+        if len(examples) < 6:
+            examples.setdefault(c.label or c.name, c.rel)
+    return {"count": round(sum(c.weight for c in kids)), "examples": list(examples.values()),
+            "internal": round(sum(c.weight for c in kids if _internal(c)))}
+
+
+def _passing_text(n: float, listed: int, singular: str, plural: str) -> str:
+    return de_count(n, singular, plural) if round(n) == listed else f"etwa {de_count(n, singular, plural)}"
 
 
 def analyse(root: Path | str, *, max_depth: int = MAX_DEPTH, max_folders: int = MAX_FOLDERS,
@@ -1067,52 +1347,49 @@ def analyse(root: Path | str, *, max_depth: int = MAX_DEPTH, max_folders: int = 
     result.folders, result.truncated, result.listings = tree.listed, tree.truncated, tree.listings
     result.unreadable = tree.unreadable[:MAX_LISTED * 4]
     result.levels = _level_summary(tree)
+    bad = [n for n in tree.nodes if has_bad_encoding(n.name)]
+    if bad:
+        result.bad_names = {"count": len(bad), "examples": [n.rel for n in bad[:MAX_GUARD_EXAMPLES]]}
     choice = _choose(tree)
     result.candidates = choice.candidates[:12]
     result.rejected = [{"pattern": i["pattern"], "reason": i["reason"]} for i in choice.candidates
                        if i["verdict"] in ("abgelehnt", "Sammelordner", "in Projektordnern")][:8]
     best = choice.best
     if best is None:
-        return _reject(result, _no_scheme_reason(tree, choice), started)
-    head = project_head(best.pattern)
-    depth, everything = _depth_for(tree.root, head, max_depth)
-    members = set(best.members)
-    holding = {a for m in members for a in m.ancestors()}
-    if clash := [n for n, _ in everything.matches if n in holding]:
-        return _reject(result, f"Das Schema {best.pattern} passt auch auf die Ordner, in denen die Projektordner "
-                               f"liegen ({', '.join(n.rel for n in clash[:3])}) – diese würden selbst als Projekte "
-                               "gelesen.", started)
-    final = _simulate(tree.root, head, depth)
-    if best.guarded_years:
-        # folders at the projects' level whose number is a year (1999 Projekt): next to projects or in
-        # a year folder of their own (2024/1901 …, 2024/1902 …) – the guard keeps them out
-        levels = {c.level for c in best.cands}
-        lost = [n for level in sorted(levels) for n in tree.level(level)
-                if _token_kind(n.token) == "Jahr" and n not in holding and n.parent is not None
-                and (n.parent in holding or _year_like(n.parent))]
-        if len(lost) > max(2, YEAR_LOSS_SHARE * len(best.members)):
-            return _reject(result, f"Projektnummern und Jahreszahlen sind nicht zu unterscheiden: "
-                                   f"{de_count(len(lost), 'Ordner beginnt', 'Ordner beginnen')} mit einer Zahl "
-                                   f"zwischen 1900 und 2099 (z. B. {', '.join(n.rel for n in lost[:3])}), die nach "
-                                   f"dem Schema {best.pattern} als Jahreszahl gilt und nicht gelesen würde.", started)
-    n, ex = len(final.matches), len(final.exceptions)
-    need = MIN_SHARE_FEW if n < GOOD_PROJECTS else MIN_SHARE
-    if n + ex and n < need * (n + ex):
-        return _reject(result, f"Nur {round(100 * n / (n + ex))} % der Ordner neben den Projektordnern passen zum "
-                               f"Schema {best.pattern} ({de_count(n, 'passender', 'passende')}, "
-                               f"{de_count(ex, 'anderer', 'andere')}) – zu wenig für ein sicheres Schema.", started)
-    unreadable: list[Path] = []
-    duplicates: list[tuple[str, Path, Path]] = []
-    found = scan_projects(root, best.pattern, depth, unreadable=unreadable, duplicates=duplicates)
-    # the same folder reached through a link is no second project (the scan skips it as well)
-    duplicates = [d for d in duplicates if os.path.realpath(d[1]) != os.path.realpath(d[2])]
+        return _reject(result, _unreadable_text(tree) + _no_scheme_reason(tree, choice), started)
+    guard = _check_guard(tree, best)
+    if guard.refusal:
+        return _reject(result, guard.refusal, started)
+    pattern = guard.pattern
+    v = _verify(tree, root, best, pattern, max_depth)
+    if isinstance(v, str):
+        return _reject(result, v, started)
+    if guard.loose and pattern != guard.loose:
+        # the app's scan of the whole share decides what the guard keeps out, not the sample (rule 5)
+        guard.info = None
+        if v.excluded:
+            examples = [_rel(folder, root) for _, folder in v.excluded[:MAX_GUARD_EXAMPLES]]
+            guard.info = _guard_info(len(v.excluded), examples, dropped=False)
+            if _guard_loses(len(v.excluded), len(v.found) + len(v.excluded)):
+                if guard.clash:
+                    return _reject(result, _guard_refusal(pattern, len(v.excluded), examples, guard.clash), started)
+                pattern, guard.info["dropped"] = guard.loose, True
+                v = _verify(tree, root, best, pattern, max_depth)
+                if isinstance(v, str):
+                    return _reject(result, v, started)
+    elif guard.info and guard.info["dropped"]:  # the exact folders the guard would have kept out
+        guarded = project_head(best.pattern)
+        lost = [f for f in v.found if not guarded.match(f.path.name)]
+        guard.info = _guard_info(len(lost), [_rel(f.path, root) for f in lost], dropped=True)
+    depth, everything, final, found = v.depth, v.everything, v.final, v.found
+    unreadable, duplicates = v.unreadable, v.duplicates
     if len(found) < MIN_PROJECTS:  # the share changed while it was read
-        return _reject(result, f"Das Schema {best.pattern} fand beim Gegenprüfen nur "
+        return _reject(result, f"Das Schema {pattern} fand beim Gegenprüfen nur "
                                f"{de_count(len(found), 'Projektordner', 'Projektordner')} – Freigabe vollständig "
                                "eingebunden?", started)
     if len(duplicates) > max(1, MAX_DUPLICATE_SHARE * len(found)):
         examples = "; ".join(f"{_rel(a, root)} und {_rel(b, root)}" for _, a, b in duplicates[:2])
-        return _reject(result, f"Viele doppelte Nummern mit dem Schema {best.pattern} ({len(duplicates)} bei "
+        return _reject(result, f"Viele doppelte Nummern mit dem Schema {pattern} ({len(duplicates)} bei "
                                f"{de_count(len(found), 'Projektordner', 'Projektordnern')}, z. B. {examples}) – "
                                "gelesen würde jeweils nur der erste Ordner. Nummern eindeutig machen oder "
                                "PROJECT_NUMBER_PATTERN von Hand einstellen.", started)
@@ -1120,14 +1397,33 @@ def analyse(root: Path | str, *, max_depth: int = MAX_DEPTH, max_folders: int = 
                                          ("ein weiteres Nummernschema", choice.others)) if present]
     if len(found) < GOOD_PROJECTS and doubts:
         return _reject(result, f"Nur {de_count(len(found), 'Projektordner', 'Projektordner')} mit dem Schema "
-                               f"{best.pattern}, und daneben gibt es {' und '.join(doubts)} – zu wenig für ein "
+                               f"{pattern}, und daneben gibt es {' und '.join(doubts)} – zu wenig für ein "
                                "sicheres Schema.", started)
+    # what a person should look at before confirming
+    notes: list[str] = []
+    if guard.info:
+        notes.append(guard_text(guard.info["count"], guard.info["examples"], guard.info["kind"],
+                                guard.info["dropped"]))
+    side = [n for n, _ in final.matches if n.branch == "side"]
+    if side:
+        n_side = round(sum(n.weight for n in side))
+        notes.append(f"{de_count(n_side, 'gefundener Ordner liegt', 'gefundene Ordner liegen')} in einer Nebenablage "
+                     f"(Angebote, Anfragen, Rechnungen …) und {'wird' if n_side == 1 else 'werden'} als "
+                     f"Projekt{'' if n_side == 1 else 'e'} gelesen: {', '.join(n.rel for n in side[:3])}"
+                     + (" …" if len(side) > 3 else ""))
+    if result.bad_names:
+        bad_names = result.bad_names
+        notes.append(f"{de_count(bad_names['count'], 'Ordnername hat', 'Ordnernamen haben')} eine falsche "
+                     f"Zeichenkodierung (z. B. {', '.join(bad_names['examples'][:3])}) – {ENCODING_HINT}.")
+    if tree.unreadable:
+        notes.append(_unreadable_text(tree).strip())
     parents = Counter(_rel(p.path.parent, root) for p in found if p.path.parent != root)
-    hints = [_hint(tree, best, other, max_depth) for other in choice.others[:MAX_HINTS]]
+    hints = [_hint(tree, best, other, max_depth, pattern) for other in choice.others[:MAX_HINTS]]
     result.projects = found
     result.alternatives = hints
     result.proposal = Proposal(
-        pattern=best.pattern, depth=depth, description=best.text, projects=len(found),
+        pattern=pattern, depth=depth, projects=len(found),
+        description=best.cands[0].text_plain if guard.info and guard.info["dropped"] else best.text,
         examples=[{"number": p.number, "name": p.name, "path": _rel(p.path, root)} for p in found[:MAX_LISTED]],
         levels=dict(sorted(Counter(len(_rel(p.path, root).split("/")) for p in found).items())),
         parents=[[k, v] for k, v in parents.most_common(8)],
@@ -1137,7 +1433,8 @@ def analyse(root: Path | str, *, max_depth: int = MAX_DEPTH, max_folders: int = 
         deeper=[node.rel for node, _ in everything.matches if node.depth > depth][:MAX_LISTED],
         second_scheme=hints[0] if hints else None,
         unreadable=[_rel(p, root) for p in unreadable[:MAX_LISTED]],
-        outliers=[o.rel for o in best.outliers[:MAX_LISTED]], hints=hints)
+        outliers=[o.rel for o in best.outliers[:MAX_LISTED]], hints=hints, guard=guard.info, notes=notes,
+        inner=_inner_numbering([n for n, _ in final.matches]))
     result.seconds = round(time.monotonic() - started, 2)
     return result
 
@@ -1316,59 +1613,144 @@ def context_statistics(db_path: Path | str) -> dict | None:
 
 
 # ------------------------------------------------------------------------------------- effective layout
+# PROJECT_NUMBER_PATTERN=auto keeps its state in the meta table, every record for one PROJECTS_DIR. A
+# detection is only ever a proposal: it is used once a person confirmed it (status page or
+# --uebernehmen), and a confirmed scheme is never replaced on its own – a later, different detection
+# becomes a new proposal next to it (a half-mounted share must never change which folders count).
+CONFIRMED_KEY = "project_layout_confirmed"  # the scheme a person confirmed – the only one ever used
+PROPOSAL_KEY = "project_layout_proposal"  # the latest detection with its evidence, waiting for a person
+REJECTED_KEY = "project_layout_rejected"  # the proposal rejected last (not offered again while it stays)
+CHECK_KEY = "project_layout_check"  # the latest detection: time, outcome, reason, candidates, further schemes
+NOTES_KEY = "project_layout_notes"  # what the latest project scan noticed (guard, names in a wrong encoding)
+# records of the development state before the confirmation existed – stored without anyone confirming
+LEGACY_KEYS = ("project_layout_auto", "project_layout_auto_differs", "project_layout_auto_checked",
+               "project_layout_auto_none")
+PENDING_TEXT = "Vorschlag zur Projektstruktur wartet auf Bestätigung"
+ANONYMOUS = "unbekannt (ohne Anmeldung)"  # who decided while the access control is switched off
+MAX_EXAMPLES = 10  # example project folders kept with a proposal
+
+
+class ProposalError(Exception):
+    """A confirmation or rejection that does not match the current proposal (German message)."""
+
+
 @dataclass(frozen=True)
 class Layout:
-    """Which folders count as projects: the effective PROJECT_NUMBER_PATTERN and folder depth."""
+    """Which folders count as projects: the effective PROJECT_NUMBER_PATTERN and folder depth. With
+    PROJECT_NUMBER_PATTERN=auto only a confirmed scheme is effective; a proposal waits for a person."""
     pattern: str | None  # None: no usable scheme – the project sync is skipped
     depth: int
     auto: bool  # PROJECT_NUMBER_PATTERN=auto
     depth_auto: bool  # the depth comes from the detection (PROJECT_FOLDER_DEPTH unset or auto)
-    detected_at: str | None = None
-    examples: tuple[str, ...] = ()
-    projects: int | None = None  # project folders found when it was detected
     problem: str | None = None  # German: why there is no usable scheme
-    differs: dict | None = None  # a later detection that differs (the stored one stays in use)
+    confirmed: dict | None = None  # auto mode: the confirmed scheme with the evidence it was confirmed on
+    proposal: dict | None = None  # auto mode: a detection waiting for a person – never used before that
+    rejected: dict | None = None  # auto mode: the proposal rejected last
+    check: dict | None = None  # auto mode: the latest detection (time, outcome, candidates, further schemes)
+    notes: dict | None = None  # what the latest project scan with this scheme noticed
     next_check: str | None = None  # auto mode without a clear scheme: the next detection (UTC, ISO)
+
+    @property
+    def state(self) -> str:
+        """configured | confirmed | pending | rejected | none (no clear scheme) | unchecked"""
+        if not self.auto:
+            return "configured"
+        if self.confirmed:
+            return "confirmed"
+        if self.proposal:
+            return "pending"
+        if self.rejected:
+            return "rejected"
+        return "none" if self.check and self.check.get("outcome") != "proposal" else "unchecked"
+
+    @property
+    def detected_at(self) -> str | None:
+        return (self.confirmed or {}).get("detected_at")
+
+    @property
+    def examples(self) -> tuple[str, ...]:
+        return tuple((self.confirmed or {}).get("examples") or ())[:3]
+
+    @property
+    def projects(self) -> int | None:
+        return (self.confirmed or {}).get("projects")
 
     @property
     def source(self) -> str:
         if not self.auto:
             return "eingestellt"
-        if self.pattern:
-            return f"automatisch erkannt am {local_time_text(self.detected_at)}"
-        return "automatisch – noch nicht erkannt"
+        if self.confirmed:
+            return (f"bestätigt am {local_time_text(self.confirmed.get('confirmed_at'))} von "
+                    f"{self.confirmed.get('confirmed_by') or 'unbekannt'}")
+        return "automatisch – noch nicht bestätigt"
 
     @property
     def warning(self) -> str | None:
-        d = self.differs
-        if not d or not self.pattern:
+        """A newer proposal next to the confirmed scheme – which stays in use until it is confirmed."""
+        p = self.proposal
+        if not p or not self.pattern:
             return None
-        examples = ", ".join(d.get("examples") or [])
-        stored = d.get("stored_projects")
-        return (f"Eine neuere Erkennung ({local_time_text(d.get('detected_at'))}) ergibt ein anderes Schema: "
-                f"{d.get('pattern')}, Tiefe {d.get('depth')} ({d.get('projects')} Projektordner"
-                f"{', z. B. ' + examples if examples else ''}). Weiter verwendet wird das gespeicherte "
-                f"{self.pattern}, Tiefe {self.depth}"
-                f"{f' (findet derzeit {stored} Projektordner)' if stored is not None else ''}. "
-                f"Übernehmen mit: {ACCEPT_HINT}")
+        examples = ", ".join((p.get("examples") or [])[:3])
+        now = p.get("current_projects")
+        return (f"Neuer Vorschlag zur Projektstruktur ({local_time_text(p.get('detected_at'))}): {p['pattern']}, "
+                f"Tiefe {p['depth']} ({p.get('projects')} Projektordner{', z. B. ' + examples if examples else ''}). "
+                f"Weiter verwendet wird das bestätigte {self.pattern}, Tiefe {self.depth}"
+                f"{f' (findet derzeit {now} Projektordner)' if now is not None else ''}. Übernehmen auf der "
+                f"Statusseite oder mit: {ACCEPT_HINT}")
+
+    @property
+    def notices(self) -> list[str]:
+        """Warnings of the latest project scan with this scheme (guard, names in a wrong encoding) and,
+        next to a confirmed scheme, a newer detection that found no clear scheme at all."""
+        out = scan_notices(self.notes)
+        c = self.check
+        if self.confirmed and c and c.get("outcome") != "proposal" and c.get("checked_at"):
+            out.append(f"Die neueste Erkennung ({local_time_text(c.get('checked_at'))}) ergibt kein eindeutiges "
+                       f"Schema: {c.get('reason')} Weiter verwendet wird das bestätigte {self.pattern}.")
+        return out
 
     def summary(self) -> str:
         """One German line for the start-up log."""
         if self.pattern is None:
             if not self.auto:
                 return "unbrauchbar – Projekte werden nicht abgeglichen"
+            if self.proposal:
+                return f"{PENDING_TEXT} ({self.proposal['pattern']}, Tiefe {self.proposal['depth']})"
+            if self.rejected:
+                return f"Vorschlag {self.rejected['pattern']} abgelehnt – noch kein Schema bestätigt"
             when = (f"nächste Prüfung frühestens {local_time_text(self.next_check)}" if self.next_check
                     else "beim nächsten Indexierungslauf")
+            if self.state == "none":
+                return f"automatisch – kein eindeutiges Schema erkannt ({when})"
             return f"automatisch – noch nicht erkannt ({when})"
         depth = f"Tiefe {self.depth}" + (" (automatisch)" if self.auto and self.depth_auto else "")
         return f"{self.pattern} ({self.source}), {depth}"
 
     def to_dict(self) -> dict:
-        return {"pattern": self.pattern, "depth": self.depth, "auto": self.auto, "depth_auto": self.depth_auto,
-                "source": self.source, "depth_text": depth_text(self.depth), "detected_at": self.detected_at,
-                "examples": list(self.examples), "projects_at_detection": self.projects,
-                "problem": self.problem, "warning": self.warning, "next_check": self.next_check,
-                "differs": {k: v for k, v in self.differs.items() if k != "root"} if self.differs else None}
+        return clean({
+            "pattern": self.pattern, "depth": self.depth, "auto": self.auto, "depth_auto": self.depth_auto,
+            "state": self.state, "source": self.source, "depth_text": depth_text(self.depth),
+            "detected_at": self.detected_at, "examples": list(self.examples), "projects_at_detection": self.projects,
+            "problem": self.problem, "warning": self.warning, "notices": self.notices,
+            "next_check": self.next_check, "confirmed": self.confirmed, "proposal": self.proposal,
+            "rejected": self.rejected, "check": self.check, "accept_hint": ACCEPT_HINT})
+
+
+def scan_notices(notes: dict | None) -> list[str]:
+    """German warnings from what a project scan noticed (see :func:`record_scan_notes`)."""
+    if not notes:
+        return []
+    out = []
+    if g := notes.get("guard"):
+        kind = guard_kind(Path(e).name for e in g.get("examples") or ())[0]
+        out.append(f"{guard_text(g['count'], g.get('examples') or [], kind)} – obwohl sie neben Projektordnern "
+                   f"liegen. Sind das Projekte: PROJECT_NUMBER_PATTERN ohne den Ausschluss von Hand einstellen "
+                   f"(python -m projektakte.structure zeigt die Ordner) oder die Ordner umbenennen.")
+    if b := notes.get("bad_names"):
+        out.append(f"{de_count(b['count'], 'Ordnername hat', 'Ordnernamen haben')} eine falsche Zeichenkodierung "
+                   f"(z. B. {', '.join((b.get('examples') or [])[:3])}) – sie werden mit � angezeigt, die Dateien "
+                   f"in solchen Projektordnern erst nach dem Neu-Einbinden gelesen. {ENCODING_HINT}.")
+    return out
 
 
 def root_key(path: Path | str) -> str:
@@ -1390,68 +1772,71 @@ def _load(conn: sqlite3.Connection | None, key: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def _valid_record(rec: dict | None) -> bool:
+def _for_root(conn: sqlite3.Connection | None, key: str, root: Path | str) -> dict | None:
+    """A stored record for this PROJECTS_DIR (one made for another folder – the demo data set before
+    the switch to the real share – does not count)."""
+    rec = _load(conn, key)
+    return rec if rec is not None and rec.get("root") == root_key(root) else None
+
+
+def _valid_scheme(rec: dict | None) -> bool:
     return (isinstance(rec, dict) and isinstance(rec.get("pattern"), str) and not pattern_problem(rec["pattern"])
             and isinstance(rec.get("depth"), int) and 1 <= rec["depth"] <= MAX_DEPTH)
 
 
-def stored_detection(conn: sqlite3.Connection | None, projects_dir: Path | str) -> dict | None:
-    """The accepted automatic detection for this PROJECTS_DIR – None if there is none, it is unusable
-    or it was made for another folder (e.g. the demo data set before the switch to real data)."""
-    rec = _load(conn, STORED_KEY)
-    if not _valid_record(rec) or rec.get("root") != root_key(projects_dir):
-        return None
-    return rec
-
-
-def _failed_detection(conn: sqlite3.Connection | None, projects_dir: Path | str) -> dict | None:
-    """The last detection without a clear scheme for this PROJECTS_DIR (reason, time) – or None."""
-    rec = _load(conn, NONE_KEY)
-    if rec is None or rec.get("root") != root_key(projects_dir) or not isinstance(rec.get("reason"), str):
-        return None
-    return rec
-
-
-def _next_check(rec: dict) -> str | None:
-    when = _parse_time(rec.get("checked_at"))
-    return _iso(when + RECHECK_INTERVAL) if when else None
-
-
-def _failed_problem(rec: dict) -> str:
-    return (f"Kein eindeutiges Projektnummern-Schema in {rec.get('root')} erkannt (PROJECT_NUMBER_PATTERN=auto, "
-            f"Prüfung {local_time_text(rec.get('checked_at'))}, das Schema ist also noch nicht erkannt): "
-            f"{rec['reason']} Nächste Prüfung frühestens {local_time_text(_next_check(rec))}. Bitte "
-            "PROJECT_NUMBER_PATTERN einstellen (Vorschlag und Ordnerübersicht: python -m projektakte.structure) "
-            f"oder, sobald die Ordner stimmen, das Schema sofort übernehmen: {ACCEPT_HINT}")
-
-
-def _printable(text: str) -> str:
-    """A folder name for display and storage: bytes that are no UTF-8 (surrogate escapes) as �."""
-    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
-
-
 def _dump(rec: dict) -> str:
-    # ASCII escapes: a path that is no valid UTF-8 survives the round trip through the database
-    return json.dumps(rec, ensure_ascii=True)
+    # printable names and ASCII escapes: the database only ever holds valid text
+    return json.dumps(clean(rec), ensure_ascii=True)
 
 
-def _record(proposal: Proposal, root: Path | str, when: datetime) -> dict:
-    return {"pattern": proposal.pattern, "depth": proposal.depth, "detected_at": _iso(when),
-            "projects": proposal.projects,
-            "examples": [_printable(f"{e['number']} {e['name']}".strip()) for e in proposal.examples[:3]],
-            "root": root_key(root)}
+def _save(conn: sqlite3.Connection, key: str, rec: dict) -> None:
+    db.set_meta(conn, key, _dump(rec))
 
 
-def store_detection(conn: sqlite3.Connection, proposal: Proposal, root: Path | str,
-                    now: datetime | None = None) -> dict:
-    """Accept a detection: it is used from now on (PROJECT_NUMBER_PATTERN=auto) and a pending
-    different detection is forgotten. The caller commits."""
-    when = now or _now()
-    rec = _record(proposal, root, when)
-    db.set_meta(conn, STORED_KEY, _dump(rec))
-    db.set_meta(conn, CHECKED_KEY, _iso(when))
-    conn.execute("DELETE FROM meta WHERE key IN (?, ?)", (DIFFERS_KEY, NONE_KEY))
-    return rec
+def _delete(conn: sqlite3.Connection, *keys: str) -> None:
+    conn.execute(f"DELETE FROM meta WHERE key IN ({', '.join('?' * len(keys))})", keys)
+
+
+def proposal_id(root: Path | str, pattern: str, depth: int) -> str:
+    """Identifies a proposal by meaning (folder, set of alternatives, depth): the same detection made
+    again keeps its id, so a confirmation refers to what the person saw."""
+    text = "\0".join([root_key(root), *sorted(alternatives(pattern)), str(depth)])
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+def proposal_record(analysis: Analysis, root: Path | str, when: datetime) -> dict:
+    """A detection as a proposal with the evidence a person needs to judge it (bounded, printable)."""
+    p = analysis.proposal
+    root = Path(root)
+    parents = Counter(_rel(f.path.parent, root) if f.path.parent != root else "" for f in analysis.projects)
+    return clean({
+        "id": proposal_id(root, p.pattern, p.depth), "root": root_key(root), "pattern": p.pattern,
+        "depth": p.depth, "description": p.description, "depth_text": depth_text(p.depth), "projects": p.projects,
+        "detected_at": _iso(when), "examples": [e["path"] for e in p.examples[:MAX_EXAMPLES]],
+        "levels": [[level, n] for level, n in p.levels.items()],
+        "parents": [[k, v] for k, v in parents.most_common(8)], "parents_total": len(parents),
+        "exceptions": p.exceptions[:MAX_LISTED], "exceptions_total": p.exceptions_total,
+        "outliers": p.outliers[:8], "duplicates": p.duplicates[:5], "deeper": p.deeper[:5],
+        "hints": [{k: h.get(k) for k in ("pattern", "description", "where", "folders", "estimated", "branch",
+                                          "examples", "combined", "depth", "beside")} for h in p.hints],
+        "guard": p.guard, "notes": p.notes, "inner": p.inner, "unreadable": p.unreadable[:5],
+        "bad_names": analysis.bad_names})
+
+
+def _check_record(analysis: Analysis, root: Path | str, when: datetime) -> dict:
+    """The latest detection in short: outcome, reason, the closest candidates, further schemes."""
+    p = analysis.proposal
+    rec = {"root": root_key(root), "checked_at": _iso(when),
+           "outcome": "proposal" if p else "problem" if analysis.problem else "none",
+           "reason": analysis.reason or analysis.problem,
+           "candidates": [{k: c.get(k) for k in ("pattern", "description", "level", "folders", "where", "examples",
+                                                  "verdict", "reason")} for c in analysis.candidates[:6]],
+           "levels": analysis.levels[:4], "unreadable": analysis.unreadable[:5], "bad_names": analysis.bad_names}
+    if p:
+        rec.update(pattern=p.pattern, depth=p.depth, projects=p.projects, id=proposal_id(root, p.pattern, p.depth),
+                   hints=[{k: h.get(k) for k in ("pattern", "description", "where", "folders", "estimated", "branch",
+                                                  "examples", "combined", "depth", "beside")} for h in p.hints])
+    return clean(rec)
 
 
 def _open_readonly(settings) -> sqlite3.Connection | None:
@@ -1464,200 +1849,275 @@ def _open_readonly(settings) -> sqlite3.Connection | None:
         return None
 
 
+def _scan_notes(conn: sqlite3.Connection | None, root: Path | str, pattern: str | None) -> dict | None:
+    rec = _for_root(conn, NOTES_KEY, root)
+    return rec if rec is not None and pattern and rec.get("pattern") == pattern else None
+
+
+def _next_check(check: dict | None) -> str | None:
+    when = _parse_time((check or {}).get("checked_at"))
+    return _iso(when + RECHECK_INTERVAL) if when else None
+
+
+def _waiting_problem(proposal: dict | None, rejected: dict | None, check: dict | None, root: Path | str) -> str:
+    """Why nothing is read as a project yet (auto mode without a confirmed scheme), German."""
+    if proposal:
+        examples = ", ".join((proposal.get("examples") or [])[:2])
+        return (f"{PENDING_TEXT}: {proposal['pattern']}, Tiefe {proposal['depth']} ({proposal.get('projects')} "
+                f"Projektordner{', z. B. ' + examples if examples else ''}) – auf der Statusseite prüfen und "
+                f"übernehmen oder ablehnen, oder: {ACCEPT_HINT}")
+    if rejected:
+        return (f"Vorschlag zur Projektstruktur abgelehnt ({rejected.get('pattern')}, am "
+                f"{local_time_text(rejected.get('rejected_at'))} von {rejected.get('rejected_by')}) – kein "
+                "Projektnummern-Schema bestätigt. Bitte PROJECT_NUMBER_PATTERN von Hand einstellen (Vorschlag und "
+                "Ordnerübersicht: python -m projektakte.structure) oder die Ordner anpassen; eine geänderte "
+                "Erkennung wird wieder vorgeschlagen")
+    if check and check.get("outcome") != "proposal":
+        return (f"Kein eindeutiges Projektnummern-Schema in {printable(root_key(root))} erkannt "
+                f"(PROJECT_NUMBER_PATTERN=auto, Prüfung {local_time_text(check.get('checked_at'))}): "
+                f"{check.get('reason')} Nächste Prüfung "
+                f"{'frühestens ' + local_time_text(nxt) if (nxt := _next_check(check)) else 'beim nächsten Indexierungslauf'}. Bitte "
+                "PROJECT_NUMBER_PATTERN einstellen (Vorschlag und Ordnerübersicht: python -m projektakte.structure) "
+                f"oder, sobald die Ordner stimmen, das erkannte Schema bestätigen: {ACCEPT_HINT}")
+    return ("Projektnummern-Schema noch nicht erkannt (PROJECT_NUMBER_PATTERN=auto) – das geschieht beim "
+            "nächsten Indexierungslauf; der Vorschlag gilt erst, wenn er bestätigt ist")
+
+
 def current_layout(settings, conn: sqlite3.Connection | None = None) -> Layout:
-    """The effective layout without detecting anything: the configured pattern, or the stored
-    automatic detection (read from ``conn`` or, without one, the database opened read-only)."""
+    """The effective layout without detecting anything: the configured pattern, or the confirmed
+    scheme of the automatic mode (read from ``conn`` or, without one, the database opened read-only)
+    together with a pending proposal, a rejection and the latest detection."""
     raw = getattr(settings, "project_number_pattern", None) or DEFAULT_PROJECT_NUMBER_PATTERN
     configured_depth = getattr(settings, "project_folder_depth", None)
+    root = getattr(settings, "projects_dir", None)
     if raw != AUTO:
         problem = pattern_problem(raw)
         return Layout(None if problem else raw, clamp_depth(configured_depth), False, False,
-                      problem=f"PROJECT_NUMBER_PATTERN={raw} ist unbrauchbar: {problem}" if problem else None)
+                      problem=f"PROJECT_NUMBER_PATTERN={raw} ist unbrauchbar: {problem}" if problem else None,
+                      notes=_scan_notes(conn, root, raw) if conn is not None and root and not problem else None)
     if conn is None and (own := _open_readonly(settings)) is not None:
         with closing(own):
             return current_layout(settings, own)
-    rec = stored_detection(conn, settings.projects_dir)
-    if rec is None:
-        failed = _failed_detection(conn, settings.projects_dir)
-        problem = (_failed_problem(failed) if failed else
-                   "Projektnummern-Schema noch nicht erkannt (PROJECT_NUMBER_PATTERN=auto) – das geschieht beim "
-                   "nächsten Indexierungslauf")
-        return Layout(None, clamp_depth(configured_depth), True, configured_depth is None, problem=problem,
-                      next_check=_next_check(failed) if failed else None)
-    differs = _load(conn, DIFFERS_KEY)
-    return Layout(rec["pattern"], configured_depth or rec["depth"], True, configured_depth is None,
-                  detected_at=rec.get("detected_at"), examples=tuple(rec.get("examples") or ()),
-                  projects=rec.get("projects"), differs=differs if _valid_record(differs) else None)
+    confirmed = _for_root(conn, CONFIRMED_KEY, root)
+    confirmed = confirmed if _valid_scheme(confirmed) and confirmed.get("confirmed_at") else None
+    proposal = _for_root(conn, PROPOSAL_KEY, root)
+    proposal = proposal if _valid_scheme(proposal) else None
+    rejected = _for_root(conn, REJECTED_KEY, root)
+    check = _for_root(conn, CHECK_KEY, root)
+    if proposal and ((rejected and rejected.get("id") == proposal.get("id"))
+                     or (confirmed and confirmed.get("id") == proposal.get("id"))):
+        proposal = None  # written by a detection that ran while the person decided
+    depth_auto = configured_depth is None
+    if confirmed:
+        depth = configured_depth or confirmed["depth"]
+        return Layout(confirmed["pattern"], depth, True, depth_auto, confirmed=confirmed, proposal=proposal,
+                      rejected=rejected, check=check, notes=_scan_notes(conn, root, confirmed["pattern"]))
+    none = check is not None and check.get("outcome") != "proposal" and not proposal and not rejected
+    return Layout(None, clamp_depth(configured_depth), True, depth_auto,
+                  problem=_waiting_problem(proposal, rejected, check, root), proposal=proposal, rejected=rejected,
+                  check=check, next_check=_next_check(check) if none else None)
 
 
 def number_pattern(settings, conn: sqlite3.Connection | None = None) -> str:
     """The effective shape of project numbers for finding them in texts (mails, search queries);
-    :data:`NO_MATCH` while there is none (not detected yet, unusable setting)."""
+    :data:`NO_MATCH` while there is none (not confirmed yet, unusable setting)."""
     return current_layout(settings, conn).pattern or NO_MATCH
 
 
 def _parse_time(value: str | None) -> datetime | None:
     try:
         when = datetime.fromisoformat(value) if value else None
-    except ValueError:
+    except (TypeError, ValueError):
         return None
     if when is not None and when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return when
 
 
-def alternatives(pattern: str) -> frozenset[str]:
-    """The top-level alternatives of an expression: '(?:A|B)' and 'B|A' → {A, B}; one scheme → {it}."""
-    def split(p: str) -> list[str]:
-        parts, depth, start, i, in_class = [], 0, 0, 0, False
-        while i < len(p):
-            c = p[i]
-            if c == "\\":
-                i += 2
-                continue
-            if in_class:
-                in_class = c != "]"
-            elif c == "[":
-                in_class = True
-                if p[i + 1:i + 2] == "]":
-                    i += 1
-            elif c == "(":
-                depth += 1
-            elif c == ")":
-                depth -= 1
-            elif c == "|" and depth == 0:
-                parts.append(p[start:i])
-                start = i + 1
-            i += 1
-        return parts + [p[start:]]
-
-    p = pattern.strip()
-    while p.startswith("(?:") and p.endswith(")") and _wraps(p):
-        p = p[3:-1]
-    return frozenset(a.strip() for a in split(p))
-
-
-def _wraps(p: str) -> bool:
-    """Is ``p`` one group '(?:…)' from the first to the last character?"""
-    depth, i, in_class = 0, 0, False
-    while i < len(p):
-        c = p[i]
-        if c == "\\":
-            i += 2
-            continue
-        if in_class:
-            in_class = c != "]"
-        elif c == "[":
-            in_class = True
-        elif c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-            if depth == 0 and i != len(p) - 1:
-                return False
-        i += 1
-    return True
-
-
-def _same_detection(rec: dict, proposal: Proposal, result: Analysis, root: Path,
-                    layout: Layout) -> tuple[bool, list[ProjectFolder] | None]:
-    """Is a new detection the stored one? Compared by meaning, not as text: the same set of
-    alternatives with the same depth – or exactly the same project folders found. Also returns what
-    the stored scheme finds now, if that had to be scanned."""
-    if alternatives(rec["pattern"]) == alternatives(proposal.pattern) and (
-            not layout.depth_auto or proposal.depth == rec["depth"]):
+def _agrees(confirmed: dict, rec: dict, result: Analysis, root: Path, settings) -> tuple[bool, int | None]:
+    """Is a new detection the confirmed scheme? Compared by meaning, not as text: the same set of
+    alternatives with the same depth – or exactly the same project folders found. Also returns how
+    many folders the confirmed scheme finds now, if that had to be scanned."""
+    configured_depth = getattr(settings, "project_folder_depth", None)
+    if alternatives(confirmed["pattern"]) == alternatives(rec["pattern"]) and (
+            configured_depth is not None or rec["depth"] == confirmed["depth"]):
         return True, None
-    stored = scan_projects(root, rec["pattern"], layout.depth, unreadable=[], duplicates=[])
-    new = result.projects if layout.depth_auto else scan_projects(root, proposal.pattern, layout.depth,
-                                                                     unreadable=[], duplicates=[])
-    return bool(stored) and {p.path for p in stored} == {p.path for p in new}, stored
+    depth = configured_depth or confirmed["depth"]
+    stored = scan_projects(root, confirmed["pattern"], depth, unreadable=[], duplicates=[])
+    new = result.projects if configured_depth is None else scan_projects(root, rec["pattern"], depth,
+                                                                         unreadable=[], duplicates=[])
+    return bool(stored) and {p.path for p in stored} == {p.path for p in new}, len(stored)
+
+
+def _apply_detection(conn: sqlite3.Connection, settings, result: Analysis, now: datetime) -> None:
+    """Store a detection: always as the latest check; with a clear scheme as a proposal – unless it is
+    the confirmed scheme or the rejected proposal. Never touches the confirmed scheme. The caller
+    commits."""
+    root = Path(settings.projects_dir)
+    # read again: a person may have confirmed or rejected while the share was read
+    confirmed = _for_root(conn, CONFIRMED_KEY, root)
+    confirmed = confirmed if _valid_scheme(confirmed) and confirmed.get("confirmed_at") else None
+    pending = _for_root(conn, PROPOSAL_KEY, root)
+    rejected = _for_root(conn, REJECTED_KEY, root)
+    previous = _for_root(conn, CHECK_KEY, root) or {}
+    check = _check_record(result, root, now)
+    _save(conn, CHECK_KEY, check)
+    _delete(conn, *LEGACY_KEYS)
+    if result.proposal is None:
+        if check["outcome"] == "none" and pending:
+            _delete(conn, PROPOSAL_KEY)  # the share does not show it any more (half mounted, renamed …)
+        if check["reason"] != previous.get("reason"):
+            log.warning("Projektnummern-Schema: keine eindeutige Erkennung in %s: %s", printable(str(root)),
+                        check["reason"])
+        return
+    rec = proposal_record(result, root, now)
+    if confirmed:
+        same, now_found = _agrees(confirmed, rec, result, root, settings)
+        if same:
+            if pending:
+                _delete(conn, PROPOSAL_KEY)
+                log.info("Projektnummern-Schema: die neue Erkennung stimmt wieder mit dem bestätigten %s überein",
+                         confirmed["pattern"])
+            return
+        rec["current_projects"] = now_found
+    if rejected and rejected.get("id") == rec["id"]:
+        if pending:
+            _delete(conn, PROPOSAL_KEY)
+        return
+    if not pending or pending.get("id") != rec["id"]:
+        log.warning("Projektnummern-Schema: %s – %s, Tiefe %d (%d Projektordner, z. B. %s)%s. Bestätigen auf der "
+                    "Statusseite oder mit: %s", PENDING_TEXT, rec["pattern"], rec["depth"], rec["projects"],
+                    ", ".join(rec["examples"][:3]),
+                    f"; weiter verwendet wird das bestätigte {confirmed['pattern']}" if confirmed else
+                    "; bis dahin werden keine Projekte abgeglichen", ACCEPT_HINT)
+    _save(conn, PROPOSAL_KEY, rec)
 
 
 def layout_for_index(conn: sqlite3.Connection, settings, *, now: datetime | None = None,
                      max_folders: int = MAX_FOLDERS) -> tuple[Layout, dict]:
-    """The layout for an indexing pass. With PROJECT_NUMBER_PATTERN=auto this detects the scheme
-    when nothing is stored yet and stores it; a stored one is checked again now and then, and a
-    different result is only reported – the stored scheme stays in use until it is accepted
-    (stability: a half-mounted share must never change which folders count as projects). A
-    detection without a clear scheme is repeated at most every :data:`RECHECK_INTERVAL` (reading a
-    large share costs directory traffic). Returns the layout and a small summary for the run stats
-    (no warning there – the status page reads it)."""
+    """The layout for an indexing pass. With PROJECT_NUMBER_PATTERN=auto the share is analysed – at
+    most every :data:`RECHECK_INTERVAL` (reading a large share costs directory traffic), at once
+    after a person asked for it – and the result stored as a proposal; only a confirmed scheme is
+    used, never the proposal (stability: a half-mounted share must never change which folders count
+    as projects). Returns the layout and a small summary for the run stats."""
     layout = current_layout(settings, conn)
     if not layout.auto:
         return layout, {}
     now = now or _now()
     root = Path(settings.projects_dir)
-    info = {"pattern": layout.pattern, "depth": layout.depth, "source": layout.source}
+    info = {"pattern": layout.pattern, "depth": layout.depth, "source": layout.source, "state": layout.state}
     if problem := projects_root_problem(root):
         return (layout if layout.pattern else dataclasses.replace(layout, problem=problem)), info
-    rec = stored_detection(conn, root)
-    checked = _parse_time(db.get_meta(conn, CHECKED_KEY))
-    recent = checked is not None and timedelta(0) <= now - checked < RECHECK_INTERVAL
-    if rec is not None and layout.differs is None and recent:
+    checked = _parse_time((layout.check or {}).get("checked_at"))
+    if checked is not None and timedelta(0) <= now - checked < RECHECK_INTERVAL:
         return layout, info
-    if rec is None and recent and _failed_detection(conn, root) is not None:
-        return layout, {**info, "detected": False}
     try:
         result = analyse(root, max_folders=max_folders)
     except Exception as exc:  # noqa: BLE001 – a detection problem must never stop the indexing
         log.exception("Projektnummern-Schema: Erkennung fehlgeschlagen")
-        if rec is not None:
-            return layout, info
-        reason = f"Erkennung des Projektnummern-Schemas fehlgeschlagen ({type(exc).__name__}: {exc})."
-        result = Analysis(root=str(root), max_depth=MAX_DEPTH, reason=reason)
-    db.set_meta(conn, CHECKED_KEY, _iso(now))
-    proposal = result.proposal
-    if rec is None:
-        if proposal is None:
-            failed = {"root": root_key(root), "reason": _printable(result.reason or result.problem or ""),
-                      "checked_at": _iso(now)}
-            db.set_meta(conn, NONE_KEY, _dump(failed))
-            conn.commit()
-            log.warning("Projektnummern-Schema: %s", _failed_problem(failed))
-            return current_layout(settings, conn), {**info, "detected": False}
-        store_detection(conn, proposal, root, now)
-        conn.commit()
-        log.info("Projektnummern-Schema automatisch erkannt und gespeichert: %s, Tiefe %d (%d Projektordner, "
-                 "z. B. %s)", proposal.pattern, proposal.depth, proposal.projects,
-                 ", ".join(e["path"] for e in proposal.examples[:3]))
-        layout = current_layout(settings, conn)
-        return layout, {"pattern": layout.pattern, "depth": layout.depth, "source": layout.source,
-                        "detected": True}
-    if proposal is not None:
-        same, stored = _same_detection(rec, proposal, result, root, layout)
-        if same:
-            if layout.differs is not None:
-                conn.execute("DELETE FROM meta WHERE key = ?", (DIFFERS_KEY,))
-                log.info("Projektnummern-Schema: die neue Erkennung stimmt wieder mit dem gespeicherten %s überein",
-                         rec["pattern"])
-        else:
-            new = {**_record(proposal, root, now), "stored_projects": len(stored)}
-            old = layout.differs or {}
-            if (alternatives(old.get("pattern") or ""), old.get("depth")) != (alternatives(new["pattern"]),
-                                                                                new["depth"]):
-                log.warning("Projektnummern-Schema: eine neue Erkennung ergibt %s, Tiefe %d (%d Projektordner) – "
-                            "weiter verwendet wird das gespeicherte %s, Tiefe %d (%d Projektordner). "
-                            "Übernehmen mit: %s",
-                            new["pattern"], new["depth"], new["projects"], rec["pattern"], layout.depth,
-                            len(stored), ACCEPT_HINT)
-            db.set_meta(conn, DIFFERS_KEY, _dump(new))
-    # no clear scheme now (share half mounted, emptied?): keep everything as it is
+        result = Analysis(root=str(root), max_depth=MAX_DEPTH,
+                          reason=f"Erkennung des Projektnummern-Schemas fehlgeschlagen ({type(exc).__name__}: {exc}).")
+    _apply_detection(conn, settings, result, now)
     conn.commit()
     layout = current_layout(settings, conn)
-    if layout.differs:
-        info["differs"] = layout.differs["pattern"]
+    info = {"pattern": layout.pattern, "depth": layout.depth, "source": layout.source, "state": layout.state,
+            "detected": result.proposal is not None}
+    if layout.proposal:
+        info["proposal"] = layout.proposal["pattern"]
     return layout, info
+
+
+# --- decisions of a person (status page, command line)
+def store_confirmed(conn: sqlite3.Connection, rec: dict, user: str | None, via: str,
+                    now: datetime | None = None) -> dict:
+    """Confirm a proposal record: it is used from the next indexing pass on, a pending proposal and
+    a rejection are forgotten. Logs who confirmed. The caller commits."""
+    confirmed = {**rec, "confirmed_at": _iso(now or _now()), "confirmed_by": printable(user or ANONYMOUS),
+                 "confirmed_via": via}
+    _save(conn, CONFIRMED_KEY, confirmed)
+    _delete(conn, PROPOSAL_KEY, REJECTED_KEY, *LEGACY_KEYS)
+    log.warning("Projektstruktur bestätigt von %s (%s): %s, Tiefe %d (%s Projektordner bei der Erkennung am %s)",
+                confirmed["confirmed_by"], via, confirmed["pattern"], confirmed["depth"], confirmed.get("projects"),
+                local_time_text(confirmed.get("detected_at")))
+    return clean(confirmed)
+
+
+def _pending(conn: sqlite3.Connection, settings, wanted: str | None) -> dict:
+    pending = _for_root(conn, PROPOSAL_KEY, settings.projects_dir)
+    if not getattr(settings, "project_pattern_auto", False):
+        raise ProposalError("PROJECT_NUMBER_PATTERN ist fest eingestellt – ein Vorschlag gilt nur mit "
+                            "PROJECT_NUMBER_PATTERN=auto.")
+    if not _valid_scheme(pending):
+        raise ProposalError("Es wartet kein Vorschlag zur Projektstruktur auf eine Entscheidung – die Statusseite "
+                            "zeigt den aktuellen Stand.")
+    if not wanted or wanted != pending.get("id"):
+        raise ProposalError("Der Vorschlag hat sich inzwischen geändert (neue Erkennung) – bitte den aktuellen "
+                            "Vorschlag auf der Statusseite prüfen und dann entscheiden.")
+    return pending
+
+
+def confirm_proposal(conn: sqlite3.Connection, settings, wanted: str | None, user: str | None,
+                     now: datetime | None = None) -> dict:
+    """Confirm the pending proposal ``wanted`` (its id, as the page showed it). Raises ProposalError
+    if it is not the pending one any more. The caller commits."""
+    return store_confirmed(conn, _pending(conn, settings, wanted), user, "Statusseite", now)
+
+
+def reject_proposal(conn: sqlite3.Connection, settings, wanted: str | None, user: str | None,
+                    now: datetime | None = None) -> dict:
+    """Reject the pending proposal ``wanted``: the current state stays (a confirmed scheme stays in
+    use), and the same proposal is not offered again until the detection changes. The caller commits."""
+    pending = _pending(conn, settings, wanted)
+    rejected = {k: pending.get(k) for k in ("id", "root", "pattern", "depth", "description", "projects",
+                                            "detected_at", "examples")}
+    rejected.update(rejected_at=_iso(now or _now()), rejected_by=printable(user or ANONYMOUS))
+    _save(conn, REJECTED_KEY, rejected)
+    _delete(conn, PROPOSAL_KEY)
+    log.warning("Vorschlag zur Projektstruktur abgelehnt von %s: %s, Tiefe %d", rejected["rejected_by"],
+                rejected["pattern"], rejected["depth"])
+    return clean(rejected)
+
+
+def request_recheck(conn: sqlite3.Connection, settings, *, forget_rejection: bool = False) -> None:
+    """Detect again at the next indexing pass (instead of waiting for :data:`RECHECK_INTERVAL`);
+    ``forget_rejection`` offers a rejected proposal again. The caller commits."""
+    root = settings.projects_dir
+    check = _for_root(conn, CHECK_KEY, root)
+    if check is not None:
+        _save(conn, CHECK_KEY, {**check, "checked_at": None})
+    if forget_rejection:
+        _delete(conn, REJECTED_KEY)
+
+
+def record_scan_notes(conn: sqlite3.Connection, settings, layout: Layout, stats: dict,
+                      now: datetime | None = None) -> None:
+    """Keep what the project scan noticed (folders a guard excludes, names in a wrong encoding) for
+    the status page, and log it once – when it first appears or changes, not at every pass."""
+    if not layout.pattern or not isinstance(stats, dict) or stats.get("warning"):
+        return
+    notes = {"root": root_key(settings.projects_dir), "pattern": layout.pattern, "depth": layout.depth,
+             "guard": stats.get("guard_excluded"), "bad_names": stats.get("bad_names")}
+    old = _load(conn, NOTES_KEY) or {}
+    if all(old.get(k) == clean(v) for k, v in notes.items()):
+        return
+    if not notes["guard"] and not notes["bad_names"]:
+        _delete(conn, NOTES_KEY)
+        return
+    notes["noticed_at"] = _iso(now or _now())
+    _save(conn, NOTES_KEY, notes)
+    for text in scan_notices(clean(notes)):
+        log.warning("Projektordner: %s", text)
 
 
 # ------------------------------------------------------------------------------------- command line
 def current_check(root: Path, settings) -> dict:
-    """What the current settings (environment, stored detection) find in ``root``."""
+    """What the current settings (environment, confirmed scheme) find in ``root``."""
     layout = current_layout(settings)
     depth_setting = getattr(settings, "project_folder_depth", None)
     out = {"setting": settings.project_number_pattern,
            "depth_setting": AUTO if depth_setting is None else depth_setting,
            "pattern": layout.pattern, "depth": layout.depth, "source": layout.source, "problem": layout.problem,
-           "projects": None, "examples": []}
+           "state": layout.state, "pending": (layout.proposal or {}).get("pattern"), "projects": None, "examples": []}
     if layout.pattern:
         found = scan_projects(root, layout.pattern, layout.depth, unreadable=[], duplicates=[])
         out["projects"] = len(found)
@@ -1681,9 +2141,10 @@ def _table(rows: list[list[str]], right: Iterable[int] = ()) -> list[str]:
 def _hint_lines(h: dict, depth: int) -> list[str]:
     where = f" in {h['where']}" if h["where"] else ""
     count = ("etwa " if h["estimated"] else "") + de_count(h["folders"], "Ordner", "Ordner")
-    line = (f"Weiteres Schema{where}: {h['pattern']}, {count} (z. B. {', '.join(h['examples'])})"
-            + {"archive": " – unter einem Archivordner, ältere Nummerierung?",
-               "side": " – Nebenablage (Angebote, Rechnungen …), meist keine Projekte"}.get(h["branch"], ""))
+    remark = _BRANCH_TEXT.get(h["branch"]) or ("liegt in denselben Ordnern wie die Projektordner"
+                                               if h.get("beside") else "")
+    line = f"Weiteres Schema{where}: {h['pattern']}, {count} (z. B. {', '.join(h['examples'])})" + (
+        f" – {remark}" if remark else "")
     setting = f"PROJECT_NUMBER_PATTERN={h['combined']}"
     if h["depth"] != depth:
         setting += f" und PROJECT_FOLDER_DEPTH={h['depth']}"
@@ -1761,14 +2222,23 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
                        + " · ".join(p.deeper[:5]))
         if p.unreadable:
             out.append("Nicht lesbare Ordner beim Scan: " + ", ".join(p.unreadable[:5]))
+        if p.inner:
+            out.append(f"Nummerierte Unterordner in den Projektordnern ({'etwa ' if p.inner['count'] > 6 else ''}"
+                       f"{de_int(p.inner['count'])}, gelten als Teil der Projekte): " + " · ".join(p.inner["examples"]))
         for hint in p.hints:
             out.extend(_hint_lines(hint, p.depth))
+        if p.notes:
+            out.append("")
+            out.append("Bitte prüfen:")
+            out.extend(f"  {note}" for note in p.notes)
     if current is not None:
         out.append("")
         depth = current["depth_setting"]
         out.append(f"Aktuelle Einstellung: PROJECT_NUMBER_PATTERN={current['setting']}, PROJECT_FOLDER_DEPTH={depth}")
         if current["pattern"] is None:
             out.append(f"  {current['problem']}")
+        elif current.get("pending"):
+            out.append(f"  {PENDING_TEXT}: {current['pending']}")
         else:
             if current["setting"] == AUTO:
                 out.append(f"  verwendet: {current['pattern']}, Tiefe {current['depth']} ({current['source']})")
@@ -1787,9 +2257,14 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
         out.append("")
         out.append("In projektakte.env eintragen:")
         out.extend(f"  {line}" for line in env_lines(p))
-        out.append("(oder PROJECT_NUMBER_PATTERN=auto: Projektakte erkennt das Schema beim ersten Lauf selbst und "
-                   "behält es, bis es mit --uebernehmen bestätigt neu erkannt wird)")
-    return "\n".join(out)
+        out.append("(oder PROJECT_NUMBER_PATTERN=auto: Projektakte schlägt das Schema beim ersten Lauf vor; es gilt "
+                   "erst, wenn es auf der Statusseite oder mit --uebernehmen bestätigt ist, und wechselt danach nie "
+                   "von selbst)")
+    if a.bad_names and p is None:  # with a proposal it is among the points to check
+        out.append("")
+        out.append(f"Ordnernamen mit falscher Zeichenkodierung: {de_int(a.bad_names['count'])} (z. B. "
+                   f"{', '.join(a.bad_names['examples'][:3])}) – {ENCODING_HINT}.")
+    return printable("\n".join(out))
 
 
 def _format_files(f: dict) -> list[str]:
@@ -1918,9 +2393,10 @@ def build_parser() -> argparse.ArgumentParser:
                     "(außer mit --uebernehmen).",
         epilog=f"Exit-Code: {EXIT_SCHEME} = Schema erkannt, {EXIT_NO_SCHEME} = kein eindeutiges Schema, "
                f"{EXIT_UNREADABLE} = Ordner nicht lesbar, {EXIT_USAGE} = falscher Aufruf. "
-               "Mit PROJECT_NUMBER_PATTERN=auto merkt sich Projektakte das beim ersten Lauf erkannte Schema und "
-               "wechselt danach nie von selbst; meldet die Statusseite eine abweichende Erkennung, übernimmt "
-               "--uebernehmen das jetzt erkannte Schema (ab dem nächsten Indexierungslauf).")
+               "Mit PROJECT_NUMBER_PATTERN=auto schlägt Projektakte das erkannte Schema auf der Statusseite vor; "
+               "es gilt erst, wenn es dort („Übernehmen“) oder mit --uebernehmen bestätigt ist, und wechselt "
+               "danach nie von selbst. --uebernehmen bestätigt das jetzt erkannte Schema (ab dem nächsten "
+               "Indexierungslauf).")
     args = ap.add_argument_group("Argumente")
     args.add_argument("pfad", nargs="?", metavar="PFAD", help="Projektordner (Standard: PROJECTS_DIR)")
     opts = ap.add_argument_group("Optionen")
@@ -1936,9 +2412,16 @@ def build_parser() -> argparse.ArgumentParser:
     opts.add_argument("--max-ordner", type=_number_between(1), default=MAX_FOLDERS, metavar="N",
                       help=f"höchstens N Ordner lesen (Standard {de_int(MAX_FOLDERS)})")
     opts.add_argument("--uebernehmen", action="store_true",
-                      help="das jetzt erkannte Schema für PROJECT_NUMBER_PATTERN=auto speichern (ersetzt eine "
-                           "frühere Erkennung)")
+                      help="das jetzt erkannte Schema für PROJECT_NUMBER_PATTERN=auto bestätigen (ersetzt ein "
+                           "früher bestätigtes Schema)")
     return ap
+
+
+def _cli_user() -> str:
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 – no user name in the environment (container): still confirm
+        return "unbekannt"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1964,20 +2447,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.uebernehmen and analysis.proposal is not None:
         db.init_db(settings.db_path)
         with db.session(settings.db_path) as conn:
-            accepted = store_detection(conn, analysis.proposal, root)
+            accepted = store_confirmed(conn, proposal_record(analysis, root, _now()), f"{_cli_user()} (Kommandozeile)",
+                                       "Kommandozeile")
     if args.json:
         data = {**analysis.to_dict(), "exit_code": analysis.exit_code, "current": current, "files": files,
                 "context": context, "env": env_lines(analysis.proposal), "accepted": accepted}
-        print(json.dumps(data, ensure_ascii=False, indent=1))
+        print(json.dumps(clean(data), ensure_ascii=False, indent=1))
     else:
         print(format_report(analysis, current, files, context))
         if args.uebernehmen:
             print()
             if accepted:
-                print(f"Übernommen: {accepted['pattern']}, Tiefe {accepted['depth']} – gilt mit "
-                      "PROJECT_NUMBER_PATTERN=auto ab dem nächsten Indexierungslauf (Statusseite: „Jetzt neu "
-                      "indexieren“). Projekte, die nicht zum neuen Schema passen, werden ausgeblendet und nach "
-                      "der Karenzzeit aus dem Index entfernt.")
+                print(printable(f"Übernommen (bestätigt von {accepted['confirmed_by']}): {accepted['pattern']}, Tiefe "
+                                f"{accepted['depth']} – gilt mit PROJECT_NUMBER_PATTERN=auto ab dem nächsten "
+                                "Indexierungslauf (Statusseite: „Jetzt neu indexieren“). Projekte, die nicht zum neuen "
+                                "Schema passen, werden ausgeblendet und nach der Karenzzeit aus dem Index entfernt."))
                 if not settings.project_pattern_auto:
                     print(f"Hinweis: PROJECT_NUMBER_PATTERN ist fest eingestellt "
                           f"({settings.project_number_pattern}) – der gespeicherte Wert gilt erst mit "

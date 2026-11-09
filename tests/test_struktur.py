@@ -1,9 +1,10 @@
 """Folder layout of PROJECTS_DIR (structure.py): detection of the project number scheme and depth on
 synthetic layouts (one test per rule and per case of the adversarial review: years with pure-digit
 numbers, year ranges, internal numbering, offers and invoices, outliers, links, archives …),
-PROJECT_FOLDER_DEPTH, the automatic mode (detect once, store, never switch on its own, retry at most
-hourly), an unusable PROJECT_NUMBER_PATTERN, the effective scheme in assignment, search and status
-page, and the command line tool."""
+PROJECT_FOLDER_DEPTH, the automatic mode (a detection is a proposal that is used only once a person
+confirmed it, never switched on its own, retried at most hourly), an unusable PROJECT_NUMBER_PATTERN,
+the effective scheme in assignment, search and status page, and the command line tool. The
+confirmation itself (status page, CSRF, evidence) is tested in test_struktur_bestaetigung.py."""
 from __future__ import annotations
 
 import json
@@ -402,15 +403,17 @@ def test_five_digit_customers_contain_the_projects(tmp_path):
 
 
 def test_customer_number_as_prefix_of_the_project_number(tmp_path):
-    """Review case R: 1020 Stadt/1020-001 Projekt – a three-digit continuation is a numbering of its
-    own (rule 3 covers only sub-numbers of up to two digits), so the customers are containers."""
-    mk(tmp_path, *(f"{1020 + c} Stadt {c}/{1020 + c}-{i:03d} Projekt" for c in range(8) for i in range(1, 6)))
+    """Review case R: 1020 Stadt/1020-001 Kita … – a three-digit continuation is a numbering of its
+    own (rule 3 covers only sub-numbers of up to two digits), so the customers are containers. (With
+    one and the same label in every customer – 1020-001 Bauteil – the folders would be records of
+    the outer folder, see test_struktur_bestaetigung.)"""
+    mk(tmp_path, *(f"{1020 + c} Stadt {c}/{1020 + c}-{i:03d} Objekt {c}.{i}" for c in range(8) for i in range(1, 6)))
     assert found(analyse(tmp_path).proposal) == (YEAR_NUM, 2, 40)
 
 
 def test_numbered_customers_with_year_folders(tmp_path):
     """K001 Kunde/2024/BS-…: the year folders between customer and project are looked into."""
-    mk(tmp_path, *(f"K{c:03d} Kunde {c}/{y}/BS-{y}-{c * 10 + i:04d} Projekt/Pläne"
+    mk(tmp_path, *(f"K{c:03d} Kunde {c}/{y}/BS-{y}-{c * 10 + i:04d} Projekt {i}/Pläne"
                    for c in range(1, 7) for y in (2023, 2024) for i in range(3)))
     assert found(analyse(tmp_path).proposal) == (BS, 3, 36)
 
@@ -650,17 +653,17 @@ def test_result_does_not_depend_on_the_size_of_the_share(tmp_path):
 
 def test_auto_mode_stays_stable_when_projects_are_added(tmp_path):
     """Review s9: 29 current projects and an archive of 30 in an older numbering; three more
-    projects later – the stored scheme stays and no difference is reported."""
+    projects later – the confirmed scheme stays and no new proposal is made."""
     root = tmp_path / "p"
     bs_projects(root, n=29)
     mk(root, *(f"Archiv/1998-{i:03d} Alt" for i in range(1, 31)))
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
     assert run_index(s)["structure"]["detected"] is True
-    assert json.loads(_meta(s, structure.STORED_KEY))["pattern"] == BS
+    assert _confirm(s)["pattern"] == BS
     mk(root, *(f"BS-2024-{i:04d} Neu" for i in range(30, 33)))
     _age_check(s)
     stats = run_index(s)
-    assert "differs" not in stats["structure"] and structure.current_layout(s).warning is None
+    assert "proposal" not in stats["structure"] and structure.current_layout(s).warning is None
     assert stats["projects"]["projects"] == 32
 
 
@@ -682,13 +685,15 @@ def test_stored_scheme_written_differently_is_no_difference(tmp_path):
     root = mk(tmp_path / "p", *(f"2024-{i:03d} Projekt {i}" for i in range(1, 8)))
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
     run_index(s)
+    _confirm(s)
     for stored in (r"[0-9]{4}-[0-9]{3}", r"(?:\d{4}-\d{3}|AN-\d{4}-\d{3})"):
         with db.session(s.db_path) as conn:
-            rec = json.loads(db.get_meta(conn, structure.STORED_KEY))
-            db.set_meta(conn, structure.STORED_KEY, json.dumps({**rec, "pattern": stored}))
+            rec = json.loads(db.get_meta(conn, structure.CONFIRMED_KEY))
+            db.set_meta(conn, structure.CONFIRMED_KEY, json.dumps({**rec, "pattern": stored}))
         _age_check(s)
         stats = run_index(s)
-        assert "differs" not in stats["structure"] and _meta(s, structure.DIFFERS_KEY) is None
+        assert "proposal" not in stats["structure"] and _meta(s, structure.PROPOSAL_KEY) is None
+        assert structure.current_layout(s).pattern == stored
 
 
 # ============================================================================ PROJECT_FOLDER_DEPTH and pattern settings
@@ -748,7 +753,7 @@ def test_invalid_pattern_does_not_crash_and_changes_nothing(tmp_path, caplog):
     caplog.set_level(logging.INFO)
     stats = run_index(bad)
     assert "unbrauchbar" in stats["projects"]["warning"] and stats["projects"]["projects"] == 3
-    assert stats["documents"] == {"note": "nicht abgeglichen – Projektordner nicht verfügbar"}
+    assert stats["documents"] == {"note": "nicht abgeglichen – kein gültiges Projektnummern-Schema"}
     assert stats["assignment"]["note"].startswith("nicht ausgeführt")
     with db.session(bad.db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM projects WHERE active = 1").fetchone()[0] == 3
@@ -778,9 +783,19 @@ def _meta(s, key):
 
 
 def _age_check(s, hours=2):
+    """Make the latest detection older than the re-check interval."""
     with db.session(s.db_path) as conn:
+        rec = json.loads(db.get_meta(conn, structure.CHECK_KEY))
         when = datetime.now(timezone.utc) - timedelta(hours=hours)
-        db.set_meta(conn, structure.CHECKED_KEY, when.isoformat(timespec="seconds"))
+        db.set_meta(conn, structure.CHECK_KEY, json.dumps({**rec, "checked_at": when.isoformat(timespec="seconds")}))
+
+
+def _confirm(s, user="pruefer"):
+    """Confirm the pending proposal, as a person does on the status page."""
+    with db.session(s.db_path) as conn:
+        layout = structure.current_layout(s, conn)
+        assert layout.proposal, layout.problem
+        return structure.confirm_proposal(conn, s, layout.proposal["id"], user)
 
 
 def _active(s) -> list[str]:
@@ -788,28 +803,35 @@ def _active(s) -> list[str]:
         return [r[0] for r in conn.execute("SELECT number FROM projects WHERE active = 1 ORDER BY number")]
 
 
-def test_auto_detects_once_and_stores(tmp_path, caplog):
+def test_auto_proposes_and_uses_only_a_confirmed_scheme(tmp_path, caplog):
     root = tmp_path / "p"
     mk(root, *(f"2024/2024-{i:03d} Projekt {i}" for i in range(1, 5)), "Archiv")
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
     caplog.set_level(logging.INFO, logger="projektakte.structure")
     stats = run_index(s)
-    assert stats["projects"]["added"] == 4 and stats["structure"]["detected"] is True
-    stored = json.loads(_meta(s, structure.STORED_KEY))
-    assert (stored["pattern"], stored["depth"], stored["projects"]) == (YEAR_NUM, 2, 4)
-    assert stored["root"] == os.path.abspath(root) and stored["examples"][0] == "2024-001 Projekt 1"
-    assert "automatisch erkannt und gespeichert" in caplog.text
+    # a proposal: nothing is read as a project before a person confirmed it
+    assert stats["projects"]["added"] == 0 and stats["structure"]["detected"] is True
+    assert stats["projects"]["warning"].startswith(structure.PENDING_TEXT)
+    proposal = json.loads(_meta(s, structure.PROPOSAL_KEY))
+    assert (proposal["pattern"], proposal["depth"], proposal["projects"]) == (YEAR_NUM, 2, 4)
+    assert proposal["root"] == os.path.abspath(root) and proposal["examples"][0] == "2024/2024-001 Projekt 1"
+    assert _meta(s, structure.CONFIRMED_KEY) is None and structure.PENDING_TEXT in caplog.text
+    assert structure.current_layout(s).pattern is None
+    confirmed = _confirm(s)
+    assert confirmed["confirmed_by"] == "pruefer" and confirmed["confirmed_via"] == "Statusseite"
+    assert run_index(s)["projects"]["added"] == 4
     layout = structure.current_layout(s)
-    assert layout.pattern == YEAR_NUM and layout.depth == 2 and layout.source.startswith("automatisch erkannt am")
+    assert layout.pattern == YEAR_NUM and layout.depth == 2 and layout.source.startswith("bestätigt am")
+    assert layout.source.endswith("von pruefer")
     # status page and start-up line show it
     client = TestClient(create_app(s, background=False))
     page = client.get("/status").text
-    assert r"<code>\d{4}-\d{3}</code>" in page and "automatisch erkannt am" in page
+    assert r"<code>\d{4}-\d{3}</code>" in page and "bestätigt am" in page
     assert client.get("/api/status").json()["layout"]["pattern"] == YEAR_NUM
     caplog.clear()
     caplog.set_level(logging.INFO, logger="projektakte.startup")
     log_startup(s, NoAuth())
-    assert r"Projektnummern=\d{4}-\d{3} (automatisch erkannt am" in caplog.text
+    assert r"Projektnummern=\d{4}-\d{3} (bestätigt am" in caplog.text
     assert "Tiefe 2 (automatisch)" in caplog.text
 
 
@@ -823,6 +845,8 @@ def test_auto_year_folders_with_pure_digit_numbers(tmp_path):
             (mk(root, f"{y}/{n} Projekt {i}") / f"{y}/{n} Projekt {i}" / "Bericht.txt").write_text(
                 f"Brandschutzkonzept Projekt {n}", encoding="utf-8")
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
+    assert run_index(s)["structure"]["proposal"] == FOUR
+    _confirm(s)
     stats = run_index(s)
     assert stats["structure"]["pattern"] == FOUR and stats["projects"]["added"] == 72
     assert len(_active(s)) == 72 and "2022" not in _active(s)
@@ -840,6 +864,8 @@ def test_auto_iso_dates_in_mails_are_no_project_numbers(tmp_path):
     mk(root, "2024-05 Teamsitzung", "2024-11 Weihnachtsfeier")
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
     _eml(s.mail_dir / "a.eml", "Ortstermin Kita", "Hallo, wir treffen uns am 2024-05-21 auf der Baustelle.")
+    run_index(s)
+    _confirm(s)
     stats = run_index(s)
     assert stats["structure"]["pattern"] == YEAR_NUM and stats["projects"]["projects"] == 40
     assert "2024-05" not in _active(s)
@@ -847,31 +873,34 @@ def test_auto_iso_dates_in_mails_are_no_project_numbers(tmp_path):
         assert conn.execute("SELECT project FROM mails").fetchone()[0] is None
 
 
-def test_auto_later_different_detection_keeps_the_stored_one_and_warns(tmp_path, caplog):
+def test_auto_later_different_detection_is_a_new_proposal(tmp_path, caplog):
     root = tmp_path / "p"
     mk(root, *(f"2024-{i:03d} Projekt {i}" for i in range(1, 5)))
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
     run_index(s)
-    stored_before = _meta(s, structure.STORED_KEY)
+    _confirm(s)
+    run_index(s)
+    confirmed_before = _meta(s, structure.CONFIRMED_KEY)
     # the share now shows a second, more frequent numbering (new projects, or another share mounted there)
     mk(root, *(f"P{20000 + i}_Neubau {i}" for i in range(1, 9)))
     _age_check(s)
     caplog.set_level(logging.WARNING)
     stats = run_index(s)
     new = r"P\d{5}"  # never an automatic alternation (rule 6)
-    assert _meta(s, structure.STORED_KEY) == stored_before
-    assert stats["structure"]["differs"] == new and "warning" not in stats["structure"]
-    assert stats["projects"]["added"] == 0 and len(_active(s)) == 4  # still the stored scheme
-    assert f"eine neue Erkennung ergibt {new}" in caplog.text
+    assert _meta(s, structure.CONFIRMED_KEY) == confirmed_before
+    assert stats["structure"]["proposal"] == new and stats["structure"]["pattern"] == YEAR_NUM
+    assert stats["projects"]["added"] == 0 and len(_active(s)) == 4  # still the confirmed scheme
+    assert f"{structure.PENDING_TEXT} – {new}" in caplog.text
     layout = structure.current_layout(s)
     assert layout.pattern == YEAR_NUM and new in layout.warning and "--uebernehmen" in layout.warning
-    assert "findet derzeit 4 Projektordner" in layout.warning
+    assert "findet derzeit 4 Projektordner" in layout.warning and layout.state == "confirmed"
     page = TestClient(create_app(s, background=False)).get("/status").text
-    assert "Abweichung" in page and "--uebernehmen" in page
-    # pending: checked at every pass, warned only once
+    assert "Neuer Vorschlag" in page and "Übernehmen" in page
+    # still pending at the next check: warned only once
     caplog.clear()
+    _age_check(s)
     run_index(s)
-    assert "eine neue Erkennung" not in caplog.text and structure.current_layout(s).differs
+    assert structure.PENDING_TEXT not in caplog.text and structure.current_layout(s).proposal["pattern"] == new
 
 
 def test_auto_difference_disappears_when_the_share_is_back(tmp_path):
@@ -879,15 +908,17 @@ def test_auto_difference_disappears_when_the_share_is_back(tmp_path):
     mk(root, *(f"2024-{i:03d} Projekt {i}" for i in range(1, 5)))
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
     run_index(s)
+    _confirm(s)
     extra = [f"P{20000 + i}_Neubau {i}" for i in range(1, 9)]
     mk(root, *extra)
     _age_check(s)
     run_index(s)
-    assert structure.current_layout(s).differs
+    assert structure.current_layout(s).proposal
     for name in extra:
         (root / name).rmdir()
+    _age_check(s)
     run_index(s)
-    assert structure.current_layout(s).differs is None and _meta(s, structure.DIFFERS_KEY) is None
+    assert structure.current_layout(s).proposal is None and _meta(s, structure.PROPOSAL_KEY) is None
 
 
 def test_auto_half_mounted_empty_share_changes_nothing(tmp_path):
@@ -895,20 +926,23 @@ def test_auto_half_mounted_empty_share_changes_nothing(tmp_path):
     mk(root, *(f"2024-{i:03d} Projekt {i}" for i in range(1, 5)))
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
     run_index(s)
-    stored = _meta(s, structure.STORED_KEY)
+    _confirm(s)
+    run_index(s)
+    stored = _meta(s, structure.CONFIRMED_KEY)
     for p in list(root.iterdir()):
         p.rmdir()
     _age_check(s)
     stats = run_index(s)
     assert "keine Projekte mehr" in stats["projects"]["warning"]
-    assert _meta(s, structure.STORED_KEY) == stored and _meta(s, structure.DIFFERS_KEY) is None
+    assert _meta(s, structure.CONFIRMED_KEY) == stored and _meta(s, structure.PROPOSAL_KEY) is None
     assert len(_active(s)) == 4
 
 
 def test_auto_unmounted_share_before_any_detection(tmp_path):
     s = settings_for(tmp_path, tmp_path / "nicht-eingebunden", PROJECT_NUMBER_PATTERN="auto")
     stats = run_index(s)
-    assert "nicht vorhanden" in stats["projects"]["warning"] and _meta(s, structure.STORED_KEY) is None
+    assert "nicht vorhanden" in stats["projects"]["warning"] and _meta(s, structure.PROPOSAL_KEY) is None
+    assert _meta(s, structure.CONFIRMED_KEY) is None
 
 
 def test_auto_without_a_clear_scheme_skips_the_sync_and_the_assignment(tmp_path):
@@ -922,14 +956,17 @@ def test_auto_without_a_clear_scheme_skips_the_sync_and_the_assignment(tmp_path)
     assert stats["assignment"]["note"].startswith("nicht ausgeführt")
     with db.session(s.db_path) as conn:
         assert conn.execute("SELECT assign_status FROM mails").fetchone()[0] == "pending"
-    assert _meta(s, structure.STORED_KEY) is None
+    assert _meta(s, structure.PROPOSAL_KEY) is None and _meta(s, structure.CONFIRMED_KEY) is None
     page = TestClient(create_app(s, background=False)).get("/status").text
-    assert "noch nicht erkannt" in page and "Nächste Prüfung frühestens" in page
-    # once the folders are there, the next detection (at most hourly) detects, syncs and assigns
+    assert "Kein eindeutiges Schema erkannt" in page and "Nächste Prüfung frühestens" in page
+    # once the folders are there, the next detection (at most hourly) proposes; confirmed, it syncs and assigns
     mk(root, "2024-017 Kita", "2024-018 Schule", "2024-019 Halle")
     _age_check(s)
     stats = run_index(s)
-    assert stats["projects"]["added"] == 3 and _meta(s, structure.NONE_KEY) is None
+    assert stats["projects"]["added"] == 0 and stats["structure"]["proposal"] == YEAR_NUM
+    _confirm(s)
+    stats = run_index(s)
+    assert stats["projects"]["added"] == 3 and json.loads(_meta(s, structure.CHECK_KEY))["outcome"] == "proposal"
     with db.session(s.db_path) as conn:
         assert tuple(conn.execute("SELECT project, assign_status FROM mails").fetchone()) == ("2024-017", "assigned")
 
@@ -955,7 +992,8 @@ def test_auto_without_a_scheme_retries_at_most_hourly(tmp_path, monkeypatch):
     other = mk(tmp_path / "q", *(f"2024-{i:03d} X" for i in range(1, 6)))
     s2 = settings_for(tmp_path, other, PROJECT_NUMBER_PATTERN="auto")
     with db.session(s2.db_path) as conn:
-        assert layout_for_index(conn, s2, now=now + timedelta(minutes=31))[0].pattern == YEAR_NUM
+        layout = layout_for_index(conn, s2, now=now + timedelta(minutes=31))[0]
+        assert layout.pattern is None and layout.proposal["pattern"] == YEAR_NUM
 
 
 def test_accept_command_switches(tmp_path, monkeypatch, capsys):
@@ -963,19 +1001,22 @@ def test_accept_command_switches(tmp_path, monkeypatch, capsys):
     mk(root, *(f"2024-{i:03d} Projekt {i}" for i in range(1, 4)))
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
     run_index(s)
+    _confirm(s)
+    run_index(s)
     for p in list(root.iterdir()):
         p.rename(root / p.name.replace("2024-", "P10"))  # the office renamed everything: P10001 …
     _age_check(s)
     run_index(s)
-    assert structure.current_layout(s).differs["pattern"] == r"P\d{5}"
+    assert structure.current_layout(s).proposal["pattern"] == r"P\d{5}"
     monkeypatch.setenv("PROJECTS_DIR", str(root))
     monkeypatch.setenv("DATA_DIR", str(s.data_dir))
     monkeypatch.setenv("PROJECT_NUMBER_PATTERN", "auto")
     assert main(["--uebernehmen", "--ohne-dateien"]) == 0
     out = capsys.readouterr().out
-    assert "Übernommen: P\\d{5}, Tiefe 2" in out
+    assert "Übernommen (bestätigt von " in out and "(Kommandozeile)): P\\d{5}, Tiefe 2" in out
     layout = structure.current_layout(s)
-    assert layout.pattern == r"P\d{5}" and layout.differs is None
+    assert layout.pattern == r"P\d{5}" and layout.proposal is None
+    assert layout.confirmed["confirmed_via"] == "Kommandozeile"
     stats = run_index(s)
     assert stats["projects"]["added"] == 3 and _active(s) == ["P10001", "P10002", "P10003"]
 
@@ -991,17 +1032,24 @@ def test_accept_refuses_another_folder(tmp_path, monkeypatch, capsys):
 def test_detection_for_another_projects_dir_is_not_used(tmp_path):
     """E.g. the demo data set detected with "auto" before the switch to the real share."""
     first = mk(tmp_path / "demo", *(f"BS-2024-{i:04d} X" for i in range(1, 4)))
-    run_index(settings_for(tmp_path, first, PROJECT_NUMBER_PATTERN="auto"))
+    demo = settings_for(tmp_path, first, PROJECT_NUMBER_PATTERN="auto")
+    run_index(demo)
+    _confirm(demo)
+    assert structure.current_layout(demo).pattern == BS
     real = mk(tmp_path / "echt", *(f"P{30000 + i} Y" for i in range(1, 4)))
     s = settings_for(tmp_path, real, PROJECT_NUMBER_PATTERN="auto")
-    assert structure.current_layout(s).pattern is None
+    assert structure.current_layout(s).pattern is None and structure.current_layout(s).state == "unchecked"
     run_index(s)
+    assert structure.current_layout(s).pattern is None
+    _confirm(s)
     assert structure.current_layout(s).pattern == r"P\d{5}"
 
 
 def test_configured_depth_wins_over_the_detected_one(tmp_path):
     root = mk(tmp_path / "p", *(f"2024/BS-2024-{i:04d} X" for i in range(1, 4)), "Archiv/2010/BS-2010-0001 Alt")
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto", PROJECT_FOLDER_DEPTH="3")
+    run_index(s)
+    _confirm(s)
     run_index(s)
     layout = structure.current_layout(s)
     assert layout.depth == 3 and not layout.depth_auto and len(_active(s)) == 4
@@ -1024,6 +1072,8 @@ def test_recheck_waits_for_the_interval(tmp_path, monkeypatch):
 def test_detection_failure_never_stops_the_indexing(tmp_path, monkeypatch):
     root = mk(tmp_path / "p", *(f"2024-{i:03d} X" for i in range(1, 4)))
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
+    run_index(s)
+    _confirm(s)
     run_index(s)
 
     def broken(*a, **k):
@@ -1048,7 +1098,9 @@ def test_folder_names_that_are_no_utf8_are_stored(tmp_path):
     db.init_db(s.db_path)
     with db.session(s.db_path) as conn:
         layout, info = layout_for_index(conn, s)
-    assert layout.pattern == YEAR_NUM and info["detected"] is True
+    assert layout.proposal["pattern"] == YEAR_NUM and info["detected"] is True
+    assert structure.current_layout(s).proposal["examples"][0] == "2024-001 B�ro"
+    _confirm(s)
     assert structure.current_layout(s).examples[0] == "2024-001 B�ro"
 
 
@@ -1072,6 +1124,10 @@ def test_effective_pattern_reaches_assignment_search_and_integration(tmp_path, f
     mail.mkdir()
     _eml(mail / "a.eml", "Rückfrage zu P12342", "Bitte die Rettungswege prüfen.")
     s = fake_settings(fake_ai, tmp_path, PROJECTS_DIR=root, MAIL_DIR=mail, PROJECT_NUMBER_PATTERN="auto")
+    run_index(s, AIServices.from_settings(s))
+    with db.session(s.db_path) as conn:
+        assert conn.execute("SELECT project FROM mails").fetchone()[0] is None  # nothing before confirming
+    _confirm(s)
     run_index(s, AIServices.from_settings(s))
     assert structure.current_layout(s).pattern == r"P\d{5}"
     with db.session(s.db_path) as conn:

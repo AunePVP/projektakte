@@ -18,7 +18,7 @@ from .documents import index_all_documents, reprocess_attachments
 from .mails.eml_source import sync_eml_folder
 from .mails.jmap_source import JMAPClient, sync_plmail
 from .mails.store import sweep_cache
-from .registry import active_count, sync_from_folder, unchanged_stats
+from .registry import ENCODING_HINT, active_count, sync_from_folder, unchanged_stats
 from .vectors import embed_pending
 
 log = logging.getLogger("projektakte.indexer")
@@ -59,6 +59,28 @@ def _demo_data(conn, settings: Settings) -> dict | None:
     return result if result["projects"] or result["mails"] else None
 
 
+def _paused(layout: structure.Layout) -> str:
+    """Why projects, documents and the assignment wait (German, short)."""
+    if layout.state == "pending":
+        return structure.PENDING_TEXT
+    if layout.state in ("rejected", "none", "unchecked"):
+        return "kein bestätigtes Projektnummern-Schema"
+    return "kein gültiges Projektnummern-Schema"
+
+
+def _index_documents(conn, llm, settings: Settings) -> dict:
+    """The files of all active projects. A file name that is no valid UTF-8 (a share mounted without
+    iocharset=utf8) cannot be stored: the documents of this pass stop there with a warning – the
+    mails, embeddings and the assignment still run – instead of the whole pass failing."""
+    try:
+        return index_all_documents(conn, llm=llm, projects_dir=settings.projects_dir)
+    except UnicodeError as exc:
+        conn.rollback()
+        log.warning("Dokumente: ein Datei- oder Ordnername ist kein gültiges UTF-8 (%s) – %s", exc, ENCODING_HINT)
+        return {"warning": f"Dateien nicht vollständig gelesen: ein Datei- oder Ordnername hat eine falsche "
+                           f"Zeichenkodierung (meist eine Freigabe ohne iocharset=utf8) – {ENCODING_HINT}"}
+
+
 def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
     started = time.time()
     db.init_db(settings.db_path)
@@ -67,8 +89,9 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
         if (demo := _demo_data(conn, settings)) is not None:
             stats["demo_purge"] = demo
         phase("Projekte")
-        # the effective layout: PROJECT_NUMBER_PATTERN, or with "auto" the stored detection (detected
-        # and stored here the first time); without a usable scheme nothing is synced (like an unmounted share)
+        # the effective layout: PROJECT_NUMBER_PATTERN, or with "auto" the confirmed scheme (a detection
+        # made here is only a proposal until a person confirms it); without a usable scheme nothing is
+        # synced (like an unmounted share)
         layout, structure_info = structure.layout_for_index(conn, settings)
         if structure_info:
             stats["structure"] = structure_info
@@ -78,13 +101,16 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
         else:
             stats["projects"] = sync_from_folder(conn, settings.projects_dir, layout.pattern,
                                                  max_depth=layout.depth)
+            structure.record_scan_notes(conn, settings, layout, stats["projects"])
         conn.commit()
         llm = ai.llm if ai else None
         phase("Dokumente")
-        if stats["projects"].get("warning"):  # PROJECTS_DIR unavailable: change nothing
+        if layout.pattern is None:
+            stats["documents"] = {"note": f"nicht abgeglichen – {_paused(layout)}"}
+        elif stats["projects"].get("warning"):  # PROJECTS_DIR unavailable: change nothing
             stats["documents"] = {"note": "nicht abgeglichen – Projektordner nicht verfügbar"}
         else:
-            stats["documents"] = index_all_documents(conn, llm=llm, projects_dir=settings.projects_dir)
+            stats["documents"] = _index_documents(conn, llm, settings)
         phase("Mails")
         # MAIL_ALLOW_EMPTY=1: an empty MAIL_DIR is intended – remove its mails (normally a missing
         # mount, so nothing is removed then)
@@ -103,7 +129,7 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
             stats["embeddings"] = embed_pending(conn, ai.embed)
         phase("Zuordnung")
         if layout.pattern is None:  # mails wait (stay "pending") until project numbers can be recognised
-            stats["assignment"] = {"note": "nicht ausgeführt – kein gültiges Projektnummern-Schema"}
+            stats["assignment"] = {"note": f"nicht ausgeführt – {_paused(layout)}"}
         else:
             stats["assignment"] = assign_mails(conn, layout.pattern,
                                                min_share=settings.assign_min_share,

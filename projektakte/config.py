@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Mapping
 
 DEFAULT_PROJECT_NUMBER_PATTERN = r"BS-\d{4}-\d{4}"
-# PROJECT_NUMBER_PATTERN=auto: the scheme is detected from the folder names once and stored (structure.py)
+# PROJECT_NUMBER_PATTERN=auto: the scheme is detected from the folder names as a proposal; it is used
+# only once a person confirmed it (status page or python -m projektakte.structure --uebernehmen) and
+# never changes on its own (structure.py)
 AUTO = "auto"
 # PROJECT_FOLDER_DEPTH: project folders sit directly in PROJECTS_DIR (1) or up to n-1 levels below it
 # (year folders, customer folders); 2 = directly or one level below
@@ -242,7 +244,8 @@ class Settings:
 
     @property
     def project_pattern_auto(self) -> bool:
-        """PROJECT_NUMBER_PATTERN=auto: the scheme comes from the folder names (structure.py)."""
+        """PROJECT_NUMBER_PATTERN=auto: the scheme comes from the folder names, confirmed by a person
+        (structure.py)."""
         return self.project_number_pattern == AUTO
 
     @property

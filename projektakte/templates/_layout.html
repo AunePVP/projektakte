@@ -1,0 +1,92 @@
+{#- Projektordner on the status page: the effective project number scheme and, with
+    PROJECT_NUMBER_PATTERN=auto, a proposal with the evidence a person needs to judge it and the buttons
+    to confirm or reject it (POST, login and cross-site check by the middleware). Folder names are
+    autoescaped (and shown with � where they are no valid UTF-8). -#}
+{% macro hint_list(hints) -%}
+<ul class="evidence">
+  {% for h in hints %}<li><code>{{ h.pattern }}</code> – {{ 'etwa ' if h.estimated }}{{ h.folders|de_num }} Ordner{% if h.where %} in {{ h.where|path }}{% endif %}{% if h.examples %} (z. B. {% for e in h.examples %}{{ e }}{{ ', ' if not loop.last }}{% endfor %}){% endif %}
+    {%- if h.branch == 'archive' %} – unter einem Archivordner, ältere Nummerierung?{% elif h.branch == 'side' %} – in einer Nebenablage (Angebote, Anfragen, Rechnungen …), meist keine Projekte{% elif h.branch == 'customers' %} – in einem Kundenordner, Kundennummern?{% elif h.beside %} – liegt in denselben Ordnern wie die Projektordner{% endif %}.
+    <span class="muted small">Sind das auch Projekte: <code>PROJECT_NUMBER_PATTERN={{ h.combined }}</code>{% if h.depth %} und <code>PROJECT_FOLDER_DEPTH={{ h.depth }}</code>{% endif %} von Hand einstellen.</span></li>
+  {% endfor %}
+</ul>
+{%- endmacro %}
+
+{% macro evidence(p) -%}
+<dl class="meta evidence">
+  <dt>Schema</dt><dd>{{ p.description }}<br><code>{{ p.pattern }}</code></dd>
+  <dt>Ordnertiefe</dt><dd>{{ p.depth }} – {{ p.depth_text }}</dd>
+  <dt>Projektordner</dt><dd>{{ p.projects|de_num }}{% if p.levels %} ({% for lv in p.levels %}Ebene {{ lv[0] }}: {{ lv[1]|de_num }}{{ ', ' if not loop.last }}{% endfor %}){% endif %}{% if p.current_projects is defined and p.current_projects is not none %} – das bestätigte Schema findet derzeit {{ p.current_projects|de_num }}{% endif %}</dd>
+  <dt>Liegen in</dt><dd>{% for parent in p.parents %}{{ parent[0]|path if parent[0] else '(direkt im Projektordner-Verzeichnis)' }} ({{ parent[1]|de_num }}){{ ', ' if not loop.last }}{% endfor %}{% if p.parents_total and p.parents_total > p.parents|length %} … und {{ (p.parents_total - p.parents|length)|de_num }} weitere{% endif %}</dd>
+  <dt>Beispiele</dt><dd><ul class="evidence">{% for e in p.examples %}<li>{{ e|path }}</li>{% endfor %}</ul>{% if p.projects > p.examples|length %}<span class="muted small">… und {{ (p.projects - p.examples|length)|de_num }} weitere</span>{% endif %}</dd>
+  <dt>Ausnahmen</dt><dd>{% if p.exceptions_total %}{{ p.exceptions_total|de_num }} Ordner ohne passende Nummer neben den Projektordnern – werden nicht gelesen: {% for e in p.exceptions %}{{ e|path }}{{ ' · ' if not loop.last }}{% endfor %}{% if p.exceptions_total > p.exceptions|length %} …{% endif %}{% else %}keine – alle Ordner neben den Projektordnern haben eine passende Nummer{% endif %}</dd>
+  {% if p.inner %}<dt>Unterordner</dt><dd>Nummerierte Unterordner in den Projektordnern ({{ 'etwa ' if p.inner.count > p.inner.examples|length }}{{ p.inner.count|de_num }}, gelten als Teil der Projekte): {% for e in p.inner.examples %}{{ e|path }}{{ ' · ' if not loop.last }}{% endfor %}</dd>{% endif %}
+  {% if p.outliers %}<dt>Abweichend</dt><dd>Zu selten für das Schema, werden nicht gelesen: {% for e in p.outliers %}{{ e|path }}{{ ' · ' if not loop.last }}{% endfor %}</dd>{% endif %}
+  {% if p.duplicates %}<dt>Doppelt</dt><dd>Gelesen wird nur der erste Ordner: {% for d in p.duplicates %}{{ d.number }}: {{ d.path|path }} und {{ d.duplicate|path }}{{ '; ' if not loop.last }}{% endfor %}</dd>{% endif %}
+  {% if p.deeper %}<dt>Tiefer</dt><dd>Passende Ordner unterhalb von Ebene {{ p.depth }} – werden mit dieser Tiefe nicht erfasst: {% for e in p.deeper %}{{ e|path }}{{ ' · ' if not loop.last }}{% endfor %}</dd>{% endif %}
+  {% if p.hints %}<dt>Weitere Schemata</dt><dd>{{ hint_list(p.hints) }}</dd>{% endif %}
+  {% if p.notes %}<dt>Bitte prüfen</dt><dd>{% for n in p.notes %}<p class="note warn">{{ n }}</p>{% endfor %}</dd>{% endif %}
+</dl>
+{%- endmacro %}
+
+{% macro decision(p, confirm_label) -%}
+<div class="actions">
+  <form method="post" action="/status/projektstruktur/uebernehmen"><input type="hidden" name="vorschlag" value="{{ p.id }}"><button>{{ confirm_label }}</button></form>
+  <form method="post" action="/status/projektstruktur/ablehnen"><input type="hidden" name="vorschlag" value="{{ p.id }}"><button class="secondary">Ablehnen</button></form>
+</div>
+{%- endmacro %}
+
+{% set layout = st.layout %}
+<section class="card" id="projektordner">
+  <h2>Projektordner</h2>
+  <dl class="meta">
+    <dt>Nummernschema</dt><dd>{% if layout.pattern %}<code>{{ layout.pattern }}</code> – {{ layout.source }}{% elif layout.auto %}<strong>noch kein bestätigtes Schema</strong> – Projekte, Dokumente und die Mail-Zuordnung warten{% else %}unbrauchbar{% endif %}</dd>
+    <dt>Ordnertiefe</dt><dd>{{ layout.depth }}{% if layout.auto and layout.depth_auto %} (automatisch){% endif %} – {{ layout.depth_text }}</dd>
+    {% if layout.confirmed %}<dt>Erkannt an</dt><dd>{% for e in layout.examples %}{{ e|path }}{{ ', ' if not loop.last }}{% endfor %}{% if layout.projects_at_detection %} ({{ layout.projects_at_detection|de_num }} Projektordner bei der Erkennung am {{ layout.detected_at|de_date(true) }}){% endif %}</dd>{% endif %}
+    {% if layout.problem and layout.state != 'pending' %}<dt>Problem</dt><dd><p class="note warn">{{ layout.problem }}</p></dd>{% endif %}
+    {% for n in layout.notices %}<dt>Hinweis</dt><dd><p class="note warn">{{ n }}</p></dd>{% endfor %}
+  </dl>
+
+  {% if layout.proposal %}{% set p = layout.proposal %}
+  <section class="proposal" id="vorschlag">
+    {% if layout.confirmed %}
+    <h3>Neuer Vorschlag – weicht vom bestätigten Schema ab</h3>
+    <p class="note warn">Eine Erkennung vom {{ p.detected_at|de_date(true) }} ergibt ein anderes Schema. Bis es bestätigt ist, bleibt das bestätigte <code>{{ layout.pattern }}</code> in Gebrauch – seine Projekte werden weiter gelesen.</p>
+    {% else %}
+    <h3>Vorschlag zur Projektstruktur wartet auf Bestätigung</h3>
+    <p class="note warn">Erkannt am {{ p.detected_at|de_date(true) }} aus den Ordnernamen. Bis jemand den Vorschlag prüft und übernimmt, wird nichts als Projekt gelesen: Projekte, Dokumente und die Mail-Zuordnung warten.</p>
+    {% endif %}
+    {{ evidence(p) }}
+    {{ decision(p, 'Übernehmen') }}
+    <p class="muted small">„Übernehmen“ gilt ab sofort und bleibt, bis ein anderer Vorschlag übernommen wird; gespeichert wird, wer übernommen hat. „Ablehnen“ lässt alles, wie es ist – derselbe Vorschlag kommt erst wieder, wenn sich die Erkennung ändert. Stimmt nichts, <code>PROJECT_NUMBER_PATTERN</code> und <code>PROJECT_FOLDER_DEPTH</code> von Hand einstellen (Vorschlag und Ordnerübersicht: <code>python -m projektakte.structure</code>).</p>
+  </section>
+  {% endif %}
+
+  {% if layout.rejected and not layout.proposal %}{% set r = layout.rejected %}
+  <p class="note info">Abgelehnt am {{ r.rejected_at|de_date(true) }} von {{ r.rejected_by }}: <code>{{ r.pattern }}</code>, Tiefe {{ r.depth }} ({{ r.projects|de_num }} Projektordner{% if r.examples %}, z. B. {% for e in r.examples[:3] %}{{ e|path }}{{ ', ' if not loop.last }}{% endfor %}{% endif %}). Er wird nicht wieder vorgeschlagen, solange die Erkennung dasselbe ergibt.</p>
+  <form method="post" action="/status/projektstruktur/neu-pruefen"><input type="hidden" name="ablehnung" value="aufheben"><button class="secondary">Ablehnung aufheben und neu prüfen</button></form>
+  {% endif %}
+
+  {% if layout.state == 'none' and layout.check %}{% set c = layout.check %}
+  <h3>Kein eindeutiges Schema erkannt</h3>
+  <p>{{ c.reason }}</p>
+  {% if c.candidates %}
+  <div class="table-wrap"><table class="list evidence">
+    <thead><tr><th>Nächste Kandidaten</th><th class="w-s">Ebene</th><th class="w-s num">Ordner</th><th>Beispiele</th><th>Warum nicht</th></tr></thead>
+    <tbody>{% for k in c.candidates %}<tr><td><code>{{ k.pattern }}</code>{% if k.where %}<br><span class="muted small">in {{ k.where|path }}</span>{% endif %}</td><td>{{ k.level }}</td><td class="num">{{ k.folders|de_num }}</td><td>{% for e in k.examples %}{{ e }}{{ ', ' if not loop.last }}{% endfor %}</td><td>{{ k.reason or k.verdict }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+  {% if c.levels %}<p class="muted small">Ordner je Ebene: {% for lv in c.levels %}Ebene {{ lv.level }}: {{ lv.folders|de_num }} ({{ lv.with_number|de_num }} mit Nummer, z. B. {% for e in lv.examples[:3] %}{{ e }}{{ ', ' if not loop.last }}{% endfor %}){{ '; ' if not loop.last }}{% endfor %}</p>{% endif %}
+  <p class="muted small">Von Hand einstellen: <code>PROJECT_NUMBER_PATTERN</code> (regulärer Ausdruck für die Nummer am Anfang der Projektordner, z. B. <code>\d{4}-\d{3}</code> für „2024-017 Kita“{% if c.candidates %} oder einer der Kandidaten oben{% endif %}) und <code>PROJECT_FOLDER_DEPTH</code> in projektakte.env; prüfen mit <code>python -m projektakte.structure</code>.</p>
+  {% endif %}
+
+  {% if layout.confirmed and layout.check and layout.check.hints and not layout.proposal %}
+  <h3>Weitere Nummernschemata (werden nicht als Projekte gelesen)</h3>
+  {{ hint_list(layout.check.hints) }}
+  {% endif %}
+
+  {% if layout.auto %}
+  <p class="muted small">Letzte Erkennung: {{ layout.check.checked_at|de_date(true) if layout.check and layout.check.checked_at else 'beim nächsten Indexierungslauf' }}.</p>
+  <form method="post" action="/status/projektstruktur/neu-pruefen"><button class="secondary">Ordner jetzt neu prüfen</button></form>
+  {% endif %}
+  <p class="muted">Prüfen und Vorschlag: <code>python -m projektakte.structure</code></p>
+</section>

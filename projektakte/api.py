@@ -229,10 +229,13 @@ def status(request: Request) -> dict:
             "chunks": one("SELECT COUNT(*) FROM chunks"),
             "chunks_without_vector": one("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL"),
         }
-        # which folders count as projects: effective PROJECT_NUMBER_PATTERN and PROJECT_FOLDER_DEPTH
+        # which folders count as projects: effective PROJECT_NUMBER_PATTERN and PROJECT_FOLDER_DEPTH, with
+        # "auto" also a proposal waiting for confirmation and the evidence for it
         layout = structure.current_layout(s, conn).to_dict()
-    return {"indexing": request.app.state.indexer.status(), "counts": counts,
-            "ai_mode": s.ai_mode, "demo_mode": s.demo_mode, "assign_mode": s.assign_mode, "layout": layout}
+    # folder names that are no valid UTF-8 (in warnings, too) shown with �: the answer must stay valid JSON
+    return structure.clean({"indexing": request.app.state.indexer.status(), "counts": counts,
+                            "ai_mode": s.ai_mode, "demo_mode": s.demo_mode, "assign_mode": s.assign_mode,
+                            "layout": layout})
 
 
 @router.post("/reindex", status_code=202)

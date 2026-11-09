@@ -25,19 +25,8 @@
       <dt>Abschnitte</dt><dd>{{ st.counts.chunks|de_num }} ({{ st.counts.chunks_without_vector|de_num }} ohne Vektor)</dd>
     </dl>
   </section>
-  {% set layout = st.layout %}
-  <section class="card" id="projektordner">
-    <h2>Projektordner</h2>
-    <dl class="meta">
-      <dt>Nummernschema</dt><dd>{% if layout.pattern %}<code>{{ layout.pattern }}</code> – {% endif %}{{ layout.source }}</dd>
-      <dt>Ordnertiefe</dt><dd>{{ layout.depth }}{% if layout.auto and layout.depth_auto %} (automatisch){% endif %} – {{ layout.depth_text }}</dd>
-      {% if layout.examples %}<dt>Erkannt an</dt><dd>{{ layout.examples|join(', ') }}{% if layout.projects_at_detection %} ({{ layout.projects_at_detection|de_num }} Projektordner){% endif %}</dd>{% endif %}
-      {% if layout.problem %}<dt>Problem</dt><dd><p class="note warn">{{ layout.problem }}</p></dd>{% endif %}
-      {% if layout.warning %}<dt>Abweichung</dt><dd><p class="note warn">{{ layout.warning }}</p></dd>{% endif %}
-    </dl>
-    <p class="muted">Prüfen und Vorschlag: <code>python -m projektakte.structure</code></p>
-  </section>
 </div>
+{% include "_layout.html" %}
 <section class="card">
   <h2>KI-Dienste</h2>
   <div hx-get="/status/dienste" hx-trigger="load" hx-swap="outerHTML"><p class="muted">Prüfe Dienste … <a href="/status/dienste">(ohne JavaScript)</a></p></div>

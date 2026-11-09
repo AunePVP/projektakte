@@ -912,3 +912,55 @@ def deps_partial(request: Request):
 def reindex_now(request: Request):
     request.app.state.indexer.trigger()
     return RedirectResponse("/status", status_code=303)
+
+
+# --- project structure (PROJECT_NUMBER_PATTERN=auto): a person confirms or rejects a proposal
+LAYOUT_ANCHOR = "/status#projektordner"
+
+
+def _layout_decision(request: Request, action, *, reindex: bool = True):
+    """Run ``action(conn, settings, user)`` on the database, then start an indexing pass (the decision
+    takes effect at once) and go back to the status page. Login and the cross-site check are done
+    for every POST route by the middleware (main.access_control)."""
+    s = _settings(request)
+    user = getattr(request.state, "user", None)
+    try:
+        with db.session(s.db_path) as conn:
+            action(conn, s, user)
+    except structure.ProposalError as exc:
+        return render(request, "error.html", status_code=409, title="Vorschlag nicht mehr aktuell",
+                      message=str(exc), back=LAYOUT_ANCHOR, back_label="Zur Statusseite")
+    except sqlite3.OperationalError as exc:
+        if not inbox.is_db_busy(exc):
+            raise
+        log.warning("Entscheidung zur Projektstruktur nicht gespeichert – Datenbank belegt: %s", exc)
+        return render(request, "error.html", status_code=503, headers={"Retry-After": str(BUSY_RETRY_AFTER)},
+                      title="Bitte gleich noch einmal",
+                      message="Die Datenbank ist gerade belegt (die Indexierung schreibt) – die Entscheidung wurde "
+                              "nicht gespeichert. Bitte in einigen Sekunden erneut versuchen.",
+                      back=LAYOUT_ANCHOR, back_label="Zur Statusseite")
+    if reindex:
+        request.app.state.indexer.trigger()
+    return RedirectResponse(LAYOUT_ANCHOR, status_code=303)
+
+
+@router.post("/status/projektstruktur/uebernehmen")
+def layout_confirm(request: Request, vorschlag: str = Form("")):
+    """Confirm the pending proposal the page showed (its id): it is used from this indexing pass on."""
+    return _layout_decision(request, lambda conn, s, user: structure.confirm_proposal(conn, s, vorschlag, user))
+
+
+@router.post("/status/projektstruktur/ablehnen")
+def layout_reject(request: Request, vorschlag: str = Form("")):
+    """Reject the pending proposal: everything stays as it is; it is not offered again until the
+    detection changes."""
+    return _layout_decision(request, lambda conn, s, user: structure.reject_proposal(conn, s, vorschlag, user),
+                            reindex=False)
+
+
+@router.post("/status/projektstruktur/neu-pruefen")
+def layout_recheck(request: Request, ablehnung: str = Form("")):
+    """Analyse the share again at once (after folders were fixed); ``ablehnung=aufheben`` also offers a
+    rejected proposal again."""
+    return _layout_decision(request, lambda conn, s, user: structure.request_recheck(
+        conn, s, forget_rejection=ablehnung == "aufheben"))
