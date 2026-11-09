@@ -41,7 +41,8 @@ def test_a_share_that_follows_the_rule_has_no_deviations(tmp_path, capsys):
 def test_every_deviation_is_found(tmp_path, capsys):
     root = clean_share(tmp_path / "projekt")
     site = root / "2/28/2842_Beratung Filiale"
-    order(root, "2/28/2842_Beratung Filiale/Archiv/284205_Alter Auftrag")  # too deep: not found
+    lost = order(root, "2/28/2842_Beratung Filiale/Archiv/284205_Alter Auftrag")  # too deep: not found
+    (lost / "284205-CAD" / "284205_Archiv").mkdir()  # inside the lost order: reported with it, not again
     order(root, "2/28/2843_Halle/284301_Halle A")
     order(root, "2/29/2943_Halle Zwei/284301_Halle B")  # number twice
     (root / "2/28/2844_Lager/284401-Mail").mkdir(parents=True)  # a category without its order folder
@@ -104,3 +105,15 @@ def test_wrong_calls_and_unreadable_folders(tmp_path, capsys):
     else:
         raise AssertionError("an unusable pattern must be a wrong call")
     assert "Fehler: --muster ist kein gültiger regulärer Ausdruck" in capsys.readouterr().err
+
+
+def test_standard_categories_are_those_most_orders_have(tmp_path):
+    """An office whose newer template added "Ausgang": the old orders lack it – that is no deviation."""
+    root = tmp_path / "projekt"
+    for i in range(4):
+        order(root, f"2/28/284{i}_Alt {i}/284{i}00_Alt {i}", cats=[c for c in CATS if c != "Ausgang"])
+    order(root, "2/28/2849_Neu/284900_Neu")
+    order(root, "2/28/2848_Knapp/284800_Knapp", cats=[c for c in CATS if c not in ("Ausgang", "LV")])
+    report = ablage.check(root)
+    assert "Ausgang" not in report.standard and "LV" in report.standard
+    assert report.issues["kategorie_fehlt"] == [("2/28/2848_Knapp/284800_Knapp", "LV")]

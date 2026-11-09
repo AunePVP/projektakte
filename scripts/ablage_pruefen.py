@@ -71,7 +71,7 @@ KINDS = {
     "kategorie_name": ("HINWEIS", "Ordner im Auftrag nicht in der Form 123456-Kategorie"),
     "kategorie_nummer": ("HINWEIS", "Kategorie-Ordner mit anderer Nummer als der Auftrag"),
     "kategorie_unbekannt": ("HINWEIS", "Unbekannte Kategorie"),
-    "kategorie_fehlt": ("HINWEIS", "Auftrag ohne alle Standard-Kategorien"),
+    "kategorie_fehlt": ("HINWEIS", "Auftrag ohne alle Standard-Kategorien (die mindestens die Hälfte der Aufträge hat)"),
     "dateien_im_auftrag": ("HINWEIS", "Dateien direkt im Auftragsordner (werden gelesen, liegen aber in keiner Kategorie)"),
     "auftrag_leer": ("HINWEIS", "Auftrag ohne Dateien"),
     "kodierung": ("HINWEIS", "Name mit falscher Zeichenkodierung (Freigabe mit iocharset=utf8 einbinden)"),
@@ -88,6 +88,7 @@ class Report:
         self.too_big = 0
         self.outside: Counter = Counter()  # folder (relative) → files outside any project
         self.missing_categories = Counter()
+        self.standard: list[str] = []  # categories at least half of the orders have
 
     def rel(self, path: Path) -> str:
         try:
@@ -193,15 +194,15 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
                         report.add("kategorie_unbekannt", path, m.group(2))
                     else:
                         cats_here.add(m.group(2))
-            if not inside and ORDER.match(name) and head.match(name) and str(path) not in skipped_paths:
+            if (not inside and not chain.get("lost") and ORDER.match(name) and head.match(name)
+                    and str(path) not in skipped_paths):
+                # only the outermost: folders such as 104900_Archiv inside a lost order belong to it
                 report.add("nicht_gefunden", path, f"liegt auf Ebene {child_level}, gelesen wird bis Ebene {depth}")
+                sub_chain["lost"] = True
             total += walk(path, child_level, sub_chain, inside)
         total += files_here
         if is_order:
-            missing = wanted - cats_here
-            if missing:
-                report.missing_categories.update(missing)
-                report.add("kategorie_fehlt", folder, ", ".join(sorted(missing)))
+            orders.append((folder, cats_here))
             if files_here:
                 report.add("dateien_im_auftrag", folder, f"{files_here} Datei(en)")
             if not total:
@@ -210,7 +211,16 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
             report.add("bauvorhaben_leer", folder)
         return total
 
+    orders: list[tuple[Path, set[str]]] = []
     walk(root, 0, {}, False)
+    # "standard" categories are those most orders have (a category of a newer template is no standard yet)
+    present = Counter(c for _, cats in orders for c in cats)
+    report.standard = [c for c in categories if orders and present[c] * 2 >= len(orders)]
+    for folder, cats in orders:
+        missing = set(report.standard) - cats
+        if missing:
+            report.missing_categories.update(missing)
+            report.add("kategorie_fehlt", folder, ", ".join(sorted(missing)))
     for folder, n in report.outside.items():
         report.add("dateien_ausserhalb", report.root / folder if folder != "." else report.root, f"{n} Datei(en)")
     return report
@@ -297,6 +307,7 @@ def format_report(report: Report, *, pattern: str, depth: int, examples: int, se
         out.append("")
         out.append(f"{severity:7} {title}: {_de(len(items))}")
         if kind == "kategorie_fehlt":
+            out.append("        Standard: " + ", ".join(report.standard))
             out.append("        am häufigsten fehlt: " + ", ".join(
                 f"{c} ({_de(n)})" for c, n in report.missing_categories.most_common()))
         for path, detail in items[:examples]:

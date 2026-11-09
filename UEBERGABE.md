@@ -255,6 +255,24 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
   Ablage-Regel als Hinweis. Nur Namen, nichts wird verändert. Aufruf im Repository:
   `.venv/bin/python scripts/ablage_pruefen.py /mnt/projekt --csv abweichungen.csv`. Exit-Code 0 =
   keine Fehler, 1 = Fehler gefunden. Die Regel steht im Block `REGELN` am Anfang des Skripts.
+- **Erster Lauf auf der echten Freigabe** (`ablage_pruefen.py`, Stand 9.11.2026, nur Zahlen):
+  3.353 Aufträge gefunden; 274.622 Dateien in Aufträgen, davon 213.972 lesbar; 34.540 Dateien
+  außerhalb von Aufträgen. Größte nicht gelesene Typen: `.dwg` 21.700, **`.odt` 14.150**, `.bak`
+  7.284, `.zip` 3.357, `.dxf` 956, `.xlsx` 702 (kaum `.msg`). Fehler: 362 Meldungen „Auftrag nicht
+  gefunden“ (darin noch Unterordner verlorener Aufträge mitgezählt – seit dem nächsten Commit nur der
+  äußerste), 98 doppelte Auftragsnummern, 7 Kategorie-Ordner ohne Auftragsordner. Typische Ursachen:
+  Aufträge in einem Zwischenordner im Bauvorhaben (`…/1015_PDF_…/101500_…`), doppelt verschachtelte
+  Kopien (`1071_…/1071_…/107100_…`), mehrere Ordner mit derselben Auftragsnummer, Kategorie-Ordner
+  direkt im Bauvorhaben. „Ausgang“ fehlt in fast allen älteren Aufträgen (kein Standard).
+- **Vorgeschlagene nächste Schritte** (noch nicht gebaut, Entscheidung offen):
+  1. `.odt`/`.ods` lesen (14.150 Dateien, vermutlich viele Konzepte und Schreiben).
+  2. Mehrere Ordner mit derselben Auftragsnummer zu einem Projekt zusammenführen (statt „der erste
+     gewinnt“) – erfasst die doppelten Nummern und die Kategorie-Ordner ohne Auftragsordner.
+  3. Danach `PROJECT_FOLDER_DEPTH=5`, damit Aufträge in Zwischenordnern gefunden werden.
+  4. Bauvorhaben-Ebene: Fragen über alle Aufträge eines Bauvorhabens, Dateien direkt im
+     Bauvorhaben-Ordner diesem zuordnen.
+  5. Später: Normen-/Regelwerksordner auf oberster Ebene (`@-Normen`, `ASR`, `AHO …`) als eigene
+     durchsuchbare Bibliothek.
 - **Offene Entscheidung:** Projekt = Auftrag (6-stellig, so wie die Ablage gegliedert ist) oder
   Bauvorhaben (4-stellig, alle Aufträge zusammen)? Bei 4-stellig würden Mails, die nur die 6-stellige
   Nummer nennen, nicht mehr automatisch über die Nummer zugeordnet.
