@@ -3,6 +3,60 @@
 Alle nennenswerten Änderungen. Format angelehnt an „Keep a Changelog“; ein Abschnitt je
 Roadmap-Schritt.
 
+## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
+
+Nach 0.4.0 folgten eine Schlussprüfung (Code-Review und Live-Vorführung) und vier Runden
+Gegenprüfung, jeweils mit unabhängigen Prüfern, die jede Korrektur erneut angriffen.
+
+### Schlussprüfung
+- Fragen: Zusammenfassungen ohne Zeit für die Überblickssuche fragen das Sprachmodell mit den
+  eigenen Fundstellen (vorher „nichts gefunden“); aufgebrauchtes Budget mit eigener Meldung statt
+  „KI-Dienst nicht erreichbar“; Hinweise entdoppelt, Sekunden gerundet mit Komma; die
+  Formaterkennung von Reranker und Embeddings bleibt zusammen in einem Timeout; `ASK_DEADLINE`
+  mindestens 10 s, Warnungen beim Start für zu knappe Werte und `LLM_TIMEOUT` ≥ `ASK_DEADLINE`;
+  verneinte zitierte Teilsätze („weder [1] noch [2] nennen ihn“) bleiben Absagen; `evaluate` misst
+  mit `ASK_DEADLINE` und Synonymen.
+- Fake-KI: Verfasser-Fragen („geschrieben“), Bindestrich-Wörter („Funk-Rauchwarnmelder“),
+  Verben mit Vokalwechsel („vertritt“), Zuständigkeit aus der Signatur, genannter Ort mit Beleg im
+  selben Projekt; ein Gebäudetyp eines anderen Projekts („die Tiefgarage im Wohnhochhaus“) ist kein
+  Projektname mehr – vorher zwei falsche grüne Antworten. Prüfsatz 0,68, Absagen 12/12.
+- Daten: Ein mehrfach gezeichnetes Bild einer Scan-Seite wird einmal dekodiert und gesendet (eine
+  16-KB-Datei belegte vorher 1,8 GB); je Seite höchstens 200 Bilder und 150 Megapixel laut PDF vor
+  dem Dekodieren (`EXTRACT_VERSION` 4). Demo mit `AI_MODE=fake` liest Bilder (`LLM_VISION` an).
+- Oberfläche: „BS 2024 0233“ mit Leerzeichen zeigt „Zum Projekt“ und markiert die ganze Nummer;
+  Eingang zählt eine verworfene Karte nach „Weiter“ nicht doppelt; Quellen-Ausschnitte beginnen an
+  der Überschrift ihres Abschnitts.
+
+### Gegenprüfung (Runden 5–8)
+- **Eigener Leseprozess:** PDF-, Word- und Mail-Dateien (auch Anhänge) werden in einem eigenen,
+  dauerhaften Prozess mit Speicher- und Rechenzeitgrenze je Datei gelesen (`EXTRACT_ISOLATION`,
+  `EXTRACT_MEMORY_MB`, `EXTRACT_CPU_SECONDS`, `EXTRACT_WALL_SECONDS`). Eine beschädigte oder
+  absichtlich aufgeblähte Datei kann weder den Speicher der Anwendung füllen noch die Indexierung lange
+  aufhalten; sie wird mit Grund vermerkt und nur neu gelesen, wenn genau die Grenze erhöht wird, an der
+  sie scheiterte. Der Prozess endet mit der Anwendung; startet er nicht, läuft die Indexierung weiter.
+- **Scans:** Bilder je PDF-Objekt einmal je Dokument dekodiert, echte Größe aus dem Bildkopf,
+  verkleinertes Dekodieren großer JPEG/JPEG-2000-Pläne (A0: 0,33 statt 1,1 GB), weiche Masken gezählt,
+  begrenzter Inhaltslauf und Grenzen je Dokument; reine Vektorseiten gelten als Seiten ohne Text
+  (`EXTRACT_VERSION` 6).
+- **Fragen:** Überblicks- und Beteiligtensuche laufen immer innerhalb des Zeitbudgets; ein Hinweis
+  nennt, was nicht abgewartet wurde; jeder KI-Aufruf ist auch bei tröpfelnden Antworten nach seiner
+  Gesamtdauer begrenzt; ungültige Zeitlimits (0, `inf`, keine Zahl) fallen mit Warnung auf den
+  Standard zurück. Absagen echter Modelle: Meta-Sätze über die Quellen („[1] und [2] beschreiben nur
+  die Anlage“, „fehlt eine entsprechende Angabe“, „Möglicherweise …“) gehören zur Absage, belegte
+  Fakten („Laut [2] gibt es keine offenen Mängel mehr“) bleiben Antworten – 59 Musterantworten als Test.
+- **Fake-KI:** keine falschen grünen Antworten mehr bei abweichenden Bezeichnern (Wohnbereich C,
+  2. OG, erster Rettungsweg, vor dem Umbau), Datum ohne Jahr, anderem Bauteil, anderem Dokument oder
+  der Adresse einer Person; Verfasserfragen über die Fake-Vektoren (die echte Volltextsuche bleibt ohne
+  diese Synonyme); Fluchtwegplan-Fragen beantwortbar; Zusammenfassungen ohne Schlussformel. Eigener
+  Satz 103/103, Prüfsatz 0,68 (19/28), Absagen 12/12, keine erfundene Antwort.
+- **Oberfläche:** Projektnummer mit Leerzeichen nur im konfigurierten Format verbunden; Eingang
+  zeigt schon gezeigte Karten markiert statt versteckt (signiert, kein Link kann Mails verbergen);
+  Teilwort-Markierung nur bei echten Komposita; `PROJECT_NUMBER_PATTERN` auf allen Seiten.
+
+### Tests
+- 1567 Tests (1562 bestanden, 4 Integrationstests übersprungen, 1 xfail), parallel mit pytest-xdist
+  (≈ 60 s). Docker-Smoke grün.
+
 ## [0.4.0] – 2026-11-08 – Nachbesserung nach unabhängiger Prüfung
 
 Eine Prüfung mit 12 Prüfern (6 Blickwinkel, 6 Gegenprüfer) fand 67 bestätigte Mängel. Alle sind
@@ -123,25 +177,6 @@ KI-Dienste ist hier nicht möglich (dafür gibt es jetzt `python -m projektakte.
   Mailkopf, keine doppelten Absätze auf der Dokumentseite, „Datei öffnen“ nur bei vorhandener Datei
   („Anhang ausstehend“).
 - Demo: Fluchtwegplan nach DIN ISO 23601/ISO 7010 neu gezeichnet (Version 5).
-
-### Runde 4 (Schlussprüfung: Review und Live-Vorführung)
-- Fragen: Zusammenfassungen ohne Zeit für die Überblickssuche fragen das Sprachmodell mit den
-  eigenen Fundstellen (vorher „nichts gefunden“); aufgebrauchtes Budget mit eigener Meldung statt
-  „KI-Dienst nicht erreichbar“; Hinweise entdoppelt, Sekunden gerundet mit Komma; die
-  Formaterkennung von Reranker und Embeddings bleibt zusammen in einem Timeout; `ASK_DEADLINE`
-  mindestens 10 s, Warnungen beim Start für zu knappe Werte und `LLM_TIMEOUT` ≥ `ASK_DEADLINE`;
-  verneinte zitierte Teilsätze („weder [1] noch [2] nennen ihn“) bleiben Absagen; `evaluate` misst
-  mit `ASK_DEADLINE` und Synonymen.
-- Fake-KI: Verfasser-Fragen („geschrieben“), Bindestrich-Wörter („Funk-Rauchwarnmelder“),
-  Verben mit Vokalwechsel („vertritt“), Zuständigkeit aus der Signatur, genannter Ort mit Beleg im
-  selben Projekt; ein Gebäudetyp eines anderen Projekts („die Tiefgarage im Wohnhochhaus“) ist kein
-  Projektname mehr – vorher zwei falsche grüne Antworten. Prüfsatz 0,68, Absagen 12/12.
-- Daten: Ein mehrfach gezeichnetes Bild einer Scan-Seite wird einmal dekodiert und gesendet (eine
-  16-KB-Datei belegte vorher 1,8 GB); je Seite höchstens 200 Bilder und 150 Megapixel laut PDF vor
-  dem Dekodieren (`EXTRACT_VERSION` 4). Demo mit `AI_MODE=fake` liest Bilder (`LLM_VISION` an).
-- Oberfläche: „BS 2024 0233“ mit Leerzeichen zeigt „Zum Projekt“ und markiert die ganze Nummer;
-  Eingang zählt eine verworfene Karte nach „Weiter“ nicht doppelt; Quellen-Ausschnitte beginnen an
-  der Überschrift ihres Abschnitts.
 
 ### Tests
 - 918 Tests (913 bestanden, 4 Integrationstests übersprungen, 1 xfail), parallel mit pytest-xdist

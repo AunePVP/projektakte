@@ -37,7 +37,7 @@ HTTP-Status (401 falsches/fehlendes Token, 400 ungültige Anfrage).
 Für die Statusanzeige in plMail.
 
 ```json
-{"name": "Projektakte", "version": "0.4.0", "assign_mode": "manual", "projects": 8,
+{"name": "Projektakte", "version": "0.5.0", "assign_mode": "manual", "projects": 8,
  "jmap": {"capability": "urn:plmail:params:jmap:projektakte", "property": "plmail:projektakte"},
  "url": "https://projektakte.lan"}
 ```

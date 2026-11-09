@@ -59,6 +59,10 @@ der echten KI-Dienste prüfen und in docs/ki-dienste.md eintragen, Schwellwerte 
 - [x] **16. Nachbesserung nach unabhängiger Prüfung** – 67 bestätigte Mängel (Antwortqualität und
   Fake-KI, Indexierung, Mails/Zuordnung, Betrieb/Sicherheit, Oberfläche) behoben und gegengeprüft;
   Messwerkzeug `python -m projektakte.evaluate --real` für die echten Dienste.
+- [x] **16a. Schlussprüfung und Gegenprüfungen (0.5.0)** – Review und Live-Vorführung, danach vier
+  Runden Gegenprüfung; u. a. eigener Leseprozess mit Speicher- und Rechenzeitgrenze für fremde Dateien,
+  Zeitbudget je Frage in jeder Einstellung, keine falschen grünen Antworten der Fake-KI auf
+  Prüffragen.
 - [ ] **17. Mit den echten Diensten kalibrieren** – im Büronetz `evaluate --real` laufen lassen,
   Formate in docs/ki-dienste.md eintragen, Schwellwerte einstellen; danach Version 1.0.
 

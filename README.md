@@ -16,7 +16,9 @@ im lokalen Netz mit lokalen Modellen.
 (TXT/MD/PDF/DOCX/EML, Anhänge), Embeddings, Mail-Zuordnung mit Zuordnungs-Eingang, hybride Suche mit
 Reranker, Fragen mit Quellen, Hintergrund-Indexierung, Weboberfläche, Zugangsschutz und plMail über
 JMAP. Dazu kommt die Zuordnung der Mails in plMail (docs/plmail-integration.md). Eine unabhängige
-Prüfung mit 12 Prüfern fand 67 Mängel; sie sind behoben und gegengeprüft (CHANGELOG 0.4.0).
+Prüfung mit 12 Prüfern fand 67 Mängel; sie sind behoben und gegengeprüft (CHANGELOG 0.4.0). Danach
+folgten eine Schlussprüfung mit Live-Vorführung und vier Runden Gegenprüfung (CHANGELOG 0.5.0), unter
+anderem mit einem eigenen, begrenzten Leseprozess für fremde Dateien.
 Entwickelt und getestet gegen Fake-KI-Dienste; die echten Dienste werden nur per Konfiguration
 angebunden (siehe unten). Offen vor dem produktiven Einsatz: Formate der echten Dienste prüfen und
 eintragen und die Schwellwerte mit `python -m projektakte.evaluate --real` einstellen
