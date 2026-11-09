@@ -18,6 +18,84 @@ docker compose up -d
 docker compose ps        # beide Dienste "healthy" bzw. "running"
 ```
 
+## Projektordner vom Dateiserver (SMB)
+
+Projektakte spricht selbst kein SMB. Der Server bindet die Freigabe als Ordner ein (nur lesend), Docker
+reicht diesen Ordner nur lesend in den Container. Für Projektakte ist es dann ein normaler Ordner.
+
+**1. Lesekonto anlegen.** Ein eigenes Windows-/AD-Konto, z. B. `svc-projektakte`, mit **nur
+Leserechten** auf die Projektfreigabe (und ggf. die Mail-Ablage). Kein persönliches Konto, kein
+Schreibrecht – Projektakte verändert nie etwas, das Konto soll es auch nicht können.
+
+**2. Zugangsdaten auf dem Server hinterlegen** (nur für root lesbar):
+
+```bash
+sudo apt install cifs-utils
+sudo install -m 600 /dev/null /etc/projektakte-smb.cred
+sudo nano /etc/projektakte-smb.cred
+```
+
+```
+username=svc-projektakte
+password=…
+domain=FIRMA
+```
+
+**3. Freigabe dauerhaft einbinden** – eine Zeile in `/etc/fstab` (Servername und Freigabe anpassen):
+
+```
+//dateiserver/Projekte  /srv/projekte  cifs  ro,credentials=/etc/projektakte-smb.cred,vers=3.0,iocharset=utf8,uid=10001,gid=10001,file_mode=0440,dir_mode=0550,_netdev,nofail,x-systemd.automount  0  0
+```
+
+| Option | Wozu |
+|---|---|
+| `ro` | nur lesend eingebunden – zweite Sicherung neben dem Lesekonto |
+| `vers=3.0` | SMB 3 (bei neueren Windows-Servern auch `3.1.1`); mit `seal` zusätzlich verschlüsselt |
+| `iocharset=utf8` | Umlaute in Ordner- und Dateinamen |
+| `uid=10001,gid=10001`, `file_mode`, `dir_mode` | die Anwendung läuft im Container als Benutzer 10001 und darf lesen, sonst niemand |
+| `_netdev,nofail,x-systemd.automount` | der Server startet auch, wenn der Dateiserver gerade nicht erreichbar ist; eingebunden wird beim ersten Zugriff |
+
+```bash
+sudo mkdir -p /srv/projekte
+sudo systemctl daemon-reload
+ls /srv/projekte | head          # bindet über automount ein und zeigt die ersten Ordner
+```
+
+**4. In den Container durchreichen.** `compose.yaml` bindet `/srv/projekte` nur lesend als
+`/quellen/projekte` ein, mit `propagation: rslave`. Das ist nötig, weil die Freigabe auf dem Server oft
+erst *nach* dem Container eingebunden wird (automount, Neustart des Dateiservers) – ohne diese
+Einstellung sähe der Container nur den leeren Einhängepunkt. Für eine Mail-Ablage als `.eml`-Dateien
+gilt dasselbe mit `/srv/mails`; mit plMail den Eintrag für `/srv/mails` aus `compose.yaml` entfernen oder
+einen leeren Ordner anlegen (Docker legt fehlende Quellordner in dieser Schreibweise nicht selbst an).
+
+**5. Projektnummern und Ordnerstruktur einstellen.** Projektakte erkennt Projekte an Ordnern, deren
+Name mit einer Projektnummer beginnt (`2024-017 Kita Regenbogen`, `BS-2024-0137 Grundschule …`); was
+darin liegt, wird mit allen Unterordnern gelesen, egal wie sie heißen. Wie eure Nummern aussehen und
+auf welcher Ebene die Projektordner liegen (direkt in der Freigabe, unter Jahresordnern, unter
+Kundenordnern), prüft ein Befehl, der nur die Ordnernamen liest:
+
+```bash
+docker compose exec app python -m projektakte.structure
+```
+
+Er nennt das erkannte Nummernschema, die Ebene, die gefundenen Projekte, Ordner ohne Nummer (z. B.
+`Archiv`, `_Vorlagen`) und Dateitypen, die Projektakte nicht liest, und gibt die passenden Zeilen
+für `projektakte.env` aus (`PROJECT_NUMBER_PATTERN`, `PROJECT_FOLDER_DEPTH`). Alternativ
+`PROJECT_NUMBER_PATTERN=auto`: Projektakte erkennt das Schema beim ersten Lauf selbst, merkt es sich
+und wechselt danach nicht mehr von allein (eine halb eingebundene Freigabe darf nie ändern, welche
+Ordner als Projekte gelten); eine Abweichung meldet die Statusseite.
+
+**6. Wenn die Freigabe fehlt.** Projektakte löscht dann nichts: Fehlt der Ordner oder ist er leer,
+obwohl Projekte bekannt sind, bleiben Projekte und Dokumente unverändert, die Statusseite warnt
+(„Laufwerk nicht eingebunden?“). Fehlt nur ein einzelner Projektordner, verschwinden seine Dateien
+sofort aus Suche und Antworten, gelöscht werden sie erst nach 24 Stunden und 3 Läufen – kommt er
+vorher zurück, ist alles ohne erneutes Lesen wieder da.
+
+**7. Netzlast.** Der erste Lauf liest jede Datei einmal über das Netz (bei großen Freigaben am besten
+nachts oder am Wochenende starten). Danach prüft jeder Lauf nur Größe und Änderungszeit der Dateien
+und liest allein geänderte oder neue Dateien. Bei sehr großen Freigaben (über 100 000 Dateien)
+`INDEX_INTERVAL` erhöhen, z. B. auf 900 s.
+
 ## Benutzerkonten: eines je Person
 
 Jede Person bekommt ein eigenes Konto (`python -m projektakte.passwd NAME`, eine Zeile je Person in
