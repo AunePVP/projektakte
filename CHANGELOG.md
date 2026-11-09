@@ -26,7 +26,11 @@ Roadmap-Schritt.
   `/api/status` ohne absoluten Pfad der Freigabe.
 - Unterordner mit derselben Nummer wie ihr Projekt (`284201-Mail` in `284201_…`) gelten als dessen
   Gliederung – kein „Bitte prüfen“-Hinweis mehr, der sie als Projekte vorschlägt.
-- 1791 Tests (4 Integrationstests übersprungen, 1 xfail).
+- `scripts/ablage_pruefen.py`: prüft eine Ablage der Form Ziffer/2 Ziffern/1234_Bauvorhaben/
+  123456_Auftrag/123456-Kategorie und meldet Fehler (betreffen Projektakte: Auftrag nicht gefunden,
+  Nummer doppelt, Dateien außerhalb eines Auftrags) und Hinweise (Abweichungen von der Regel),
+  wahlweise als CSV.
+- 1794 Tests (4 Integrationstests übersprungen, 1 xfail).
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

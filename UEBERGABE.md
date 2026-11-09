@@ -249,6 +249,12 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
 - Mit einem Nachbau dieser Struktur erkennt `python -m projektakte.structure`: `PROJECT_NUMBER_PATTERN=\d{6}`,
   `PROJECT_FOLDER_DEPTH=4`, alle Aufträge gefunden, Kategorie-Ordner gehören zum Auftrag. Das muss noch
   auf der echten Freigabe bestätigt werden (Befehl in Abschnitt 7.7).
+- **Ablage-Prüfung:** `scripts/ablage_pruefen.py` prüft die ganze Freigabe gegen diese Regel und
+  zeigt, was Projektakte davon liest (Aufträge nicht gefunden, Nummern doppelt, Dateien außerhalb
+  eines Auftrags = werden nicht gelesen, nicht gelesene Dateitypen) und jede Abweichung von der
+  Ablage-Regel als Hinweis. Nur Namen, nichts wird verändert. Aufruf im Repository:
+  `.venv/bin/python scripts/ablage_pruefen.py /mnt/projekt --csv abweichungen.csv`. Exit-Code 0 =
+  keine Fehler, 1 = Fehler gefunden. Die Regel steht im Block `REGELN` am Anfang des Skripts.
 - **Offene Entscheidung:** Projekt = Auftrag (6-stellig, so wie die Ablage gegliedert ist) oder
   Bauvorhaben (4-stellig, alle Aufträge zusammen)? Bei 4-stellig würden Mails, die nur die 6-stellige
   Nummer nennen, nicht mehr automatisch über die Nummer zugeordnet.
