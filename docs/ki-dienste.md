@@ -90,7 +90,7 @@ python -m projektakte.evaluate --real --json ergebnis.json
 ```
 
 indexiert den Demo-Datensatz mit den echten Diensten in einen eigenen Index (`$DATA_DIR/eval`) und
-lässt den Evaluationssatz (79 Fragen) laufen. Die Ausgabe zeigt je Frage, ob die erwartete Quelle
+lässt den Evaluationssatz (103 Fragen) laufen. Die Ausgabe zeigt je Frage, ob die erwartete Quelle
 unter den ersten 5 Treffern steht, ob Fakt und Quelle in der Antwort stehen, den Status und die
 Rerank-Scores; zusammengefasst die Score-Verteilung und eine Schwellwerttabelle (wie viele
 erwartete Quellen unter einer Schwelle lägen gegen wie viele Fragen ohne Antwort sie erreichen).
@@ -101,7 +101,7 @@ Damit `ASK_MIN_RERANK` (Standard 0,01), `SEARCH_MIN_RERANK` (0,05) und `ASSIGN_M
 (`tests/eval_holdout.json`, 40 Fragen eines unabhängigen Autors) und zeigt nur Summen. Vor jedem Lauf
 werden die Dienste geprüft. Exit-Code 0 = Ziele erreicht (≥ 80 % beantwortbare Fragen richtig,
 ≥ 90 % unbeantwortbare abgelehnt; `--min-correct`/`--min-refused`), 1 = verfehlt, 2 = Dienst nicht
-erreichbar. Mit den Fakes: eigener Satz 94/94, Prüfsatz 0,57 / 1,00 (siehe README).
+erreichbar. Mit den Fakes: eigener Satz 103/103, Prüfsatz 0,68 / 1,00 (siehe README). Eine Schritt-für-Schritt-Anleitung für den Test mit den echten Diensten steht in UEBERGABE.md, Abschnitt 7.
 
 ### Denkmodelle
 
