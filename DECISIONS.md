@@ -442,10 +442,9 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
 
 **Runde 4 (Schlussprüfung: Review und Live-Vorführung)**
 - *Zeitnot ändert nicht die Aussage*: Bleibt keine Zeit für die Überblickssuche einer Zusammenfassung,
-  bekommt das Sprachmodell die Fundstellen der Frage selbst (auch unter `ASK_MIN_RERANK`) mit dem
-  Hinweis „aus Zeitgründen übersprungen“. Vorher endete die Frage mit „nichts gefunden“ – eine falsche
-  Aussage über die Akte, obwohl die Reserve des Modells unberührt war. Dasselbe gilt sichtbar für die
-  Suche nach genannten Beteiligten.
+  bekommt das Sprachmodell die Fundstellen der Frage selbst (auch unter `ASK_MIN_RERANK`). Vorher
+  endete die Frage mit „nichts gefunden“ – eine falsche Aussage über die Akte, obwohl die Reserve des
+  Modells unberührt war. (In Runde 5 ersetzt: die Zusatzsuchen laufen immer, siehe dort.)
 - *Eigene Meldung für das aufgebrauchte Budget* („Das Zeitbudget der Frage ist aufgebraucht …“) statt
   „KI-Dienst nicht erreichbar“; der Status bleibt `llm_unavailable`, damit der Vertrag von `/api/ask`
   gleich bleibt. Gleiche Hinweise mehrerer Suchen erscheinen einmal; Sekunden in Meldungen gerundet
@@ -454,7 +453,7 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   teilen sich die Zeit des einen Aufrufs. Sonst konnte ein Dienst mit unerwarteter Antwort das
   Dreifache seines Timeouts – und damit mehr als `ASK_DEADLINE` – verbrauchen.
 - *`ASK_DEADLINE` mindestens 10 s*: kleinere Werte werden angehoben statt abgelehnt (die Anwendung
-  startet weiter), mit Warnung in der Startzeile; ebenso eine Warnung, wenn `LLM_TIMEOUT` nicht unter
+  startet weiter), mit Warnung beim Start; ebenso eine Warnung, wenn `LLM_TIMEOUT` nicht unter
   `ASK_DEADLINE` liegt. Bei 1 s scheiterte vorher jede Frage still nach 0 s.
 - *Verneinte Zitate gehören zur Absage*: Ein zitierter Teilsatz zählt nur als Teilantwort, wenn er
   etwas aussagt – „weder [1] noch [2] nennen ihn“ oder „auch [3] erwähnt ihn nicht“ beschreibt nur,
@@ -478,4 +477,30 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   Projekte gleich stark („die Tiefgarage im Wohnhochhaus“), bleiben die Wörter Themenwörter, die eine
   Antwort enthalten muss. Vorher fiel „Tiefgarage“ als Projektname aus dem Thema, und die Fake-KI
   antwortete grün aus dem falschen Projekt.
+
+**Runde 5 (Gegenprüfung der Schlussprüfung)**
+- *Zusatzsuchen laufen immer, innerhalb des Budgets*: Statt Überblicks- und Beteiligtensuche bei
+  Zeitnot auszulassen (bei `ASK_DEADLINE=10` selbst bei schnellen Diensten, und ohne eigene Fundstellen
+  wieder mit „nichts gefunden“), laufen sie mit der Restzeit der Suchen; jeder KI-Aufruf darin entfällt
+  von selbst, wenn weniger als eine Sekunde bleibt, und die Volltextsuche liefert trotzdem die
+  Projektbeschreibung. Die Reserve des Sprachmodells bleibt unberührt.
+- *Ein Hinweis statt vier*: Alles, was das Budget kappte, steht in einer Zeile („Zeitbudget der Frage
+  (ASK_DEADLINE = 10 s) erreicht – nicht abgewartet: Vektorsuche, Reranker, Sprachmodell“); ein vom
+  Budget gekürzter Aufruf heißt nicht mehr „nicht verfügbar“.
+- *Gesamtdauer statt Leerlaufzeit*: Das Socket-Timeout gilt je Lesevorgang; ein Dienst, der seine
+  Antwort Byte für Byte schickt, hielt einen Aufruf beliebig lange. Der Antwortkörper wird jetzt bis zu
+  einem festen Endzeitpunkt gelesen (das Socket-Timeout jeweils auf die Restzeit gesetzt). Meldungen
+  nennen das konfigurierte Zeitlimit, nicht die Restzeit eines Teilversuchs.
+- *Ungültige Zahlen fallen auf den Standard zurück*: Zeitlimits müssen größer 0 sein – `LLM_TIMEOUT=0`
+  hätte jeden Aufruf sofort scheitern lassen (und als „Zeitbudget aufgebraucht“ gemeldet); `inf`/`nan`
+  ließen den Start abstürzen bzw. das Budget unbestimmt. Jeder Fall wird beim Start als Warnung
+  genannt.
+- *Meta-Sätze gehören zur Absage, Fakten nicht*: Nach einer Absage zählt ein zitierter Satz nur als
+  Teilantwort, wenn er etwas über die Sache sagt. Meta-Sätze beschreiben die Quellen selbst – was ihnen
+  fehlt („weder [1] noch [2] nennen ihn“, „fehlt eine entsprechende Angabe“), worauf sie sich
+  beschränken („[1] und [2] beschreiben nur die Anlage“, „beziehen sich auf …“) – oder verweisen
+  („Möglicherweise …“, „Bitte prüfen Sie …“). „Laut [2] gibt es keine offenen Mängel mehr“ ist ein
+  Fakt, auch wenn er verneint ist; „[2] nennt nur den Monat März“ auch (ein Wert). Gemessen an einer
+  Matrix aus 54 realistischen Antworten (31 Absagen, 23 Teilantworten) plus 5 aus dem Review: alle
+  richtig, vorher 20 bzw. 6 falsch.
 

@@ -19,7 +19,7 @@ from projektakte.ai.embeddings import EmbeddingClient
 from projektakte.ai.http import AIServiceError, seconds_text, timeout_error
 from projektakte.ai.rerank import RerankClient
 from projektakte.ai.services import AIServices
-from projektakte.ask import BUDGET_TEXT, NO_AI_TEXT, SUMMARY_SKIPPED_NOTE, ask, is_not_found
+from projektakte.ask import BUDGET_TEXT, NO_AI_TEXT, ask, is_not_found
 from projektakte.config import ASK_DEADLINE_MIN, load_settings
 from projektakte.demo import generate
 from projektakte.extract import extract
@@ -42,30 +42,33 @@ def demo(tmp_path, fake_ai):
 
 
 # -- overview question without time for the overview search -------------------------------------------
-def test_summary_without_time_for_the_overview_still_asks_the_model(demo):
+def test_summary_without_time_for_the_overview_still_asks_the_model(demo, monkeypatch):
     """Before: the overview search was skipped and the question ended as "nichts gefunden" although
-    the budget kept for the language model was untouched."""
+    the budget kept for the language model was untouched. Now the overview search runs within the
+    remaining budget (falling back to the full text) and the model answers."""
     s, ai, conn = demo
     real = ai.rerank.rerank
+    chats = []
+    real_chat = ai.llm.chat
 
     def slow(*a, **kw):
         time.sleep(1.5)
         return real(*a, **kw)
 
+    def chat(*a, **kw):
+        chats.append(kw.get("timeout"))
+        return real_chat(*a, **kw)
+
     question = "Worum geht es in dem Projekt?"
-    ai.rerank.rerank = slow
-    try:
-        started = time.monotonic()
-        # budget 12 s: 6 s reserved for the model, the main search (1.5 s) leaves < 5 s for more searches
-        r = ask(conn, ai, str(s.db_path), question, project="BS-2025-0019", deadline_s=12)
-        elapsed = time.monotonic() - started
-    finally:
-        ai.rerank.rerank = real
-    assert SUMMARY_SKIPPED_NOTE in r.notes
-    assert r.status != "not_found" and r.context  # the model got the question's own passages
-    assert elapsed < 6
-    full = ask(conn, ai, str(s.db_path), question, project="BS-2025-0019", deadline_s=0)
-    assert SUMMARY_SKIPPED_NOTE not in full.notes
+    monkeypatch.setattr(ai.rerank, "rerank", slow)
+    monkeypatch.setattr(ai.llm, "chat", chat)
+    started = time.monotonic()
+    # budget 12 s: 6 s reserved for the model, the searches share the other 6 s
+    r = ask(conn, ai, str(s.db_path), question, project="BS-2025-0019", deadline_s=12)
+    elapsed = time.monotonic() - started
+    assert chats and r.status == "answered" and r.sources
+    assert "Kinder" in r.answer  # the project description from the overview search
+    assert elapsed < 7
 
 
 def test_exhausted_budget_says_so_instead_of_service_down(tmp_path, fresh_fake_ai):

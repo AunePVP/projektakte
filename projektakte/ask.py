@@ -32,7 +32,8 @@ from dataclasses import dataclass, field
 
 from .ai import AIServiceError
 from .ai.http import seconds_text
-from .search import MIN_CALL_SECONDS, time_left, Hit, hybrid_search, load_hits, merge_adjacent
+from .search import (BUDGET_RERANK_NOTE, BUDGET_VECTOR_NOTE, Hit, hybrid_search, load_hits, merge_adjacent,
+                     time_left)
 from .textutil import (
     SUMMARY_WORDS,
     content_terms,
@@ -75,11 +76,16 @@ LLM_DOWN_TEXT = "KI-Dienst nicht erreichbar – hier die gefundenen Stellen zum 
 NO_AI_TEXT = "Keine KI-Dienste eingerichtet – hier die gefundenen Stellen zum Nachlesen."
 BUDGET_TEXT = ("Das Zeitbudget der Frage ist aufgebraucht, bevor das Sprachmodell antworten konnte – "
                "hier die gefundenen Stellen zum Nachlesen.")
-BUDGET_NOTE = ("Die Suche hat das Zeitbudget der Frage (ASK_DEADLINE) aufgebraucht – die KI-Dienste "
-               "antworten zu langsam.")
-SUMMARY_SKIPPED_NOTE = "Überblickssuche aus Zeitgründen übersprungen (Zeitbudget der Frage, ASK_DEADLINE)."
-ROLES_SKIPPED_NOTE = ("Suche nach den genannten Beteiligten aus Zeitgründen übersprungen (Zeitbudget der "
-                      "Frage, ASK_DEADLINE).")
+# internal mark of a language model that was not (or not fully) waited for because of the budget;
+# ask() merges it with the search's budget notes into one note (budget_note)
+LLM_BUDGET_MARK = "\x00llm-budget"
+_BUDGET_PARTS = {BUDGET_VECTOR_NOTE: "Vektorsuche", BUDGET_RERANK_NOTE: "Reranker", LLM_BUDGET_MARK: "Sprachmodell"}
+
+
+def budget_note(parts: list[str], deadline_s: float) -> str:
+    """One note for everything the question's time budget cut short."""
+    return (f"Zeitbudget der Frage (ASK_DEADLINE = {seconds_text(deadline_s)} s) erreicht – nicht abgewartet: "
+            f"{', '.join(parts)}. Die KI-Dienste antworten zu langsam.")
 TRUNCATED_TEXT = ("Das Sprachmodell hat keine vollständige Antwort geliefert (Ausgabe abgebrochen) – "
                   "hier die gefundenen Stellen zum Nachlesen.")
 WEAK_HITS_NOTE = ("Keine Fundstelle passt gut genug für eine belegte Antwort – gezeigt werden die besten "
@@ -116,7 +122,8 @@ _NF_SOURCE = re.compile(
     r"\b(?:enthalten|nennen|liefern|machen|geben|erwähnen|beschreiben|sagen)\s+(?:die|diese|den)\s+(?:vorliegenden\s+|"
     r"genannten\s+)?" + _SRC + r"\s+(?:\w+\s+){0,2}?(?:kein\w*|nicht|nichts)|"
     r"\b(?:in|aus)\s+den\s+(?:vorliegenden\s+|genannten\s+|angegebenen\s+)?" + _SRC + r"\b[^.!?]{0,60}\bkein\w*\b|"
-    r"^\W*(?:dazu|hierzu|darüber|hierüber)\s+(?:steht|finde|habe|gibt\s+es\s+kein|liegen\s+(?:\w+\s+)?kein)",
+    r"^\W*(?:dazu|hierzu|darüber|hierüber)\s+(?:steht|finde|habe|gibt\s+es\s+kein|liegen\s+(?:\w+\s+)?kein)|"
+    r"\b(?:finde|fand|finden)\s+(?:ich\s+|wir\s+)?(?:\w+\s+){0,3}?(?:nichts|kein\w*)\b",
     re.I)
 # "keine Angaben/Informationen/Hinweise …": a refusal without a citation, a fact with one
 # ("Der Prüfbericht enthält keine Hinweise auf Mängel [2].").
@@ -131,19 +138,46 @@ _NF_WEAK = re.compile(
 _CONTRAST = re.compile(r"\b(aber|jedoch|allerdings|lediglich|nur|dafür)\b", re.I)
 # clauses of one sentence: "Die Abnahme ist für März vorgesehen [2]; ein genauer Tag ist nicht genannt."
 _CLAUSE_SEP = re.compile(r"\s*;\s*|\s+[–—-]\s+")
-# a cited clause that only says what the sources do *not* contain belongs to the refusal, it is no
-# partial answer: "Die Quellen enthalten keine Angabe zum Hersteller; weder [1] noch [2] nennen ihn.",
-# "… Auch [3] erwähnt ihn nicht." (unless a contrast follows: "…, laut [3] aber im August")
-_NEGATED_MENTION = re.compile(
-    r"\bweder\b|\bschweig\w*|"
-    r"\b(?:nennt|nennen|erwähnt|erwähnen|enthält|enthalten|liefert|liefern|beschreibt|beschreiben|sagt|sagen|"
-    r"gibt|geben|macht|machen|führt|führen|behandelt|behandeln|geht|gehen|äußert|äußern)\b"
-    r"(?:\s+[^\s.;!?]+){0,4}?\s+(?:nicht|kein\w*|nichts)\b|"
-    r"\b(?:nicht|nirgends|nirgendwo)\s+(?:\w+\s+){0,2}?(?:genannt|erwähnt|enthalten|angegeben|aufgeführt|"
-    r"beschrieben|ersichtlich|zu\s+entnehmen|thematisiert|behandelt|geregelt)\b|"
-    r"\b(?:kein\w*|nichts)\s+(?:\w+\s+){0,2}?(?:angaben?|informationen?|hinweise?|aussagen?|auskunft|"
-    r"erwähnung)\b",
+# After a refusal ("Die Quellen nennen keinen Hersteller."), a cited clause is a partial answer only if it
+# says something about the matter itself ("Laut [2] gibt es keine offenen Mängel mehr.", "die Abnahme ist
+# für März vorgesehen [2]"). A *meta* clause only describes the sources – what they lack, what they are
+# limited to – or points elsewhere, and belongs to the refusal: "weder [1] noch [2] nennen ihn",
+# "[1] und [2] beschreiben nur die Anlage", "auch im Prüfbericht [2] fehlt eine entsprechende Angabe",
+# "Möglicherweise ist er im Leistungsverzeichnis [4] aufgeführt."
+_CIT = r"(?:\[\^?\s*(?:Quellen?\s*)?\d[^\]]*\]|\(\s*Quellen?\s+\d[^)]*\))"
+_SOURCE_NOUN = (r"(?:quellen?|unterlagen|dokument\w*|akten?|texte?n?|\w*bericht\w*|\w*protokoll\w*|\w*konzept\w*|"
+                r"\w*genehmigung\w*|bescheid\w*|stellungnahme\w*|gutachten\w*|leistungsverzeichnis\w*|e?-?mails?|"
+                r"schreiben|nachweis\w*|pl[aä]ne?n?|anlagen?|auszug\w*)")
+_LEAD = r"^\W*(?:(?:auch|und|sowie|zudem|außerdem|sowohl|weder|aber|doch|selbst|ebenso)\s+)*"
+_SOURCE_START = re.compile(
+    _LEAD + r"(?:" + _CIT + r"|"  # "[1] und [2] beschreiben …"
+    r"(?:in|im|aus|bei)\s+(?:(?:dem|der|den|diesen?|beiden)\s+)?(?:[\w-]+\s+){0,2}?" + _CIT + r"|"  # "in [1]", "im Prüfbericht [2]"
+    r"(?:die|der|das|den|diese[rsn]?|beide)\s+(?:(?:vorliegenden|genannten|beiden|übrigen)\s+)?" + _SOURCE_NOUN
+    + r"\b(?:\s+[\w-]+){0,2}?\s*" + _CIT + r"|"  # "Die Quellen [1] bis [3]", "der Prüfbericht [2]"
+    r"(?:sie|diese|beide)\s+(?:\w+\s+)?(?:beschreib|nenn|erwähn|enth[aä]lt|behandel|befass|bezieh|betreff|sprech|"
+    r"sprich|stamm|geh|befass|liefer|zeig)\w*)",  # "Sie beschreiben lediglich …"
     re.I)
+_ATTRIBUTED = re.compile(r"^\W*(?:(?:auch|und|aber|doch)\s+)?(?:laut|gemäß|zufolge|nach\s+angaben)\b", re.I)
+_HEDGE = re.compile(r"^\W*(?:(?:aber|doch|auch)\s+)?(?:möglicherweise|eventuell|vielleicht|gegebenenfalls|ggf\.|"
+                    r"wahrscheinlich|vermutlich)\b|\bbitte\s+(?:prüfen|sehen|schauen|nachsehen|wenden)\b|"
+                    r"^\W*\(?\s*siehe\b", re.I)
+_MNEG = re.compile(r"\b(?:nicht|kein\w*|nichts|weder|nirgends|nirgendwo)\b", re.I)
+_RESTRICT = re.compile(r"\b(?:nur|lediglich|ausschließlich|allein|allgemein)\b", re.I)
+_SCOPE = re.compile(r"\b(?:bezieh\w*\s+sich|befass\w*\s+sich|betreff\w*|behandel\w*|behandelt|stamm\w*|"
+                    r"geht\s+es|gehen\s+es|handelt\s+es\s+sich|dreh\w*\s+sich|beschränk\w*)\b", re.I)
+_MENTION = re.compile(
+    r"\b(?:nenn\w*|genannt|erwähn\w*|enth[aä]lt\w*|enthalten|beschreib\w*|beschrieben|äußer\w*|sag\w*|"
+    r"sprech\w*|spricht|liefer\w*|aufgeführt|führ\w*\b.*\bauf|angegeben|thematisiert|geregelt|ersichtlich|"
+    r"entnehmen|find\w*\s+sich|taucht|tauchen|ergib\w*\s+sich|ergeben\s+sich|vorhanden)\b", re.I)
+_SILENT = re.compile(r"\b(?:schweig\w*|unergiebig\w*|stumm)\b", re.I)
+_ANAPHOR = re.compile(r"\b(?:ihn|ihm|ihr|er|sie|es|dazu|hierzu|darüber|hierüber|davon|dafür|entsprechend\w*|"
+                      r"derartig\w*)\b", re.I)
+_INFO = r"(?:angaben?|informationen?|hinweis\w*|aussagen?|auskunft|erwähnung|anzahl|details?)"
+_INFO_NEG = re.compile(r"\bkein\w*\s+(?:\w+\s+){0,2}?" + _INFO + r"\b|\b" + _INFO + r"\b(?:\s+\w+){0,3}?\s+fehl\w*|"
+                       r"\bfehl\w*\s+(?:\w+\s+){0,2}?" + _INFO + r"\b", re.I)
+_TRUE_CONTRAST = re.compile(r"\b(?:aber|jedoch|allerdings|dennoch|trotzdem)\b", re.I)
+_VALUE = re.compile(r"\d|\b(?:januar|februar|märz|april|mai|juni|juli|august|september|oktober|november|"
+                    r"dezember)\b", re.I)
 _SENTENCE_END = re.compile(r"(?<!\b[Nn]r)(?<!\bz\.\sB)(?<!\bbzw)(?<!\bca)(?<!\d)[.!?](?=\s|$)")
 
 
@@ -253,8 +287,10 @@ def is_not_found(answer: str, n_sources: int) -> bool:
     if m:
         if any(_cited_statement(c, n_sources) for c in _clauses(rest)):
             return False
-        if first_cited and _CONTRAST.search(first[m.end():]):
-            return False
+        sep = _CLAUSE_SEP.search(first, m.end())
+        tail = first[m.end():sep.start() if sep else len(first)]  # the rest of the refusal's own clause
+        if first_cited and _CONTRAST.search(tail) and cited_numbers(tail, n_sources) and not _meta_clause(tail):
+            return False  # "Die Quellen nennen keinen Termin, die Abnahme ist aber für März vorgesehen [2]."
         return not _cited_clause_besides(first, m, n_sources)
     if _NF_INFO.search(first) or _NF_WEAK.search(first):
         return not (first_cited or rest_cited)
@@ -276,11 +312,34 @@ def _cited_clause_besides(sentence: str, refusal: re.Match, n_sources: int) -> b
 
 
 def _cited_statement(clause: str, n_sources: int) -> bool:
-    """A clause with a citation that says something – not only which sources lack the answer."""
-    if not cited_numbers(clause, n_sources):
+    """A clause with a citation that says something about the matter – not a meta clause."""
+    return bool(cited_numbers(clause, n_sources)) and not _meta_clause(clause)
+
+
+def _meta_clause(clause: str) -> bool:
+    """Does the clause only describe the sources (what they lack or are limited to) or point elsewhere?"""
+    c = clause.strip()
+    if _HEDGE.search(c):
+        return True
+    if _INFO_NEG.search(c):  # "kein Hinweis auf …", "fehlt eine entsprechende Angabe", "keine Anzahl genannt"
+        return True
+    if _ATTRIBUTED.match(c):  # "Laut [2] gibt es keine offenen Mängel mehr." – a fact told by a source
         return False
-    neg = _NEGATED_MENTION.search(clause)
-    return neg is None or bool(_CONTRAST.search(clause[neg.end():]))
+    contrast = _TRUE_CONTRAST.search(c)
+    if contrast:  # "… führt jedoch keine offenen Mängel mehr auf", "…, laut [3] aber im August"
+        tail = c[contrast.end():]
+        if not (_RESTRICT.search(tail) or (_MNEG.search(tail) and _ANAPHOR.search(tail) and _MENTION.search(tail))):
+            return False
+    if _MNEG.search(c) and _ANAPHOR.search(c) and _MENTION.search(c):  # "weder [1] noch [2] nennen ihn"
+        return True
+    if _SOURCE_START.match(c):  # the sources are the subject (or the place) of the clause
+        if _SILENT.search(c):
+            return True
+        if _RESTRICT.search(c) or _SCOPE.search(c):  # "[1] beschreibt nur …" – but "[2] nennt nur den März"
+            return not _VALUE.search(re.sub(_CIT, " ", c))
+        if _MNEG.search(c) and _MENTION.search(c):  # "Weder das Konzept [1] noch der Bericht [2] nennen …"
+            return True
+    return False
 
 
 def _clauses(text: str) -> list[str]:
@@ -365,27 +424,26 @@ def _search_deadline(deadline: float | None, llm_reserve: float) -> float | None
     return None if deadline is None else deadline - llm_reserve
 
 
-def _time_for_more(deadline: float | None, llm_reserve: float) -> bool:
-    """Is there time for an extra search (overview, parties) before the language model?"""
-    return deadline is None or deadline - llm_reserve - time.monotonic() >= MIN_CALL_SECONDS * 5
-
-
 def _context(hits: list[Hit], question: str = "") -> list[dict]:
     return [_source_dict(i, h, question) for i, h in enumerate(hits, start=1)]
 
 
 def _summary_hits(conn: sqlite3.Connection, ai, vector_key: str, hits: list[Hit], project: str | None,
                   rerank_top_k: int, synonyms_file: str | None, *, topic: bool = False, top_k: int = 6,
-                  deadline: float | None = None) -> list[Hit]:
+                  deadline: float | None = None, notes: list[str] | None = None) -> list[Hit]:
     """Overview passages for "Fasse … zusammen"/"Worum geht es …": the description of the project and
     the overall assessment, put in front of the question's own hits – behind the best of them when
-    the question has a topic of its own ("Fasse zusammen, was die Feuerwehr fordert")."""
+    the question has a topic of its own ("Fasse zusammen, was die Feuerwehr fordert"). With little time
+    left the search falls back to the full text by itself (``deadline``); its notes go to ``notes``."""
     projects = _main_projects(hits, project) - {None}
     if len(projects) != 1:
         return hits
     (number,) = projects
-    extra = hybrid_search(conn, ai, vector_key, SUMMARY_QUERY, project=number, k=4, rerank_top_k=rerank_top_k,
-                          synonyms_file=synonyms_file, deadline=deadline).hits
+    res = hybrid_search(conn, ai, vector_key, SUMMARY_QUERY, project=number, k=4, rerank_top_k=rerank_top_k,
+                        synonyms_file=synonyms_file, deadline=deadline)
+    if notes is not None:
+        notes.extend(res.notes)
+    extra = res.hits
     seen = {h.chunk_id for h in extra}
     own = [h for h in hits if h.chunk_id not in seen]
     if topic:
@@ -408,7 +466,8 @@ def has_topic(conn: sqlite3.Connection, question: str) -> bool:
 
 
 def _role_hits(conn: sqlite3.Connection, ai, vector_key: str, question: str, hits: list[Hit], project: str | None,
-               rerank_top_k: int, synonyms_file: str | None, deadline: float | None = None) -> list[Hit]:
+               rerank_top_k: int, synonyms_file: str | None, deadline: float | None = None,
+               notes: list[str] | None = None) -> list[Hit]:
     """For a question naming a party ("Was hat die Architektin geschrieben?", "Hat der Bauherr
     zugestimmt?"): one passage of the project that says who that is ("Bauherr: …, vertreten durch",
     "Teilnehmer: Clara Meier (Architektur)", "Prüfingenieur: …") – so the model can tell whose mail is
@@ -421,8 +480,11 @@ def _role_hits(conn: sqlite3.Connection, ai, vector_key: str, question: str, hit
     out: list[Hit] = []
     communication = bool(_COMMUNICATION_Q.search(question))
     for role in named_roles(question)[:2]:
-        found = hybrid_search(conn, ai, vector_key, role.word, project=number, k=3, rerank_top_k=min(10, rerank_top_k),
-                              synonyms_file=synonyms_file, deadline=deadline).hits
+        res = hybrid_search(conn, ai, vector_key, role.word, project=number, k=3, rerank_top_k=min(10, rerank_top_k),
+                            synonyms_file=synonyms_file, deadline=deadline)
+        if notes is not None:
+            notes.extend(res.notes)
+        found = res.hits
         for h in found:
             if h.chunk_id not in have and (h.rerank is None or h.rerank > 0):
                 out.append(h)
@@ -510,14 +572,20 @@ def llm_error_note(exc: Exception) -> str:
 def ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, project: str | None = None,
         top_k: int = 6, context_chars: int = 8000, min_rerank: float = 0.01,
         rerank_top_k: int = 30, synonyms_file: str | None = None, deadline_s: float = 0) -> AskResult:
-    """``deadline_s`` (ASK_DEADLINE, 0 = off) caps the whole question: every AI call gets at most the
-    remaining time, extra searches (overview, parties) only run while enough time is left for the
-    language model, and without time left the found passages come back with a note on the budget.
+    """``deadline_s`` (ASK_DEADLINE, 0 = off) caps the whole question: the searches (the question's own
+    and the extra ones for overviews and named parties) share the budget except a reserve for the
+    language model, every AI call gets at most the remaining time and is skipped when too little is
+    left (the search then falls back to the full text / its own order), and without time for the
+    model the found passages come back with a note on the budget.
     ``ai`` None (no AI services at all): full-text search only, the passages come back unanswered."""
     result = _ask(conn, ai, vector_key, question, project=project, top_k=top_k, context_chars=context_chars,
                   min_rerank=min_rerank, rerank_top_k=rerank_top_k, synonyms_file=synonyms_file,
                   deadline_s=deadline_s)
-    result.notes = list(dict.fromkeys(result.notes))  # the same note from several searches once
+    notes = list(dict.fromkeys(result.notes))  # the same note from several searches once
+    parts = [_BUDGET_PARTS[n] for n in notes if n in _BUDGET_PARTS]
+    result.notes = [n for n in notes if n not in _BUDGET_PARTS]
+    if parts:
+        result.notes.insert(0, budget_note(parts, deadline_s))
     return result
 
 
@@ -554,12 +622,9 @@ def _ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, projec
             result.notes.append(WEAK_HITS_NOTE)
         return result
     if summary:
-        if _time_for_more(deadline, llm_reserve):
-            hits = _summary_hits(conn, ai, vector_key, hits or res.hits, project, rerank_top_k, synonyms_file,
-                                 topic=has_topic(conn, question), top_k=top_k, deadline=search_deadline)
-        else:  # the model still gets the question's own passages (also those below ASK_MIN_RERANK)
-            hits = hits or res.hits
-            result.notes.append(SUMMARY_SKIPPED_NOTE)
+        hits = _summary_hits(conn, ai, vector_key, hits or res.hits, project, rerank_top_k, synonyms_file,
+                             topic=has_topic(conn, question), top_k=top_k, deadline=search_deadline,
+                             notes=result.notes)
     hits = merge_adjacent(hits)
     if across_projects:
         k = max(top_k, min(2 * top_k, ENUMERATION_MAX_SOURCES))
@@ -575,11 +640,8 @@ def _ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, projec
         result.context = _context(merge_adjacent(res.hits)[:MISS_CONTEXT], question)
         return result
     if not across_projects:
-        if _time_for_more(deadline, llm_reserve):
-            hits = merge_adjacent(hits + _role_hits(conn, ai, vector_key, question, hits, project, rerank_top_k,
-                                                    synonyms_file, deadline=search_deadline))
-        elif named_roles(question):
-            result.notes.append(ROLES_SKIPPED_NOTE)
+        hits = merge_adjacent(hits + _role_hits(conn, ai, vector_key, question, hits, project, rerank_top_k,
+                                                synonyms_file, deadline=search_deadline, notes=result.notes))
     prompt, used = build_prompt(question, hits, context_chars)
     result.context = _context(used, question)
     if enumeration:
@@ -593,7 +655,7 @@ def _ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, projec
     if llm_timeout == 0:
         log.warning("Zeitbudget der Frage (ASK_DEADLINE=%gs) vor dem Sprachmodell erschöpft", deadline_s)
         result.answer, result.found, result.status = BUDGET_TEXT, None, "llm_unavailable"
-        result.notes.append(BUDGET_NOTE)
+        result.notes.append(LLM_BUDGET_MARK)
         return result
     capped = llm_timeout is not None and llm_timeout < ai.llm.timeout
     try:
@@ -604,8 +666,7 @@ def _ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, projec
         timed_out = "Zeitüberschreitung" in str(exc)
         if capped and timed_out:  # the budget, not LLM_TIMEOUT, ended the wait
             result.answer, result.found, result.status = BUDGET_TEXT, None, "llm_unavailable"
-            result.notes.append(f"Das Sprachmodell hat innerhalb des Zeitbudgets der Frage (ASK_DEADLINE = "
-                                f"{seconds_text(deadline_s)} s) nicht geantwortet.")
+            result.notes.append(LLM_BUDGET_MARK)
         else:
             result.answer, result.found, result.status = LLM_DOWN_TEXT, None, "llm_unavailable"
             result.notes.append(llm_error_note(exc))

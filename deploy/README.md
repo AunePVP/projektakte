@@ -86,14 +86,17 @@ Bauherr geschrieben?“) je eine Suche für bis zu zwei Rollen. Jede Suche warte
 Embedding-Dienst und den Reranker, am Ende kommt das Sprachmodell.
 
 **Gesamtbudget je Frage: `ASK_DEADLINE` (Standard 180 s).** Kein Aufruf eines KI-Dienstes läuft
-über dieses Budget hinaus: Jeder Aufruf bekommt höchstens die verbleibende Zeit (auch eine
-Formaterkennung mit mehreren Versuchen bleibt zusammen in dieser Zeit), die zusätzlichen Suchen
-(Überblick, Beteiligte) laufen nur, solange für das Sprachmodell genug übrig ist – sonst bekommt das
-Modell die Fundstellen der Frage selbst, mit dem Hinweis „aus Zeitgründen übersprungen“. Für das
-Sprachmodell bleibt immer `LLM_TIMEOUT`, höchstens aber die Hälfte des Budgets reserviert. Ist das
-Budget aufgebraucht, meldet die Antwort „Das Zeitbudget der Frage ist aufgebraucht …“ und zeigt die
-gefundenen Stellen. Werte unter 10 s hebt die Anwendung auf 10 s an (Warnung beim Start); ist
-`LLM_TIMEOUT` nicht kleiner als `ASK_DEADLINE`, warnt die Startzeile ebenfalls. Ohne Budget
+über dieses Budget hinaus: Für das Sprachmodell bleibt `LLM_TIMEOUT`, höchstens aber die Hälfte des
+Budgets reserviert; die Suchen (die Frage selbst, Überblick, Beteiligte) teilen sich den Rest. Jeder
+Aufruf bekommt höchstens die verbleibende Zeit – gemessen als Gesamtdauer, auch wenn ein Dienst seine
+Antwort nur tröpfchenweise schickt, und eine Formaterkennung mit mehreren Versuchen bleibt zusammen
+in dieser Zeit. Reicht die Zeit für einen Aufruf nicht mehr, sucht die Anwendung ohne ihn weiter (nur
+Volltext bzw. ohne Reranker). Die Antwort trägt dann einen Hinweis „Zeitbudget der Frage … erreicht –
+nicht abgewartet: Vektorsuche, Reranker …“; reicht es nicht mehr für das Sprachmodell, meldet sie
+„Das Zeitbudget der Frage ist aufgebraucht …“ und zeigt die gefundenen Stellen. Werte unter 10 s hebt
+die Anwendung auf 10 s an; ungültige Zeitlimits (0, negativ, keine Zahl) ersetzt sie durch den
+Standardwert. Beides und ein `LLM_TIMEOUT`, das nicht unter `ASK_DEADLINE` liegt, meldet sie beim Start
+als Warnung (`docker compose logs app | grep Konfiguration`). Ohne Budget
 (`ASK_DEADLINE=0`) dauert eine Frage höchstens `4 × (EMBED_TIMEOUT + RERANK_TIMEOUT) + LLM_TIMEOUT`
 (Standard 4 × (60 + 30) + 120 = 480 s). `python -m projektakte.evaluate --real` misst mit demselben
 Budget und nennt die Fragen, bei denen es erreicht wurde.

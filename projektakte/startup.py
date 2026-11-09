@@ -104,15 +104,16 @@ def ask_worst_case_seconds(settings) -> float:
 
 
 def deadline_warnings(settings) -> list[str]:
-    """ASK_DEADLINE that does not fit the other settings – said at start-up, not found out by users."""
+    """Invalid numbers and timeouts, and an ASK_DEADLINE that does not fit the other settings – said at
+    start-up (log lines with "Konfiguration:"), not found out by users."""
     from .ai.http import seconds_text
     from .config import ASK_DEADLINE_MIN
 
-    out = []
+    out = list(getattr(settings, "config_warnings", ()))
     deadline = getattr(settings, "ask_deadline", 0) or 0
     requested = getattr(settings, "ask_deadline_requested", deadline)
     if 0 < requested < ASK_DEADLINE_MIN:
-        out.append(f"ASK_DEADLINE={seconds_text(requested)} ist zu knapp für Suche und Sprachmodell – "
+        out.append(f"ASK_DEADLINE={requested:g} ist zu knapp für Suche und Sprachmodell – "
                    f"verwendet werden {seconds_text(deadline)} s (0 schaltet das Zeitbudget ab)")
     if deadline > 0 and settings.llm_timeout >= deadline:
         out.append(f"LLM_TIMEOUT={seconds_text(settings.llm_timeout)} s ist nicht kleiner als ASK_DEADLINE="
@@ -128,7 +129,7 @@ def log_startup(settings, auth) -> None:
     from . import __version__
 
     for warning in deadline_warnings(settings):
-        log.warning(warning)
+        log.warning("Konfiguration: %s", warning)
 
     if auth.disabled:
         access = "AUS (AUTH_DISABLED=1)"

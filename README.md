@@ -486,9 +486,11 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
   Lebendprüfung.
 - **Zeitlimits:** Eine Frage wird synchron beantwortet (bis zu 4 Suchen mit Embedding und Reranker,
   dann das Sprachmodell). `ASK_DEADLINE` (Standard 180 s) begrenzt die ganze Frage: Kein
-  KI-Aufruf läuft darüber hinaus, zusätzliche Suchen entfallen bei Zeitnot (mit Hinweis), ohne
-  Restzeit kommen die gefundenen Stellen mit der Meldung „Zeitbudget der Frage aufgebraucht“. Zu
-  knappe Werte (unter 10 s, oder nicht über `LLM_TIMEOUT`) meldet die Startzeile. Das Lese-Timeout eines
+  KI-Aufruf läuft darüber hinaus (auch nicht bei tröpfchenweise antwortenden Diensten); reicht die
+  Zeit für einen Aufruf nicht, sucht die Anwendung ohne ihn weiter (ein Hinweis nennt, was nicht
+  abgewartet wurde), ohne Restzeit für das Sprachmodell kommen die gefundenen Stellen mit der Meldung
+  „Zeitbudget der Frage aufgebraucht“. Zu knappe Werte (unter 10 s, oder nicht über `LLM_TIMEOUT`) und
+  ungültige Zeitlimits meldet die Anwendung beim Start als Warnung („Konfiguration: …“). Das Lese-Timeout eines
   vorgeschalteten Proxys muss darüber liegen (nginx-Standard 60 s → `proxy_read_timeout 240s`; im
   Caddy-Beispiel `response_header_timeout 240s`), sonst bricht der Proxy mit 504 ab; die Startzeile
   nennt den Wert („längste Frage bis … s“). nginx vor einem Docker-Container: `FORWARDED_ALLOW_IPS`

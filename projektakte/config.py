@@ -6,6 +6,7 @@ fake AI services (development, tests) to the real ones (staging, production) nee
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,10 +22,38 @@ def _bool(value: str | None, default: bool = False) -> bool:
 
 
 def _float(value: str | None, default: float) -> float:
+    """A number from the environment; empty, malformed, NaN and infinite values give the default."""
     try:
-        return float(value) if value not in (None, "") else default
+        number = float(value) if value not in (None, "") else default
     except ValueError:
         return default
+    return number if math.isfinite(number) else default
+
+
+def _number_warnings(env: Mapping[str, str], names: tuple[str, ...]) -> list[str]:
+    """Settings given as something other than a finite number (they fall back to their default)."""
+    out = []
+    for name in names:
+        raw = (env.get(name) or "").strip()
+        try:
+            ok = not raw or math.isfinite(float(raw))
+        except ValueError:
+            ok = False
+        if not ok:
+            out.append(f"{name}={raw} ist keine gültige Zahl – es gilt der Standardwert")
+    return out
+
+
+def _timeout(env: Mapping[str, str], name: str, default: float, warnings: list[str]) -> float:
+    """A service timeout in seconds: it must be a positive number – 0 or a negative value would make
+    every call fail at once (there is no "no timeout": a hanging service must not hold a question)."""
+    raw = (env.get(name) or "").strip()
+    value = _float(raw, default)
+    if raw and (value <= 0 or value != _float(raw, -1.0)):
+        warnings.append(f"{name}={raw} ist kein gültiges Zeitlimit (Sekunden größer 0) – verwendet werden "
+                        f"{default:g} s")
+        return default
+    return value
 
 
 def _int(value: str | None, default: int) -> int:
@@ -112,6 +141,8 @@ class Settings:
     # in ask_deadline_requested for that warning.
     ask_deadline: float = 180.0
     ask_deadline_requested: float = 180.0
+    # problems found while reading the environment (logged as warnings at start-up)
+    config_warnings: tuple[str, ...] = ()
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
@@ -152,6 +183,7 @@ def _ask_deadline(raw: float) -> float:
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     e = dict(os.environ if env is None else env)
+    warnings: list[str] = []
     data_dir = Path(e.get("DATA_DIR", "./data"))
     demo_mode = _bool(e.get("DEMO_MODE"))
     # With DEMO_MODE the generated demo data is the default source; otherwise conventional folders.
@@ -177,21 +209,21 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         # the demo with fake services reads its plans and scans by default (deterministic transcript)
         llm_vision=(_bool(e.get("LLM_VISION")) if (e.get("LLM_VISION") or "").strip()
                     else demo_mode and (e.get("AI_MODE") or "").strip().lower() == "fake"),
-        llm_timeout=_float(e.get("LLM_TIMEOUT"), 120.0),
+        llm_timeout=_timeout(e, "LLM_TIMEOUT", 120.0, warnings),
         llm_max_tokens=_int(e.get("LLM_MAX_TOKENS"), 800),
         llm_extra_body=extra_body,
         embed_url=(e.get("EMBED_URL") or "http://192.168.178.62:8001").rstrip("/"),
         embed_model=e.get("EMBED_MODEL") or "qwen3-embedding-4b",
         embed_format=(e.get("EMBED_FORMAT") or "auto").lower(),
-        embed_timeout=_float(e.get("EMBED_TIMEOUT"), 60.0),
+        embed_timeout=_timeout(e, "EMBED_TIMEOUT", 60.0, warnings),
         embed_batch=max(1, _int(e.get("EMBED_BATCH"), 32)),
         embed_query_instruction=e.get("EMBED_QUERY_INSTRUCTION", DEFAULT_QUERY_INSTRUCTION),
         rerank_url=(e.get("RERANK_URL") or "http://192.168.178.62:4343/rerank").rstrip("/"),
         rerank_model=e.get("RERANK_MODEL", ""),
         rerank_format=(e.get("RERANK_FORMAT") or "auto").lower(),
-        rerank_timeout=_float(e.get("RERANK_TIMEOUT"), 30.0),
+        rerank_timeout=_timeout(e, "RERANK_TIMEOUT", 30.0, warnings),
         rerank_top_k=max(1, _int(e.get("RERANK_TOP_K"), 30)),
-        health_timeout=_float(e.get("HEALTH_TIMEOUT"), 3.0),
+        health_timeout=_timeout(e, "HEALTH_TIMEOUT", 3.0, warnings),
         ask_top_k=max(1, _int(e.get("ASK_TOP_K"), 6)),
         ask_context_chars=max(1000, _int(e.get("ASK_CONTEXT_CHARS"), 8000)),
         ask_min_rerank=_float(e.get("ASK_MIN_RERANK"), 0.01),
@@ -208,9 +240,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         mail_allow_empty=_bool(e.get("MAIL_ALLOW_EMPTY")),
         ask_deadline=_ask_deadline(_float(e.get("ASK_DEADLINE"), 180.0)),
         ask_deadline_requested=max(0.0, _float(e.get("ASK_DEADLINE"), 180.0)),
+        config_warnings=tuple(warnings + _number_warnings(e, ("ASK_DEADLINE",))),
         plmail_url=(e.get("PLMAIL_URL") or "").rstrip("/"),
         plmail_token=e.get("PLMAIL_TOKEN", ""),
-        plmail_timeout=_float(e.get("PLMAIL_TIMEOUT"), 30.0),
+        plmail_timeout=_timeout(e, "PLMAIL_TIMEOUT", 30.0, warnings),
         plmail_page_size=max(1, _int(e.get("PLMAIL_PAGE_SIZE"), 100)),
         plmail_web_url=e.get("PLMAIL_WEB_URL", ""),
         # with plMail connected, mails are assigned by humans in plMail unless configured otherwise

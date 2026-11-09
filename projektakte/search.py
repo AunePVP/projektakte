@@ -251,6 +251,9 @@ def default_synonyms_file() -> str:
 
 
 MIN_CALL_SECONDS = 1.0  # less time left than this: skip the AI call instead of starting it
+# notes when the question's time budget (ASK_DEADLINE) cut a step short – ask.py merges them into one
+BUDGET_VECTOR_NOTE = "Zeitbudget der Frage erschöpft – nur Volltextsuche"
+BUDGET_RERANK_NOTE = "Zeitbudget der Frage erschöpft – Reihenfolge der hybriden Suche"
 
 
 def time_left(deadline: float | None, timeout: float) -> float | None:
@@ -262,6 +265,11 @@ def time_left(deadline: float | None, timeout: float) -> float | None:
     if remaining < MIN_CALL_SECONDS:
         return 0
     return min(timeout, remaining)
+
+
+def _cut_by_budget(exc: Exception, used: float | None, own: float) -> bool:
+    """Did a call time out because the question's budget shortened its timeout (not the service's own)?"""
+    return used is not None and used < own and "Zeitüberschreitung" in str(exc)
 
 
 def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, project: str | None = None,
@@ -286,14 +294,15 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
     vec: list[tuple[int, float]] = []
     embed_timeout = time_left(deadline, ai.embed.timeout) if ai is not None else None
     if ai is not None and embed_timeout == 0:
-        result.notes.append("Zeitbudget der Frage erschöpft – nur Volltextsuche")
+        result.notes.append(BUDGET_VECTOR_NOTE)
     elif ai is not None:
         try:
             qvec = ai.embed.embed_query(query, timeout=embed_timeout)
             vec = VECTOR_INDEX.search(conn, vector_key, qvec, project=project, k=CANDIDATES)
         except AIServiceError as exc:
             log.warning("Vektorsuche nicht verfügbar, nur Volltext: %s", exc)
-            result.notes.append("Vektorsuche nicht verfügbar – nur Volltextsuche")
+            result.notes.append(BUDGET_VECTOR_NOTE if _cut_by_budget(exc, embed_timeout, ai.embed.timeout)
+                                else "Vektorsuche nicht verfügbar – nur Volltextsuche")
     fused = rrf(literal, fts, vec)
     if literal:  # literal hits of a reference code first, so they always reach the reranker
         first = {cid for cid, _ in literal}
@@ -315,7 +324,7 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
             break
     rerank_timeout = time_left(deadline, ai.rerank.timeout) if ai is not None else None
     if candidates and use_reranker and ai is not None and rerank_timeout == 0:
-        result.notes.append("Zeitbudget der Frage erschöpft – Reihenfolge der hybriden Suche")
+        result.notes.append(BUDGET_RERANK_NOTE)
     elif candidates and use_reranker and ai is not None:
         try:
             scores = ai.rerank.rerank(query, [rerank_text(h) for h in candidates], timeout=rerank_timeout)
@@ -326,7 +335,8 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
             result.reranked = True
         except AIServiceError as exc:
             log.warning("Reranker nicht verfügbar, Reihenfolge der hybriden Suche: %s", exc)
-            result.notes.append("Reranker nicht erreichbar – Reihenfolge der hybriden Suche")
+            result.notes.append(BUDGET_RERANK_NOTE if _cut_by_budget(exc, rerank_timeout, ai.rerank.timeout)
+                                else "Reranker nicht erreichbar – Reihenfolge der hybriden Suche")
     if codes_only:  # "BS-2024-0233", "63-0137/24": the documents that contain the code first
         candidates.sort(key=lambda h: not has_identifier(h, identifiers))
     result.hits = _cap_per_source(candidates, MAX_PER_SOURCE)[:k]

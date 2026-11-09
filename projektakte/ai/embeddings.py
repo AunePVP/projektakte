@@ -95,6 +95,7 @@ class EmbeddingClient:
                 self.format = fmt
                 return vecs
             except AIServiceError as exc:
+                exc = budget.own(exc)
                 errors.append(f"{fmt}: {exc}")
                 if not isinstance(exc, HTTPStatusError) and "Antwort" not in str(exc):
                     break  # unreachable/timeout – trying the other path won't help

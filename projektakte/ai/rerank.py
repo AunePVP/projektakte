@@ -96,7 +96,7 @@ class RerankClient:
                 # only an unexpected answer shape means "server swapped, detect again"; a timeout or an
                 # unreachable server would otherwise be waited for twice
                 if self.forced or "Antwort" not in str(exc):
-                    raise
+                    raise budget.own(exc) from None
         errors = []
         for fmt in FORMATS:
             try:
@@ -104,6 +104,7 @@ class RerankClient:
                 self.format = fmt
                 return scores
             except AIServiceError as exc:
+                exc = budget.own(exc)
                 errors.append(f"{fmt}: {exc}")
                 if not isinstance(exc, HTTPStatusError) and "Antwort" not in str(exc):
                     break

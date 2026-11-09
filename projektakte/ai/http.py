@@ -6,6 +6,7 @@ local network, and nothing may leave it by accident through a configured proxy.
 from __future__ import annotations
 
 import json
+import math
 import socket
 import time
 import urllib.error
@@ -28,6 +29,8 @@ class HTTPStatusError(AIServiceError):
 
 def seconds_text(seconds: float) -> str:
     """'60', '37,5' – for messages the user may see: at most one decimal, German comma."""
+    if not math.isfinite(seconds):
+        return "unbegrenzt" if seconds > 0 else str(seconds)
     r = round(seconds, 1)
     return str(int(r)) if r == int(r) else f"{r:.1f}".replace(".", ",")
 
@@ -52,6 +55,14 @@ class CallBudget:
             raise timeout_error(self.timeout, self.url)
         return rest
 
+    def own(self, exc: AIServiceError) -> AIServiceError:
+        """A timeout of one call of the detection, reported with the timeout of the whole request
+        (the configured one) instead of the remaining slice the call had."""
+        text = str(exc)
+        if isinstance(exc, HTTPStatusError) or not text.startswith("Zeitüberschreitung"):
+            return exc
+        return timeout_error(self.timeout, text.split(": ", 1)[1] if ": " in text else self.url)
+
 
 def request(
     method: str,
@@ -69,9 +80,10 @@ def request(
         hdrs["Content-Type"] = "application/json"
     hdrs.update(headers or {})
     req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
+    end = time.monotonic() + timeout
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
-            return resp.read(), {k.lower(): v for k, v in resp.headers.items()}
+            return _read_until(resp, end, timeout, url), {k.lower(): v for k, v in resp.headers.items()}
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace") if exc.fp else ""
         raise HTTPStatusError(exc.code, body, url) from None
@@ -80,6 +92,28 @@ def request(
         if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(reason):
             raise timeout_error(timeout, url) from None
         raise AIServiceError(f"nicht erreichbar: {url} ({reason})") from None
+
+
+def _read_until(resp, end: float, timeout: float, url: str) -> bytes:
+    """The response body, but never past ``end``: the socket timeout alone applies to each single
+    read, so a server that trickles its answer byte by byte could otherwise hold a call (and the
+    question's time budget) far beyond its timeout."""
+    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    read = getattr(resp, "read1", None) or resp.read
+    parts = []
+    while True:
+        rest = end - time.monotonic()
+        if rest <= 0:
+            raise timeout_error(timeout, url)
+        if sock is not None:
+            try:
+                sock.settimeout(rest)
+            except OSError:
+                sock = None
+        chunk = read(65536)
+        if not chunk:
+            return b"".join(parts)
+        parts.append(chunk)
 
 
 def request_json(method: str, url: str, **kwargs) -> Any:
