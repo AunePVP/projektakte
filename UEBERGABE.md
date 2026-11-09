@@ -249,6 +249,9 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
 - Mit einem Nachbau dieser Struktur erkennt `python -m projektakte.structure`: `PROJECT_NUMBER_PATTERN=\d{6}`,
   `PROJECT_FOLDER_DEPTH=4`, alle Aufträge gefunden, Kategorie-Ordner gehören zum Auftrag. Das muss noch
   auf der echten Freigabe bestätigt werden (Befehl in Abschnitt 7.7).
+- **Regel laut Büro:** Ordner ohne Zahl vorne sind egal (werden nicht gebraucht). Im Auftragsordner
+  muss jeder Unterordner mit der Auftragsnummer beginnen (`245700-Bilder`, `245700_Abgabe_FW`); ein
+  Unterordner ohne Nummer ist ein Fehler. Die Namen der Unterordner sind frei.
 - **Ablage-Prüfung:** `scripts/ablage_pruefen.py` prüft die ganze Freigabe gegen diese Regel und
   zeigt, was Projektakte davon liest (Aufträge nicht gefunden, Nummern doppelt, Dateien außerhalb
   eines Auftrags = werden nicht gelesen, nicht gelesene Dateitypen) und jede Abweichung von der
