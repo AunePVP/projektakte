@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import project_options %}
+{% from "_macros.html" import project_options with context %}
 {% block title %}{{ m.subject or 'Mail' }}{% endblock %}
 {% block content %}
 <p class="crumbs">{% if m.project %}<a href="/projekte/{{ m.project }}">{{ m.project }} {{ m.project_name }}</a>{% else %}<a href="/eingang">Zuordnungs-Eingang</a>{% endif %} › Mail</p>

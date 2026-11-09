@@ -727,7 +727,7 @@ def inbox_decide(request: Request, mail_id: int, action: str = Form(...), projec
         if not inbox.is_db_busy(exc):
             raise
         log.warning("Entscheidung zu Mail %s nicht gespeichert – Datenbank belegt: %s", mail_id, exc)
-        return _busy_response(request, mail_id, back, project if action == "assign" else "")
+        return _busy_response(request, mail_id, back, project if action == "assign" else "", repeated)
     if is_htmx(request):
         return templates.TemplateResponse(request, "_inbox_update.html", _card_context(outcome, back, repeated))
     if outcome["error"]:
@@ -736,8 +736,9 @@ def inbox_decide(request: Request, mail_id: int, action: str = Form(...), projec
     return RedirectResponse(back, status_code=303)
 
 
-def _busy_response(request: Request, mail_id: int, back: str, typed: str = "") -> HTMLResponse:
-    """The decision could not be written: friendly German message, the mail stays actionable."""
+def _busy_response(request: Request, mail_id: int, back: str, typed: str = "", repeated: bool = False) -> HTMLResponse:
+    """The decision could not be written: friendly German message, the mail stays actionable (a card
+    shown once more from an earlier page keeps that mark, like after any other failed decision)."""
     if not is_htmx(request):
         return render(request, "error.html", status_code=503, headers={"Retry-After": str(BUSY_RETRY_AFTER)},
                       title="Bitte gleich noch einmal", message=BUSY_TEXT, back=back, back_label="Zurück")
@@ -748,7 +749,7 @@ def _busy_response(request: Request, mail_id: int, back: str, typed: str = "") -
     except sqlite3.OperationalError:
         pass
     ctx = {"mail": mail or {"id": mail_id, "subject": ""}, "m": mail, "result": None, "error": BUSY_TEXT,
-           "name": None, "back": back, "counts": counts}
+           "name": None, "back": back, "counts": counts, "repeated": repeated}
     if mail and mail["assign_status"] in INBOX_STATUSES:
         ctx.update(card="item", notice=BUSY_TEXT, notice_kind="warn", typed=typed)
     else:

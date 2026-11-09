@@ -1,4 +1,7 @@
-{#- Shared building blocks. No inline scripts or styles (CSP default-src 'self'). -#}
+{#- Shared building blocks. No inline scripts or styles (CSP default-src 'self').
+    Always import them "with context": the filters highlight/snippet and passage() read the settings
+    of the app (PROJECT_NUMBER_PATTERN) from the page's request – without the context a macro would
+    mark project numbers in the default shape only. -#}
 
 {% macro project_options(projects, selected='', empty_label='Projekt wählen …') -%}
 <option value="">{{ empty_label }}</option>

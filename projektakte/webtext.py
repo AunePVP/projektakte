@@ -13,9 +13,9 @@ that way as well), pipe tables (``| Angabe | Inhalt |`` with ``|---|---|``, DOCX
 * :func:`highlight` – ``<mark>`` for the query words. Identifiers (project numbers, file numbers,
   "T90", "DIN 4102") are matched as a whole, never as single parts, and never inside dates; a
   project number typed with spaces ("BS 2024 0233") counts as the written number – only in the
-  configured shape of a project number (:func:`join_spaced_codes`). Parts of compounds are marked
-  only where the word really splits ("Baubesprechung" marks "Besprechung", "Rauchableitung" not
-  "Leitung"),
+  configured shape of a project number (:func:`join_spaced_codes`). A word marks a compound it ends
+  only where the rest is a word of its own, no prefix ("Abnahme" marks "Teilabnahme", "Geschoss"
+  "Obergeschossen" – "Leitung" not "Rauchableitung", "Weisung" not "Brandschutzunterweisung"),
 * :func:`trim_overlap` – the paragraph that chunking repeats at the start of the next section is
   shown only once on the document page.
 
@@ -328,31 +328,64 @@ def _whole_only(token: str) -> bool:
     return bool(_DOTTED_NUMBER.match(token) or _ISO_DATE.match(token))
 
 
-# Verb prefixes (folded). A word that is only such a prefix plus another word is a derivation, not a
-# compound: "ausgeführt" is no kind of "geführt", "Überprüfung" none of "Prüfung", "Zufahrt" none of "Fahrt".
-_VERB_PREFIXES = frozenset(("zuruck", "zusammen", "statt", "durch", "fest", "frei", "nach", "teil", "uber", "auf",
-                            "aus", "bei", "ein", "her", "hin", "mit", "vor", "weg", "ab", "an", "um", "zu",
-                            "miss", "emp", "ent", "ver", "zer", "be", "er", "ge"))
-# … and those of them that no noun ends with: at the end of a compound's first part they belong to the
-# head – a Rauchableitung is a Rauch-Ableitung (no "Leitung"), a Brandabschnitt a Brand-Abschnitt.
-_HEAD_PREFIXES = ("zusammen", "zuruck", "durch", "nach", "uber", "vor", "bei", "mit", "ab", "zu")
-# Inseparable prefixes form nouns from verbs only, mostly in -ung: Treppenhaus-Belüftung, not -Lüftung.
-# Nouns may end with the same letters (Probe, Übergabe, Fundament), so only before an -ung noun that
-# has no prefix of its own (Probebetrieb, Übergabebesprechung keep their heads).
-_INSEPARABLE = ("miss", "emp", "ent", "ver", "zer", "be")
-_OWN_PREFIX = _INSEPARABLE + ("er", "ge")
+# When is a word the head of a longer one (folded)? A German compound is a modifier plus its head, and
+# the modifier is a word of its own (Teil-Abnahme, Probe-Bohrung, Nutzer-Einweisung, Bau-Genehmigung) –
+# never a prefix: a prefix plus a word is a derivation with a meaning of its own, and the prefix belongs
+# to the head (Rauch-Ableitung, not Rauchab-Leitung; Brandschutz-Unterweisung, not -Weisung).
+#
+# Bound prefixes and verb particles that are no words of their own. A word that is only such prefixes
+# plus another word is a derivation: "Belüftung" is no kind of "Lüftung" here, "Erwartung" none of
+# "Wartung", "Zufahrt" none of "Fahrt", "ausgeführt" none of "geführt", "nachgereicht" none of "reicht".
+# Particles that are nouns or adjectives as well (teil, weg, fest, frei, voll, gegen, wieder) are words
+# of their own and modify like any other word: Teilabnahme, Weglänge, Festverglasung, Vollsperrung.
+_BOUND_PREFIXES = ("miss", "emp", "ent", "ver", "zer", "be", "er", "ge")
+_PARTICLES = ("zuruck", "zusammen", "statt", "durch", "nach", "wider", "auf", "aus", "bei", "ein", "her", "hin",
+              "mit", "vor", "ab", "an", "um", "zu")
+# Prepositions of place make both: verbs (unterweisen, überprüfen, hinterlüften), whose nouns end in -ung,
+# and nouns of place (Untergeschoss, Unterdecke, Überdruck, Hintereingang, Unterverteilung).
+_PLACE_PARTICLES = ("hinter", "uber", "unter")
+_PREFIXES = tuple(sorted(_BOUND_PREFIXES + _PARTICLES + _PLACE_PARTICLES, key=len, reverse=True))
+_PREFIX_CHAIN = re.compile("(?:%s)+" % "|".join(_PREFIXES))
+# Prefixes that no noun ends with: at the end of a modifier they belong to the head (Rauch-Ableitung,
+# Brand-Abschnitt, Feuerwehr-Zufahrt, Aufzugs-Hersteller). "her" ends nouns only as the "-er" of a verb
+# in -chen (Feuerlöscher, Sprecher). The others are common noun endings and say nothing there:
+# Hoch-haus (aus), Treppen-raum (um), Kalksand-stein (ein), Bebauungs-plan (an), Pro-be, Nutz-er,
+# Funda-ment, Kompro-miss – Probebohrung is a Bohrung, Nutzerschulung a Schulung.
+_TAIL_PREFIXES = ("zusammen", "zuruck", "durch", "wider", "nach", "bei", "her", "hin", "mit", "vor", "ab", "zu")
+# Endings of a few nouns (Pulver, Zauber) and the prepositions of place: here the head decides. The noun
+# in -ung of a verb takes the prefix (Prüf-Verordnung, Brandschutz-Unterweisung), any other head does
+# not (Pulver-Löscher, Unter-Geschoss).
+_HEAD_DECIDES = _PLACE_PARTICLES + ("ver",)
+_VOWEL = re.compile("[aeiouy]")
+
+
+def _verbal_noun(word: str) -> bool:
+    """A noun in -ung of a verb without a prefix of its own (Weisung, Prüfung – not Verteilung)."""
+    return word.endswith(("ung", "ungen")) and not word.startswith(_PREFIXES)
+
+
+def _prefixes_only(text: str) -> bool:
+    return bool(_PREFIX_CHAIN.fullmatch(text))
 
 
 def _compound_head(modifier: str, head: str) -> bool:
-    """Is the folded word ``head`` the head of the compound ``modifier + head``? A compound part is
-    only marked where the word really splits there: Baubesprechung → Besprechung, Hochhausrichtlinie →
-    Richtlinie, Feuerlöscherwartung → Wartung – but not Rauchableitung → Leitung, ausgeführt →
-    geführt or Treppenhausbelüftung → Lüftung. Prefix-like endings of nouns (Hoch-haus, Treppen-raum,
-    Feuer-löscher) do not prevent a split."""
-    if modifier in _VERB_PREFIXES or modifier.endswith(_HEAD_PREFIXES):
+    """Is the folded word ``head`` the head of the compound ``modifier + head``? Only where the
+    modifier is a word of its own (see above): Baubesprechung → Besprechung, Teilabnahme → Abnahme,
+    Probealarmierung → Alarmierung, Untergeschoss → Geschoss – but not Rauchableitung → Leitung,
+    Brandschutzunterweisung → Weisung, Überprüfung → Prüfung, ausgeführt → geführt, brauchen → Rauch.
+
+    Without a dictionary, letters that are a noun ending as well as a prefix count as the noun ending
+    (Treppenhausbelüftung → Lüftung like Probebohrung → Bohrung, Brandschutzeinweisung → Weisung like
+    Kalksandsteinmauerwerk → Mauerwerk)."""
+    if not _VOWEL.search(modifier):  # no syllable, no word: b|rauch (brauchen)
         return False
-    return not (modifier.endswith(_INSEPARABLE) and head.endswith(("ung", "ungen"))
-                and not head.startswith(_OWN_PREFIX))
+    ending = next((p for p in _HEAD_DECIDES if modifier.endswith(p)), None)
+    if ending:
+        rest = modifier[:-len(ending)]
+        if (rest and not _prefixes_only(rest)) or (not rest and ending in _PLACE_PARTICLES):
+            return not _verbal_noun(head)  # Unter-geschoss, Pulver-löscher – Brandschutz-unterweisung
+    return not (_prefixes_only(modifier)
+                or (modifier.endswith(_TAIL_PREFIXES) and not modifier.endswith("cher")))
 
 
 class QueryMatcher:
@@ -362,8 +395,9 @@ class QueryMatcher:
       longer identifier ("2024-0137" in "BS-2024-0137"), never parts of dates or decimal numbers;
     * words match like the search does: case and accents ignored, word forms, compounds by the
       beginning (Rauchableitung → Rauchableitungsöffnung) or the head (Genehmigung →
-      Baugenehmigung, Baubesprechung → Besprechung) – not by the first part only (Löschwasserteich
-      does not mark Löschwasser) – and single-word abbreviations/synonyms (BMA → Brandmeldeanlage).
+      Baugenehmigungen, Baubesprechung → Besprechung; only after a modifier of its own, see
+      :func:`_compound_head`) – not by the first part only (Löschwasserteich does not mark
+      Löschwasser) – and single-word abbreviations/synonyms (BMA → Brandmeldeanlage).
     """
 
     def __init__(self, query: str, code_pattern: str | None = None):
@@ -381,8 +415,8 @@ class QueryMatcher:
         self.terms: set[str] = set()  # stems and folded words of the query
         self.alts: set[str] = set()  # single-word synonyms and word forms
         for qt in query_terms(" ".join(rest)):
-            if qt.word in STOPWORDS or qt.word in QUESTION_WORDS:
-                continue
+            if qt.word in STOPWORDS or qt.word in QUESTION_WORDS or qt.word in _PARTICLES:
+                continue  # a verb particle typed alone ("Begehung statt") is no content word
             for t in {qt.term, qt.word}:
                 if len(t) >= 3:
                     self.terms.add(t)
@@ -408,8 +442,8 @@ class QueryMatcher:
                 return True
             if len(t) >= 4 and w.startswith(t):  # word forms, compounds starting with the word
                 return True
-            if len(t) >= 5 and w.endswith(t) and _compound_head(w[:-len(t)], t):  # compound head:
-                return True  # Genehmigung → Baugenehmigung (not Leitung → Ableitung)
+            if len(t) >= 5 and any(x.endswith(t) and _compound_head(x[:-len(t)], t) for x in (w, sw)):
+                return True  # compound head: Genehmigung → Baugenehmigung(en) (not Leitung → Ableitung)
             if len(sw) >= 6 and len(t) - len(sw) >= 3 and t.endswith(sw) and _compound_head(t[:-len(sw)], sw):
                 return True  # the text names the head: Baubesprechung → Besprechung (not short heads
                 #              such as Anlage, Raum, nor Rauchableitung → Leitung)

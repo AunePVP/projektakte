@@ -1,4 +1,4 @@
-{% from "_macros.html" import source_list %}
+{% from "_macros.html" import source_list with context %}
 {% if result %}
 {% set v = answer_view(result) %}
 <div class="answer {{ result.status }}">

@@ -1,6 +1,8 @@
 """Round 4 of the verification (package "oberflaeche"): a project number typed with spaces
 ("BS 2024 0233") links the project and is marked as a whole like "BS-2024-0233", and a rejected
-suggestion that stays on its inbox page is neither shown nor counted again on the next page."""
+suggestion that stays on its inbox page is not counted again on the next page. Since round 5 the next
+page shows it once more where it now sorts – marked as already shown and counted ("repeated") – so no
+page hides an open mail; the counts stay the same."""
 from __future__ import annotations
 
 import html as html_lib
@@ -137,9 +139,10 @@ def _open_ids(client, status: str = "") -> list[int]:
 
 
 @pytest.mark.parametrize("n_open", [60, 140])  # the rejected mail moves to page 2 / to page 3
-def test_rejected_card_is_not_repeated_on_the_next_page(rw, n_open):
+def test_rejected_card_is_counted_once_across_pages(rw, n_open):
     """verify4: 70 open mails; on page 1 one "Verwerfen", 12 × "Kein Projektbezug", one assignment →
-    "1–37 von 57", but "Weiter" showed "37–57 von 57" with the rejected mail once more."""
+    "1–37 von 57", but "Weiter" showed "37–57 von 57", counting the rejected mail a second time. Now
+    the next pages go on with 38 and show the rejected mail once more, marked, outside the count."""
     _fill_inbox(rw, 10, n_open)
     total = 10 + n_open
     page1 = rw.get("/eingang").text
@@ -189,7 +192,8 @@ def test_decisions_on_the_next_page_keep_counting_from_the_carried_card(rw):
     assert state["seite_gezeigt"].startswith(f"{ids[0]}.") and "seite_weiter" not in state  # last page
     r = _post(rw, _ids(page2)[0], page2, "none")
     assert _summary(r).startswith("47–65 von 65 Mails"), _summary(r)
-    # without JavaScript the decision returns to the same page, which still leaves the card out
+    # without JavaScript the decision returns to the same page, which still shows the card marked and
+    # does not count it
     back = html_lib.unescape(re.search(r'name="back" value="([^"]+)"', page2).group(1))
     assert f"gezeigt={ids[0]}" in back
     r = rw.post(f"/eingang/{_ids(page2)[1]}", data={"action": "none", "back": back}, follow_redirects=False)
