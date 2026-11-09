@@ -50,11 +50,11 @@ HEADS = [
     ("Abnahme", "Teilabnahme"), ("Baugenehmigung", "Teilbaugenehmigung"), ("Sanierung", "Teilsanierung"),
     ("Länge", "Weglänge"), ("Breite", "Wegbreite"), ("Verglasung", "Festverglasung"), ("Fläche", "Freifläche"),
     ("Sperrung", "Vollsperrung"), ("Inbetriebnahme", "Wiederinbetriebnahme"), ("Prüfung", "Gegenprüfung"),
-    # modifiers ending like a prefix: Pro-be, Nutz-er, Funda-ment, Gewer-be, Pul-ver
+    # modifiers ending like a prefix: Pro-be, Nutz-er, Funda-ment, Gewer-be, Feuerlösc-her
     ("Bohrung", "Probebohrung"), ("Messung", "Probemessung"), ("Alarmierung", "Probealarmierung"),
     ("Auslösung", "Probeauslösung"), ("Schulung", "Nutzerschulung"), ("Einweisung", "Nutzereinweisung"),
     ("Führung", "Benutzerführung"), ("Anmeldung", "Gewerbeanmeldung"), ("Abdichtung", "Fundamentabdichtung"),
-    ("Löscher", "Pulverlöscher"), ("Wartung", "Feuerlöscherwartung"), ("Richtlinie", "Hochhausrichtlinie"),
+    ("Wartung", "Feuerlöscherwartung"), ("Richtlinie", "Hochhausrichtlinie"),  # round 7: no "Pulverlöscher"
     ("Mauerwerk", "Kalksandsteinmauerwerk"), ("Lüftung", "Treppenraumlüftung"), ("Prüfung", "Planprüfung"),
     ("Hersteller", "Aufzugshersteller"), ("Belüftung", "Treppenhausbelüftung"),
     # prepositions of place make nouns of place
@@ -79,7 +79,7 @@ DERIVATIONS = [
     ("Wartung", "Erwartung"), ("Stellung", "Herstellung"), ("Stellung", "Bestellung"), ("Lüftung", "Belüftung"),
     ("Ordnung", "Verordnung"), ("Ordnung", "Prüfverordnung"), ("Sicherung", "Gebäudeversicherung"),
     ("Führung", "Durchführung"), ("Führung", "Ausführung"), ("Haltung", "Unterhaltung"),
-    ("Bescheid", "Vorbescheid"), ("Bescheid", "Bauvorbescheid"), ("Stelle", "Aufzugshersteller"),
+    ("Stelle", "Aufzugshersteller"),  # round 7: Vorbescheid/Bauvorbescheid are compounds of "Bescheid"
     ("Schnittsbildung", "Brandabschnittsbildung"), ("Zugsanlage", "Rauchabzugsanlage"),
     ("geführt", "ausgeführt"), ("führt", "durchgeführt"), ("findet", "stattfindet"), ("reicht", "nachgereichten"),
     ("trägt", "beantragte"), ("erteilt", "verteilt"), ("Rauch", "brauchen"), ("weiter", "zweiter"),
