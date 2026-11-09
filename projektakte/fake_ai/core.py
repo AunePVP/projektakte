@@ -25,11 +25,17 @@ models, not like a lookup table for an evaluation set:
   such a value for the asked topic – a length must be the asked dimension of the asked thing ("Wie
   breit …?" is not answered by "in 60 cm Höhe"), "Wann wurde … abgenommen?" needs the date of the
   event, not an obligation or a plan; otherwise – and whenever no sentence covers the topic – it says
-  "Nicht gefunden.". A question naming a project is answered from that project only. Questions about
-  the latest state use the newest dated source, "Was hat X geschrieben?" the sources written by X,
-  decision questions ("Hat … zugestimmt?") the sources that state the decision, "Wer hat …
-  unterschrieben?" the signature, overview questions several sources, and questions over several
-  projects get one finding per project.
+  "Nicht gefunden.". A question naming a project is answered from that project only. What singles out
+  the asked thing must be the sentence's too (in itself, or in its section heading or source): "im
+  Wohnbereich C" is not answered by a sentence about Wohnbereich B, "im 2. OG" not by one about the
+  3. Obergeschoss, "vor dem Umbau" not by the result of the Umbau. The legend of a plan ("Notausgang
+  Ost, Sammelplatz Parkplatz Nord, …") is read item by item. Questions about the latest state use the
+  newest dated source, "Was hat X geschrieben?" the sources written by X, "Was hat die
+  Prüfingenieurin festgestellt/bemängelt?" the findings (for "bemängelt" those saying that something is
+  wrong or still to be done), decision questions ("Hat … zugestimmt?") the sources that state the
+  decision, "Wer hat … unterschrieben?" the signature, overview questions several sources (without the
+  standard formulas every concept ends with), and questions over several projects get one finding per
+  project.
 """
 from __future__ import annotations
 
@@ -117,29 +123,57 @@ def active_synonyms(path: str | None = None) -> Synonyms:
 _CONTRACTIONS = frozenset("furs ans aufs ums ubers durchs vors hinters unters".split())
 # the first part of a compound written with a hyphen ("Funk-Rauchwarnmelder", "Brandschutz-Konzept")
 _HYPHEN_PART = re.compile(r"(?<![\w-])([^\W\d_]{3,})-(?=[^\W\d_])")
-# strong verbs change their vowel in the present tense: "vertritt" ↔ vertreten/Vertreter, "hilft" ↔ helfen
-_STRONG_PRESENT = (("tritt", "tret"), ("gibt", "geb"), ("hilft", "helf"), ("spricht", "sprech"), ("sieht", "seh"),
-                   ("liest", "les"), ("wirft", "werf"), ("misst", "mess"), ("bricht", "brech"), ("trifft", "treff"),
-                   ("empfiehlt", "empfehl"), ("befiehlt", "befehl"), ("stirbt", "sterb"), ("wirbt", "werb"),
-                   ("vergisst", "vergess"), ("erlischt", "erlosch"), ("schmilzt", "schmelz"))
+# strong verbs change their vowel in the present tense: "vertritt" ↔ vertreten/Vertreter, "hilft" ↔ helfen.
+# Matched as whole verbs, alone or after a verb prefix ("betrifft", "entspricht"), never as the end of any
+# word; a weak verb that only looks like a prefixed strong one keeps its own forms ("vermisst" is vermissen,
+# not vermessen).
+_STRONG_PRESENT = {"tritt": "tret", "gibt": "geb", "hilft": "helf", "spricht": "sprech", "sieht": "seh",
+                   "liest": "les", "wirft": "werf", "misst": "mess", "bricht": "brech", "trifft": "treff",
+                   "empfiehlt": "empfehl", "befiehlt": "befehl", "stirbt": "sterb", "wirbt": "werb",
+                   "vergisst": "vergess", "erlischt": "erlosch", "schmilzt": "schmelz"}
+_VERB_PREFIXES = ("", "ab", "an", "auf", "aus", "be", "bei", "dar", "durch", "ein", "ent", "er", "fest", "frei",
+                  "her", "hin", "hinter", "mit", "nach", "uber", "um", "unter", "ver", "vor", "weg", "wider", "zer",
+                  "zu", "zuruck", "zusammen")
+_WEAK_LOOKALIKES = frozenset({"vermisst"})
+# "Wer hat das Konzept geschrieben/erstellt?" asks for the author, who stands above a document as
+# "Verfasser: …" and under minutes as "Aufgestellt: …". This is a reading of that question form only, so
+# it lives here and not in the synonym list: as a synonym it would make every "Schreiben der Feuerwehr",
+# "Feuerwehrplan erstellen" or "Aufstellfläche" match the "Verfasser:" line of each concept.
+_AUTHOR_Q = re.compile(r"^\s*(wer|von\s+wem)\b", re.I)
+_AUTHOR_VERBS = frozenset("geschrieben verfasst erstellt aufgestellt ausgearbeitet".split())
+_AUTHOR_LABELS = (("verfass",), ("aufstell",))
+
+
+def _strong_forms(word: str) -> list[str]:
+    """Infinitive stems of a strong verb in the present ("betrifft" → betreff, "vertritt" → vertret)."""
+    if word in _WEAK_LOOKALIKES:
+        return []
+    return [word[: -len(present)] + base for present, base in _STRONG_PRESENT.items()
+            if word.endswith(present) and word[: -len(present)] in _VERB_PREFIXES]
 
 
 def question_terms(text: str, synonyms: Synonyms, *, drop: frozenset[str] = frozenset()) -> list[QueryTerm]:
     """:func:`query_terms` plus what typed questions need on top: a contraction ("fürs") is no topic,
     the first part of a hyphenated compound starts compounds as a whole word does ("Funk-Rauchwarnmelder"
-    ↔ "funkvernetzte Rauchwarnmelder"), and a strong verb in the present matches its other forms
-    ("vertritt" ↔ "vertreten durch")."""
+    ↔ "funkvernetzte Rauchwarnmelder"), a strong verb in the present matches its other forms
+    ("vertritt" ↔ "vertreten durch"), and in "Wer hat … geschrieben/erstellt?" the verb matches the
+    author's label ("Verfasser:", "Aufgestellt:")."""
     modifiers = {fold(m.group(1)) for m in _HYPHEN_PART.finditer(text)}
+    author_q = bool(_AUTHOR_Q.match(text))
     out = []
     for t in query_terms(text, synonyms, drop=drop | _CONTRACTIONS):
         extra = [t.term] if t.word in modifiers and len(t.term) >= 4 else []
-        extra += [t.word[: -len(present)] + base for present, base in _STRONG_PRESENT if t.word.endswith(present)]
+        extra += _strong_forms(t.word)
         extra = [f for f in dict.fromkeys(extra) if f not in t.forms]
-        if extra:
+        readings = _AUTHOR_LABELS if author_q and t.word in _AUTHOR_VERBS else ()
+        if _FINDING_WORDS.match(t.word):  # "bemängelt", "Mängel" ↔ "Feststellungen", "Mangel:"
+            readings = _FINDING_ALTS
+        if extra or readings:
             syns = dict.fromkeys(t.syns)
             for f in extra:
                 if f != t.term:
                     syns.update(dict.fromkeys(a for a in synonyms.expanded(f) if a != (t.term,)))
+            syns.update(dict.fromkeys(a for a in readings if a != (t.term,) and a[0] not in t.forms))
             t = replace(t, forms=t.forms + tuple(extra), syns=tuple(syns))
         out.append(t)
     return out
@@ -148,6 +182,10 @@ def question_terms(text: str, synonyms: Synonyms, *, drop: frozenset[str] = froz
 # --------------------------------------------------------------------------- reranker
 IDENTIFIER_BONUS = 0.1  # a question with topic words: the named project/file number only breaks ties
 _MARKUP = re.compile(r"<[^<>]{0,200}>|\bjavascript:", re.I)
+# the labels of mail header lines name a field, not a topic: "Wen betrifft die Räumungsübung?" is no question
+# about every mail's "Betreff:" line (the subject itself after the label still counts)
+_HEADER_LABELS = frozenset({"betreff", "von", "an", "cc", "bcc", "datum", "gesendet"})
+_HEADER_LABEL = re.compile(r"^[ \t]*(?:Betreff|Von|An|Cc|Bcc|Datum|Gesendet)[ \t]*:", re.I | re.M)
 
 
 def rerank_score(query: str, doc: str, synonyms: Synonyms | None = None) -> float:
@@ -167,7 +205,7 @@ def rerank_score(query: str, doc: str, synonyms: Synonyms | None = None) -> floa
         q = []
     if not q:
         return round(ident_share, 6)
-    doc_terms = text_terms(doc)
+    doc_terms = text_terms(_HEADER_LABEL.sub(" ", doc))
     total = sum(t.weight for t in q)
     credits = [query_term_credit(t, doc_terms) for t in q]
     words_ = [(t, c) for t, c in zip(q, credits) if not t.word.isdigit()]
@@ -376,6 +414,9 @@ _NOT_A_COUNT_BEFORE = frozenset("din en iso nr auflage position pos top kw vom a
 
 
 _PIECES = re.compile(r"\b(Stück|Stk\.?)\s*(\d+)\b|\b(\d+)\s*(Stück|Stk)\b")
+# an ordinal is no count: "im 3. OG", "der 2. Rettungsweg"
+_ORDINAL_AFTER = re.compile(r"\.\s*(?:(?:UG|KG|OG|DG|EG)\b|(?:Unter|Ober|Keller|Dach|Tief)?[Gg]eschoss|Etage|Stock|"
+                            r"Rettungsweg|Bauabschnitt|Abschnitt|Quartal|Halbjahr)")
 _NOT_A_COUNT_AFTER = re.compile(r"^\s*(Jahre|Jahren|Monate|Monaten|Wochen|Tage|Tagen|Stunden|Minuten|mal\b)")
 
 
@@ -387,8 +428,8 @@ def _plain_counts(text: str) -> list[str]:
     for i, (tok, start, end) in enumerate(spans):
         if not _is_number(tok) or (i > 0 and fold(spans[i - 1][0]) in _NOT_A_COUNT_BEFORE | {"alle", "je"}):
             continue
-        if tok[:1].isdigit() and start > 0 and text[start - 1].isalpha():
-            continue  # part of a code: "ASR A2.2", "T30", "F90"
+        if tok[:1].isdigit() and ((start > 0 and text[start - 1].isalpha()) or _ORDINAL_AFTER.match(text, end)):
+            continue  # part of a code ("ASR A2.2", "T30", "F90") or an ordinal ("3. OG")
         rest = text[end:].lstrip()
         if (tok[:1].isdigit() and ((_MEASURE_UNIT.match(rest) and not rest.startswith("%")) or text[end:end + 1] in "-/")) \
                 or _NOT_A_COUNT_AFTER.match(rest):
@@ -421,8 +462,9 @@ def _count_near_topic(u: "Unit", q: "Question") -> bool:
                     return True
         if not _is_number(tok) or (i > 0 and fold(tokens[i - 1]) in _NOT_A_COUNT_BEFORE):
             continue
-        if tok[:1].isdigit() and (_MEASURE_UNIT.match(text[end:].lstrip()) or text[end:end + 1] in "-/"):
-            continue  # "2,10 m", "30 m", "8 Stunden", "81-72" are no counts
+        if tok[:1].isdigit() and (_MEASURE_UNIT.match(text[end:].lstrip()) or text[end:end + 1] in "-/"
+                                  or _ORDINAL_AFTER.match(text, end)):
+            continue  # "2,10 m", "30 m", "8 Stunden", "81-72", "3. OG" are no counts
         for j in range(i + 1, min(len(tokens), i + 4)):  # adjectives may stand between: "95 neue Kinder"
             if j in near:
                 return True
@@ -574,6 +616,7 @@ class Unit:
     table: bool = False
     kind: str = "fact"  # fact | meta (participant lists …) | question (indirect) | request
     section_topic: bool = False  # set while scoring: the question's topic is this unit's section
+    formula: bool = False  # a standard formula of every concept/report ("… bestehen keine Bedenken …")
 
 
 _ORDINAL_BREAK = re.compile(r"\b(im|am|vom|zum|zur|bis|ab|der|des|dem|den|die|das|ins|beim)\s+\d{1,2}\.$", re.I)
@@ -633,6 +676,67 @@ _PREMISE_QUESTION = re.compile(r"^(reicht|reichen|passt|passen|ist|sind|geht|gen
                                re.I)
 
 
+# standard formulas that close every fire-safety concept or review report and say nothing about the project
+# ("Bei Umsetzung der beschriebenen Maßnahmen bestehen aus Sicht des Brandschutzes keine Bedenken gegen das
+# Bauvorhaben.", "Änderungen der Planung sind mit dem Verfasser abzustimmen.", "Der Brandschutznachweis wird
+# unter Beachtung der Feststellungen als vollständig und richtig bescheinigt.", "Die Bauüberwachung wird
+# fortgesetzt."): they still answer a question about them ("Bestehen Bedenken?"), but they are neither a
+# summary of the project nor a finding of the review
+_STANDARD_FORMULA = re.compile(
+    r"^bei\s+(umsetzung|beachtung|einhaltung|berücksichtigung)\s+(der|aller|dieser)\s+(\w+\s+)?(maßnahmen|auflagen|"
+    r"hinweise|feststellungen|anforderungen)\b.*\bkeine\s+bedenken\b|"
+    r"^änderungen\s+(der|an\s+der)\s+(planung|ausführung)\b.*\babzustimmen\b|"
+    r"\bals\s+vollständig\s+und\s+richtig\s+bescheinigt\b|"
+    r"^die\s+bauüberwachung\s+wird\s+fortgesetzt\b", re.I)
+# a line that lists things with where or what they are, without a verb – the legend of a plan: "Notausgang Ost,
+# Sammelplatz Parkplatz Nord, Feuerlöscher neben Treppenraum 1." Each item is a statement of its own (a
+# question about the Notausgang Nord is not answered by "Notausgang Ost" and "Parkplatz Nord" together), and
+# a short verbless sentence before the list ("Fluchtwegplan Erdgeschoss.") is the title the items belong to.
+_ITEM_WORDS = frozenset(fold(w) for w in """am an auf aus bei beim hinter im in innen außen neben nahe oberhalb
+    unterhalb unter vor vom von zum zur und oder mit ohne der die das den dem des je pro""".split())
+MIN_ITEMS = 3
+
+
+def _is_item(item: str) -> bool:
+    toks = item.split()
+    if len(toks) < 2 or not toks[0][:1].isupper() or _ORG.search(item):
+        return False  # "Ingenieurbüro Feuerfest" is an office, no item of a plan
+    return all(t[:1].isupper() or t[:1].isdigit() or fold(t) in _ITEM_WORDS for t in toks)
+
+
+def _enumeration(sent: str) -> list[str] | None:
+    body = sent.rstrip(" .")
+    if re.search(r"[;:()!?]", body):
+        return None
+    items = [x.strip() for x in body.split(",")]
+    if len(items) < MIN_ITEMS or not all(_is_item(x) for x in items):
+        return None
+    # where things are ("neben Treppenraum 1") – a list of capitalised words only may be people ("Ingrid
+    # Vogt, Paul Hinz, Lea Funke"), whose list is one statement
+    located = any(t[:1].isdigit() or fold(t) in _ITEM_WORDS for x in items for t in x.split())
+    return items if located else None
+
+
+def _is_title(sent: str) -> bool:
+    toks = sent.rstrip(" .").split()
+    return 1 <= len(toks) <= 4 and all(t[:1].isupper() or t[:1].isdigit() for t in toks)
+
+
+def _line_statements(sentences: list[str]) -> list[tuple[str, str | None]]:
+    """The statements of a line as (text, title of the list it is an item of): sentences, or the items of
+    a verbless list, whose title sentence is no statement itself."""
+    out: list[tuple[str, str | None]] = []
+    for i, sent in enumerate(sentences):
+        items = _enumeration(sent)
+        if items is None:
+            if not (i + 1 < len(sentences) and _is_title(sent) and _enumeration(sentences[i + 1])):
+                out.append((sent, None))
+            continue
+        title = sentences[i - 1].rstrip(" .") if i > 0 and _is_title(sentences[i - 1]) else None
+        out += [(item, title) for item in items]
+    return out
+
+
 def read_units(src: Source) -> list[Unit]:
     """Quotable sentences of a source (see module docstring for what is left out).
 
@@ -684,16 +788,16 @@ def read_units(src: Source) -> list[Unit]:
         if m and len(m.group(1).split()) <= 5:
             label, line = m.group(1).strip(), line[m.end():].strip()
         sentences = split_sentences(line)
-        if li == sig_from - 1:  # "… behalten. Benedikt Sauer, Wohnbau Stadtpark eG"
-            sentences, own_signature = split_signature(sentences)
+        if li == sig_from - 1 and label is None:  # "… behalten. Benedikt Sauer, Wohnbau Stadtpark eG" – but
+            sentences, own_signature = split_signature(sentences)  # a "Label: …" line is one field throughout
             if own_signature:
                 signature = [own_signature] + signature
         line_units: list[Unit] = []
-        for sent in sentences:
+        for sent, item_of in _line_statements(sentences):
             if len(sent) <= 2:
                 continue
             sent = sent[0].upper() + sent[1:]
-            lab = label
+            lab = item_of or label
             if lab is None and len(sent.split()) <= 3 and context:  # "Keine." under "Abweichungen"
                 lab = context
             kind = "fact"
@@ -710,7 +814,8 @@ def read_units(src: Source) -> list[Unit]:
                 kind = "courtesy"
             elif _REQUEST.match(sent):
                 kind = "request"
-            line_units.append(Unit(src, len(units) + len(line_units), li, sent, lab, context, kind=kind))
+            line_units.append(Unit(src, len(units) + len(line_units), li, sent, lab, item_of or context, kind=kind,
+                                   formula=bool(_STANDARD_FORMULA.search(sent))))
         for a, b in zip(line_units, line_units[1:]):
             if a.kind == "fact" and b.kind == "question" and _PREMISE_QUESTION.match(b.text):
                 a.kind = "premise"
@@ -730,9 +835,10 @@ def read_units(src: Source) -> list[Unit]:
         if len(subject) > 3:
             units.append(Unit(src, len(units), -1, subject, "Betreff", "", kind="subject"))
     for u in units:
-        u.terms = text_terms(f"{u.label or ''} {u.text}")
+        label = "" if fold(u.label or "") in _HEADER_LABELS else (u.label or "")  # "Betreff:" in a letter
+        u.terms = text_terms(f"{label} {u.text}")
         u.ctx_terms = text_terms(f"{src.header} {u.context}")
-        u.label_terms = text_terms(u.label or "")
+        u.label_terms = text_terms(label)
     return units
 
 
@@ -778,6 +884,9 @@ _ATTRIBUTE_WORDS = frozenset(stem(fold(w)) for w in """
     farbe hersteller firma unternehmen lieferant anbieter norm normen richtlinie vorschrift kategorie klasse
     sprache sprachen name höhe breite länge tiefe größe dauer menge fläche betrag summe
     """.split())
+# compounds whose head names the asked value: "Feuerwiderstandsklasse", "Baustoffklasse" (answered by "T30-RS",
+# "A1"), "Brandschutznorm"
+_COMPOUND_ATTRIBUTES = {"klass": "class", "kategori": "class", "norm": "standard", "sprach": "language"}
 # "Wann wurde die BMA abgenommen?" asks when something happened: a date of the event, not an obligation
 # ("ist vor der Abnahme vorzulegen") or a plan ("ist für März vorgesehen")
 _PAST_AUX = re.compile(r"\b(wurde|wurden|war|waren|worden)\b", re.I)
@@ -840,6 +949,27 @@ _OPEN_POINTS = re.compile(r"\b(offen\w*|ungeklärt|unklar|klären|rückfrage\w*|
                           r"anfrage\w*|nachfrage\w*)\b", re.I)
 _PARTICIPANTS = re.compile(r"\b(teilnehm\w*|teilgenommen|nahm\w*\b.*\bteil|nehmen\b.*\bteil|anwesend|dabei|"
                            r"beteiligt\w*)\b", re.I)
+# "Was hat die Prüfingenieurin festgestellt/bemängelt?", "Welche Mängel wurden festgestellt?" ask for the findings
+# of a review – the sentences under "Feststellungen"/"Mängel" or after "Wesentliche Feststellung:", not every
+# sentence the reviewer wrote ("Mein Prüfbericht Nr. 1 … liegt vor.") nor the standard result line
+_FINDINGS_Q = re.compile(r"\b(festgestellt|feststellung\w*|bemängel\w*|beanstand\w*|moniert|gerügt|mängel|mangel)\b|"
+                         r"\bstell\w*\b.*\bfest\b", re.I)
+_FINDING_WORDS = re.compile(r"^(festgestellt|feststellt\w*|feststellen|feststellung\w*|bemangel\w*|beanstand\w*|moniert|"
+                            r"gerugt|mangel)$")  # not "Feststellanlage"
+# … and what a finding is called in the text: findings and defects found by someone
+_FINDING_ALTS = (("feststellung",), ("mangel",), ("beanstandung",))
+# "bemängelt", "Mängel" ask for criticism: a finding that something is wrong or still to be done ("überschreitet
+# das zulässige Maß", "ist … zu berücksichtigen", "ohne Abnahmeprüfung"), not one that it is fine ("ist
+# rechnerisch nachgewiesen", "funktioniert")
+_CRITICISM_WORDS = re.compile(r"^(bemangel\w*|beanstand\w*|moniert|gerugt|mangel)$")
+_CRITICISM = re.compile(r"\b(nicht|kein\w*(?!\s+(?:Bedenken|Einw[äa]nd\w*|Einwendung\w*))|fehl\w*|ohne|"
+                        r"überschreit\w*|unterschreit\w*|unzureichend\w*|ungenügend\w*|unzulässig\w*|mangel\w*|"
+                        r"mängel\w*|beanstand\w*|nachzuholen|nachzubessern|nachzureichen)\b", re.I)
+
+
+def _is_criticism(u: "Unit") -> bool:
+    return bool(_CRITICISM.search(f"{u.label or ''} {u.context} {u.text}") or _NOT_DONE.search(u.text))
+
 # documents written by a role (for "Was hat der Prüfingenieur festgestellt?")
 _DOC_ROLES = {"prufbericht": "prufingenieur", "baugenehmigung": "bauaufsicht", "stellungnahm": "feuerwehr"}
 CONTEXT_CREDIT = 0.8  # a word found only in the source header/section counts a little less
@@ -876,6 +1006,8 @@ class Question:
     signer: bool = False  # "Wer hat … unterschrieben?"
     project_words: list[QueryTerm] = field(default_factory=list)  # words naming the project ("Tiefgarage")
     located: set[str] = field(default_factory=set)  # topic nouns named as a place ("im Sicherheitstreppenraum")
+    qualifiers: list["Qualifier"] = field(default_factory=list)  # "Wohnbereich C", "2. OG", "vor dem Umbau"
+    findings: bool = False  # "Was hat die Prüfingenieurin festgestellt/bemängelt?" – the findings of a review
 
 
 TYPE_WORD_WEIGHT = 0.5  # the building type in front of a project's own name
@@ -971,7 +1103,9 @@ def analyse_question(question: str, sources: list[Source], synonyms: Synonyms | 
         head = attribute_head(t.word) if t.noun else None
         if t.term in shaping or t.word in shaping:
             attrs.append(replace(t, weak=True))
-        elif t.term in _ATTRIBUTE_WORDS or (head and not head[0]):
+        elif t.term in _ATTRIBUTE_WORDS or (head and not head[0]) or (t.noun and any(
+                t.term.endswith(a) and len(t.term) - len(a) >= 4 and kind in types
+                for a, kind in _COMPOUND_ATTRIBUTES.items())):  # "Welche Feuerwiderstandsklasse …?": a class
             attrs.append(t)
             if head:
                 types.add(head[1])
@@ -985,7 +1119,8 @@ def analyse_question(question: str, sources: list[Source], synonyms: Synonyms | 
     temporal = is_temporal_question(question) or (not _W_QUESTION.match(question) and bool(_COMPLETION.search(question)))
     from_role = any(re.search(r"\b(von|vom)\s+(der|dem|den|unserem|unserer|einem|einer)?\s*" + re.escape(t.word),
                               folded_q) for t in roles)
-    authorship = bool(roles) and bool(_COMMUNICATION.search(question) or temporal or from_role)
+    findings = bool(_FINDINGS_Q.search(question))
+    authorship = bool(roles) and bool(_COMMUNICATION.search(question) or temporal or from_role or findings)
     decision = bool(_DECISION_Q.search(question))
     summary = is_summary_question(question) and not types
     if is_project_question(question):  # "Welches Gebäude …", "Bei welcher Baustelle …": the kind of project
@@ -1000,6 +1135,13 @@ def analyse_question(question: str, sources: list[Source], synonyms: Synonyms | 
         types -= {"duration", "relative"}
         types.add("date")
         prefer = "date"
+    # the words of a qualifier are checked as such (qualifier_matched), not as topic words: the number of
+    # "im 3. OG" may be written "im dritten Obergeschoss", and the state "vor dem Umbau" is told by "bisher …"
+    qualifiers = question_qualifiers(question, all_terms, project_terms)
+    floors = {ql.value for ql in qualifiers if ql.kind == "floor"}
+    events = {ql.head.term for ql in qualifiers if ql.kind == "time" and ql.head is not None}
+    terms = [replace(t, weak=True) if t.term in events else t
+             for t in terms if not (t.term.isdigit() and t.term in floors)]
     yesno = not _W_QUESTION.match(question)
     dimension = None
     m = _WIE_ADJ.search(question)
@@ -1021,7 +1163,7 @@ def analyse_question(question: str, sources: list[Source], synonyms: Synonyms | 
                     completion=yesno and bool(_COMPLETION.search(question)) and not _FUTURE_Q.search(question),
                     dimension=dimension, signer=bool(_SIGNER_Q.search(question)),
                     project_words=[t for t in all_terms if t.term in project_terms and not t.term.isdigit()],
-                    located=_located(question, terms))
+                    located=_located(question, terms), qualifiers=qualifiers, findings=findings)
 
 
 _PLACE_PREP = frozenset("im in ins am an beim bei auf aus vom von zum zur unter uber neben hinter".split())
@@ -1042,6 +1184,144 @@ def _located(question: str, terms: list[QueryTerm]) -> set[str]:
             continue
         out.update(t.term for t in terms if t.noun and not t.term.isdigit() and (w == t.word or stem(w) == t.term))
     return out
+
+
+# ------------------------------------------------------------------ chat: qualifiers of the asked thing
+@dataclass(frozen=True)
+class Qualifier:
+    """What singles out the asked thing among others of its kind; the answering sentence (or its section
+    or source) must name the same: a designator of a noun ("Wohnbereich C", "Auflage 7", "Prüfbericht
+    Nr. 1"), the number of a floor ("2. OG", "im dritten Obergeschoss") or a time relative to an event
+    ("vor dem Umbau", "nach der Sanierung", "früher")."""
+
+    kind: str  # "designator" | "floor" | "time"
+    value: str  # "c", "7" | floor number "2" | "vor", "nach"
+    head: QueryTerm | None = None  # noun of the designator, event of the time (None: "früher", "ursprünglich")
+    group: str = ""  # floor group: "og" (Obergeschoss, Stock, Etage), "ug" (Untergeschoss, Keller)
+
+
+_NO_DESIGNATOR_HEADS = frozenset(fold(w) for w in _MONTHS.split("|")) | frozenset(
+    "montag dienstag mittwoch donnerstag freitag samstag sonntag jahr jahre jahren seite kw uhr".split())
+_DESIGNATOR_VALUE = r"(?:[A-Z](?![\w-])|\d{1,4}(?![\d,/-]|\.\d|\.\s+[^\W\d_]))"
+# a noun followed by its designator(s): "Wohnbereich C", "Auflage 7", "Prüfbericht Nr. 1", "Bauteile A und B" –
+# not a measure ("Flur 38 m"), a decimal, a date or an ordinal ("im 3. OG")
+_DESIGNATED = re.compile(r"\b([A-ZÄÖÜ][\wÄÖÜäöüß-]*)\s+(?:Nr\.?\s*|Nummer\s+)?(" + _DESIGNATOR_VALUE
+                         + r"(?:\s*(?:,|/|und|oder|sowie|bis|–)\s*" + _DESIGNATOR_VALUE + r")*)(?!\s*" + _UNIT + r")")
+_FLOOR_GROUPS = (("ug", r"UG|KG|Untergeschoss\w*|Tiefgeschoss\w*|Kellergeschoss\w*"),
+                 ("og", r"OG|Obergeschoss\w*|Geschoss\w*|Etage\w*|Stockwerk\w*|Stock"))
+_ORDINAL_WORDS = {"erst": 1, "zweit": 2, "dritt": 3, "viert": 4, "funft": 5, "sechst": 6, "siebt": 7, "acht": 8,
+                  "neunt": 9, "zehnt": 10}
+_FLOOR = re.compile(r"\b(?:(\d{1,2})\.\s*|(erst|zweit|dritt|viert|fünft|sechst|siebt|acht|neunt|zehnt)"
+                    r"(?:e[nrms]?)\s+)(" + "|".join(rx for _, rx in _FLOOR_GROUPS) + r")\b")
+# an event that divides the state before from the state after: "vor dem Umbau", "nach der Sanierung"
+_EVENT_NOUN = re.compile(r"(bau|sanierung|erweiterung|modernisierung|renovierung|anderung|nahme|eroffnung|"
+                         r"fertigstellung|beginn|abriss|umzug|bezug|brand)$")
+_TIME_RELATION = re.compile(r"\b((?i:vor|nach|seit|bis\s+zum|bis\s+zur))\s+(?:(?:dem|der|den|einem|einer)\s+"
+                            r"(?:[a-zäöüß]+\s+)?)?([A-ZÄÖÜ][a-zäöüß]{2,}[\wäöüß-]*)")
+_EARLIER_Q = re.compile(r"\b(früher|ursprünglich\w*|vorher|ehemal\w*|vormal\w*)\b", re.I)  # not "bisher" ("so far")
+_EARLIER = re.compile(r"\b(bisher\w*|bislang|früher\w*|ursprünglich\w*|vorher\w*|zuvor|ehemal\w*|vormal\w*)\b", re.I)
+_LATER = re.compile(r"\b(künftig\w*|zukünftig\w*|danach|anschließend\w*|nachher)\b", re.I)
+
+
+def _designator_values(raw: str) -> set[str]:
+    """"C" → {c}; "A und B" → {a, b}; "A bis D", "3–5" → the range."""
+    parts = re.findall(r"[A-Z]|\d+", raw)
+    if not parts:
+        return set()
+    letters = parts[0].isalpha()
+    parts = [p for p in parts if p.isalpha() == letters]
+    values = {p.lower() for p in parts}
+    if len(parts) == 2 and re.search(r"\bbis\b|–", raw):
+        a, b = parts
+        if not letters and int(a) < int(b) <= int(a) + 50:
+            values.update(str(i) for i in range(int(a), int(b) + 1))
+        elif letters and a < b:
+            values.update(chr(c).lower() for c in range(ord(a), ord(b) + 1))
+    return values
+
+
+def _floor_mentions(text: str) -> set[tuple[str, str]]:
+    """Floors named with their number: "3. OG" → ("og", "3"), "im dritten Obergeschoss" → ("og", "3")."""
+    out = set()
+    for m in _FLOOR.finditer(text):
+        number = m.group(1) or str(_ORDINAL_WORDS[fold(m.group(2))])
+        group = next(g for g, rx in _FLOOR_GROUPS if re.fullmatch(rx, m.group(3)))
+        out.add((group, number))
+    return out
+
+
+def question_qualifiers(question: str, terms: list[QueryTerm], project_terms: set[str]) -> list[Qualifier]:
+    """The qualifiers of the asked thing (see :class:`Qualifier`); project names ("Hafenkante 7") and
+    dates are none."""
+    text = strip_identifiers(question)
+    by_word = {t.word: t for t in terms}
+    out: list[Qualifier] = []
+    for group, number in sorted(_floor_mentions(text)):
+        out.append(Qualifier("floor", number, group=group))
+    for m in _DESIGNATED.finditer(_FLOOR.sub(" ", text)):
+        word = fold(m.group(1))
+        head = by_word.get(word)
+        values = _designator_values(m.group(2))
+        if head is None or head.term in project_terms or word in _NO_DESIGNATOR_HEADS or len(values) != 1:
+            continue  # (a question about several, "Wohnbereiche A bis C", is left to its topic words)
+        (value,) = values
+        if len(value) == 4 and value[:2] in ("19", "20") and not m.group(1).isupper():
+            continue  # a year ("die WM 2014" is no designator, "DIN 1946" is)
+        out.append(Qualifier("designator", value, head=head))
+    for m in _TIME_RELATION.finditer(text):
+        event = by_word.get(fold(m.group(2)))
+        relation = "vor" if fold(m.group(1)).startswith(("vor", "bis")) else "nach"
+        if event is not None and _EVENT_NOUN.search(event.word):
+            out.append(Qualifier("time", relation, head=event))
+    if not any(q.kind == "time" for q in out) and _EARLIER_Q.search(text):
+        out.append(Qualifier("time", "vor"))  # "Wie viele Gastbetten hatte das Hotel früher?"
+    return out
+
+
+def _designated(head: QueryTerm, text: str) -> set[str]:
+    """Designators the text gives the head noun ("Die Abnahme … im Wohnbereich B" → {"b"})."""
+    out: set[str] = set()
+    for m in _DESIGNATED.finditer(_FLOOR.sub(" ", text)):
+        if query_term_credit(head, text_terms(m.group(1))) > 0:
+            out |= _designator_values(m.group(2))
+    return out
+
+
+def _time_relations(event: QueryTerm, text: str) -> set[str]:
+    """How a text relates to the event: "vor" ("vor dem Umbau", "bis zum Umbau"), "nach" ("nach dem
+    Umbau", "seit dem Umbau") or "event" (it names the event itself: "Umbau … auf 120 Gastbetten")."""
+    out = set()
+    related = set()
+    for m in _TIME_RELATION.finditer(text):
+        if query_term_credit(event, text_terms(m.group(2))) > 0:
+            out.add("vor" if fold(m.group(1)).startswith(("vor", "bis")) else "nach")
+            related.add(m.start(2))
+    for m in re.finditer(r"[^\W\d_][\w-]*", text):
+        if m.start() not in related and query_term_credit(event, text_terms(m.group(0))) > 0:
+            out.add("event")
+    return out
+
+
+def qualifier_matched(ql: Qualifier, u: "Unit") -> bool:
+    """Does the sentence name the asked qualifier – in itself, or (when it names none of its kind) in its
+    section heading or source? "Die Abnahme der Feststellanlage im Wohnbereich B …" does not answer a
+    question about Wohnbereich C, "T30-RS im 2. Obergeschoss" none about the 3. Obergeschoss, "Umbau …
+    auf 120 Gastbetten" none about the time before the Umbau."""
+    levels = (f"{u.label or ''} {u.text}", f"{u.context} {u.source.header}")
+    if ql.kind == "time":
+        whole = " ".join(levels)
+        relations = _time_relations(ql.head, whole) if ql.head is not None else set()
+        if ql.value == "vor":
+            return "vor" in relations or bool(_EARLIER.search(whole))
+        return bool(relations & {"nach", "event"}) or bool(_LATER.search(whole))
+    for text in levels:
+        if ql.kind == "floor":
+            named = {number for group, number in _floor_mentions(text) if group == ql.group}
+        else:
+            named = _designated(ql.head, text)
+        if named:
+            return ql.value in named
+    return False
 
 
 def _past_event_question(question: str) -> bool:
@@ -1263,6 +1543,9 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
         # "Wie werden die Gäste alarmiert?" – the way of alarming (a communication verb is the sender's part)
         essential |= {t.term for t in q.terms if _verb_like(t)
                       and not (q.communication and _COMMUNICATION.search(t.word))}
+    # "Was hat die Prüfingenieurin bemängelt?": the finding word must be the sentence's own or its section's
+    findings = {t.term for t in q.terms if _FINDING_WORDS.match(t.word)} if q.findings else set()
+    criticism_q = bool(findings) and any(_CRITICISM_WORDS.match(t.word) for t in q.terms)
     source_terms = {t.term: kind for t in q.terms for kind, stems in _SOURCE_WORDS.items()
                     if t.term in stems or t.word in stems}
     month_terms = {t.term: _MONTH_NO[t.word] for t in q.terms if t.word in _MONTH_NO}
@@ -1308,6 +1591,10 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
                     credit[t.term] = 1.0  # "zugestimmt?" is answered by "abgelehnt" as well
                 elif query_term_in(t, u.ctx_terms):
                     credit[t.term] = CONTEXT_CREDIT
+            criticism = criticism_q and _is_criticism(u)
+            if criticism and authored and all(credit.get(f, 0) < CONTEXT_CREDIT for f in findings):
+                for f in findings:  # "Was hat die Feuerwehr bemängelt?" – her own objections and demands
+                    credit[f] = CONTEXT_CREDIT
             place = _unmatched_place(q, credit) if inline else None
             if place is not None and _bridged(place, u, q, project_units.get(s.project, [])):
                 credit[place.term] = BRIDGE_CREDIT  # the sentence is about a thing the sources put there
@@ -1335,10 +1622,14 @@ def score_units(q: Question, sources: list[Source], units: dict[int, list[Unit]]
                 score += 1.0
             if u.kind == "subject":
                 score -= 1.5  # only when the mail says nothing else
+            if findings and any(query_term_in(t, text_terms(u.context)) for t in q.terms if t.term in findings):
+                score += 1.0  # the review's own list of findings, complete, before a mail mentioning one
             score -= 0.001 * len(u.text) + (TABLE_PENALTY if u.table else 0.0)  # among equals: precise prose
             sc = Scored(u, coverage, inline, score, frozenset(credit), types | soft, bool(authored))
             sc.answerable = _answerable(q, sc, attr_hit) and all(
-                credit.get(t, 0) >= 1.0 for t in essential)
+                credit.get(t, 0) >= 1.0 for t in essential) and all(
+                credit.get(t, 0) >= CONTEXT_CREDIT for t in findings) and not (findings and u.formula) and not (
+                criticism_q and not criticism) and all(qualifier_matched(ql, u) for ql in q.qualifiers)
             out.append(sc)
     return out
 
@@ -1448,6 +1739,10 @@ def _select(q: Question, candidates: list[Scored]) -> list[Scored]:
         for c in same_source:
             if c.unit.pos == best.unit.pos + 1:
                 take(c)
+    if q.findings and best.unit.context:  # "Was hat die Prüfingenieurin festgestellt?": the whole list
+        for c in same_source:
+            if c.unit.context == best.unit.context and c not in chosen and len(chosen) < MAX_SENTENCES:
+                take(c)
     if q.decision or (q.temporal and best.authored):
         return chosen
     sources = {best.unit.source.n}
@@ -1491,7 +1786,9 @@ _SUMMARY_SECTIONS = ("allgemein", "zusammenfassung", "bauvorhaben", "beschreibun
 
 def _summary(q: Question, sources: list[Source], units: dict[int, list[Unit]]) -> list[list[Unit]]:
     """'Fasse das Projekt … zusammen.': what is built, the overall assessment and the latest state –
-    each from its own source."""
+    each from its own source. Standard formulas that end every concept or report ("… bestehen keine
+    Bedenken …", "… als vollständig und richtig bescheinigt") are no assessment of this project; without
+    an assessment of its own, the deviations applied for (or that there are none) say how it stands."""
     pool = [s for s in sources if not q.projects or s.project in q.projects]
     projects = {s.project for s in pool if s.project}
     if len(projects) > 1:
@@ -1503,7 +1800,7 @@ def _summary(q: Question, sources: list[Source], units: dict[int, list[Unit]]) -
         for s in pool:
             if s.n in used:
                 continue
-            hit = [u for u in units[s.n] if u.kind == "fact" and pred(u)]
+            hit = [u for u in units[s.n] if u.kind == "fact" and not u.formula and pred(u)]
             if hit:
                 groups.append(hit[:2])
                 used.add(s.n)
@@ -1515,6 +1812,8 @@ def _summary(q: Question, sources: list[Source], units: dict[int, list[Unit]]) -
     first(lambda u: fold(u.context).startswith("zusammenfassung"))
     if len(groups) == n_groups:
         first(lambda u: fold(u.context).startswith("ergebnis"))
+    if len(groups) == n_groups:
+        first(lambda u: fold(u.context).startswith("abweichung"))  # "Keine." is news as well
     latest = _latest_state([s for s in pool if s.n not in used and s.kind != "document"], units)
     if latest:
         groups.append(latest[:1])

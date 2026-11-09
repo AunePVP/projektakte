@@ -111,7 +111,8 @@ def test_participant_lists_and_indirect_questions_are_no_answer():
 
 def test_summary_collects_several_sources():
     a = _ask("Fasse das Projekt Garage Nord zusammen.", MINUTES, CONCEPT, PERMIT_P1, OWNER_NEW)
-    assert "Großgarage" in a and "keine Bedenken" in a and a.count("[") >= 2
+    # the closing formula ("… bestehen keine Bedenken gegen das Bauvorhaben") is no content (round 5)
+    assert "Großgarage" in a and "Probebetrieb" in a and "keine Bedenken" not in a and a.count("[") >= 2
 
 
 def test_dates_need_the_asked_event():

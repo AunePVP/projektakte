@@ -287,6 +287,9 @@ BUILTIN_SYNONYMS = """
 # Abkürzungen und Fachsynonyme aus dem Brandschutz und dem Bauwesen. Eine Gruppe je Zeile:
 #   "A = B = C"  gleichbedeutend (in beide Richtungen)
 #   "A -> B"     A wird zu B erweitert, aber nicht umgekehrt (für mehrdeutige Kürzel und Wörter)
+# Die Liste erweitert auch die Volltextsuche der App: nur Wörter, die in jedem Satz dasselbe meinen –
+# keine Lesart einer bestimmten Frageform (z. B. "geschrieben" als "Verfasser:" in "Wer hat … geschrieben?",
+# die der Fake-Leser selbst kennt).
 BMA = Brandmeldeanlage
 BMZ = Brandmelderzentrale
 RWA = Rauch- und Wärmeabzugsanlage = Rauch- und Wärmeabzug = Rauchabzugsanlage = Rauchabzug = Rauchableitung = Entrauchung = Entrauchungsanlage
@@ -383,10 +386,6 @@ Genehm -> Genehmigung
 Notausgang = Ausgang ins Freie
 Adresse = Anschrift
 unterschreiben = unterzeichnen = Unterschrift
-# wer ein Konzept, einen Bericht oder ein Protokoll geschrieben hat, steht als "Verfasser: …" darüber
-schreiben -> verfassen
-erstellen -> verfassen
-aufstellen -> verfassen
 Adresse -> Grundstück
 # allgemeine Bau- und Alltagswörter
 Geschoss = Stockwerk = Etage
@@ -1083,15 +1082,54 @@ _PASSAGE_NOISE = re.compile(r"^(Betreff|Von|An|Cc|Datum|Gesendet):\s|^(sehr\s+ge
 PASSAGE_LEAD = 150  # at most this much text before the matching sentence (besides its section heading)
 # a section heading in plain text: a numbered section ("7 Organisatorischer Brandschutz", "3.2 Rettungswege")
 # or an agenda item ("TOP 2 – Rauchwarnmelder"); markdown headings ("# 7 …") are known from the text itself
-_PASSAGE_SECTION = re.compile(r"^(?:\d{1,2}(?:\.\d{1,2})*\.?\s+[A-ZÄÖÜ]|TOP\s+\d{1,2}\b)")
+_PASSAGE_SECTION = re.compile(r"^(?:TOP\s+\d{1,2}\b|\d{1,2}(?:\.\d{1,2})*\.?\s+[A-ZÄÖÜ])")
+_PASSAGE_AGENDA = re.compile(r"^TOP\s+\d{1,2}\b")
+_PASSAGE_BARE_NUMBER = re.compile(r"^\d{1,3}\s+\S")  # "2 Pulverlöscher", "7 Organisatorischer Brandschutz"
+# … but a number that counts or measures is no section number: "12 Monate nach Inbetriebnahme", "3 Stück"
+_PASSAGE_QUANTITY = re.compile(r"^\d+(?:[.,]\d+)?\s*(?:Stück|Stk\b|Monate?n?\b|Jahre?n?\b|Wochen?\b|Tage?n?\b|"
+                               r"Stunden?\b|Minuten?\b|Sekunden?\b|Mal\b|Euro\b|EUR\b|€|%|m\b|m²|m³|cm\b|mm\b|km\b|kg\b)")
+_PASSAGE_ENDS_STATEMENT = re.compile(r"[.!?)]$")
+PASSAGE_HEADING_WORDS = 8  # a heading is a short line
+
+
+def _heading_shaped(line: str) -> bool:
+    return len(line.split()) <= PASSAGE_HEADING_WORDS and ":" not in line and not re.search(r"[.!?;,]$", line)
 
 
 def _passage_headings(text: str, lines: list[str]) -> set[int]:
-    """Indexes of the (plain) lines that are section headings."""
+    """Indexes of the (plain) lines that are section headings: markdown headings, agenda items ("TOP 2 –
+    Räumungsübung") and numbered section headings that stand on their own – a short line with a section
+    number, no quantity ("2 Pulverlöscher" after "je Geschoss:" is a list line, "12 Monate nach
+    Inbetriebnahme" a phrase), after a line that ends a statement or is short itself (not after "…
+    zwar je Geschoss:" or in the middle of a wrapped sentence), not continued by the next line ("… ist
+    die erste Prüfung fällig.") and not one of several numbered lines in a row ("3 Wandhydranten / 2
+    Pulverlöscher")."""
     md = {h for raw in (text or "").replace("\r\n", "\n").split("\n") if _MD_HEADING.match(raw.strip())
           for h in plain_lines(raw)}
-    return {i for i, ln in enumerate(lines) if ln in md or (
-        _PASSAGE_SECTION.match(ln) and len(ln.split()) <= 8 and ":" not in ln and not re.search(r"[.!?;,]$", ln))}
+    out = set()
+    for i, ln in enumerate(lines):
+        if ln in md:
+            out.add(i)
+            continue
+        if not _PASSAGE_SECTION.match(ln) or not _heading_shaped(ln):
+            continue
+        if _PASSAGE_AGENDA.match(ln):
+            out.add(i)
+            continue
+        if _PASSAGE_QUANTITY.match(ln):
+            continue
+        prev = lines[i - 1] if i > 0 else ""
+        if prev and (re.search(r"[:,;–-]$", prev) or not (
+                _PASSAGE_ENDS_STATEMENT.search(prev) or len(prev.split()) <= PASSAGE_HEADING_WORDS)):
+            continue  # the line continues a list or a sentence of the line before
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if nxt[:1].islower():
+            continue  # the next line continues this one
+        if _PASSAGE_BARE_NUMBER.match(ln) and any(
+                _PASSAGE_BARE_NUMBER.match(x) and _heading_shaped(x) for x in (prev, nxt)):
+            continue  # "3 Wandhydranten / 2 Pulverlöscher": lines of a list, not sections without text
+        out.add(i)
+    return out
 
 
 def relevant_passage(text: str, question: str = "", answer: str = "", max_chars: int = 400) -> str:
