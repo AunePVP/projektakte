@@ -1210,7 +1210,7 @@ def test_file_statistics_name_what_is_not_read(tmp_path):
     assert (f["files"], f["readable"], f["not_readable"]) == (15, 6, 9)
     assert [e["ext"] for e in f["unsupported"]] == [".dwg", ".msg", ".xlsx"]
     assert f["per_project"][0] == {"number": "BS-2024-0001", "files": 5, "bytes": 8 + 1 + 10 + 20 + 30,
-                                   "readable": 2, "too_big": 0}
+                                   "readable": 2, "too_big": 0, "bad_names": 0}
     bounded = file_statistics(a.projects, root, max_files=4)
     assert bounded["truncated"] and bounded["files"] == 4
 

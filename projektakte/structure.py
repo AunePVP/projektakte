@@ -9,12 +9,15 @@ everything inside it is read, whatever its subfolders are called. This module
   (which types Projektakte reads and which not) and, given the database, the indexed text per
   project – does a project fit into a language model's context window?
 * resolves the *effective* layout: the configured pattern, or with ``PROJECT_NUMBER_PATTERN=auto``
-  the scheme a person confirmed. A detection from folder names alone can be confidently wrong, so
-  it is only ever a *proposal* (stored in the ``meta`` table with the evidence a person needs to
-  judge it); nothing is read as a project until it is confirmed – on the status page
-  („Übernehmen“) or with ``python -m projektakte.structure --uebernehmen`` – and a confirmed scheme
-  never changes on its own: a later, different detection becomes a new proposal next to it, a
-  rejected one is not offered again until the detection changes.
+  the scheme a person confirmed – at exactly the depth it was detected at, which its evidence
+  describes (a PROJECT_FOLDER_DEPTH set next to auto is not used, and the status page says so). A
+  detection from folder names alone can be confidently wrong, so it is only ever a *proposal*
+  (stored in the ``meta`` table with the evidence a person needs to judge it); nothing is read as a
+  project until it is confirmed – on the status page („Übernehmen“) or with
+  ``python -m projektakte.structure --uebernehmen`` – and a confirmed scheme never changes on its
+  own: a later, different detection becomes a new proposal next to it, a rejected one is not
+  offered again until the detection changes, and a share that is suddenly empty (not mounted)
+  changes neither.
 * is the command line tool ``python -m projektakte.structure`` (German output).
 
 Names that are no valid UTF-8 (a share mounted without iocharset=utf8) are read with their real
@@ -37,7 +40,8 @@ Detection follows explicit rules (each one can be named in the report):
    or through year folders) is a container level (customer numbers, …); the projects are the deepest
    such level whose folders are no containers. Folders with numbered internal subfolders are projects,
    and so are folders whose numbered subfolders are records of one kind (the same label in several
-   folders, no folders of their own: PB-22-1001 Prüfbericht, G30001 Gutachten, 2024-017-001 Bauteil).
+   folders, no folders of their own: PB-22-1001 Prüfbericht, G30001 Gutachten, 2024-017-001 Bauteil –
+   a label that says "Projekt" is no kind of record).
    A container groups folders: folders that keep files of their own are containers only when (almost)
    all their subfolders belong to the deeper scheme.
 5. *Outliers do not widen a scheme.* A digit count or separator variant is accepted only when at
@@ -68,6 +72,12 @@ Detection follows explicit rules (each one can be named in the report):
    projects; matches in office folders never raise it, matches in archive and customer folders do.
 8. *Links* are followed inside the share like the app's scan does, but every real folder is listed
    once (links to ancestors, loops and second paths to a folder are skipped).
+9. *Points to check.* What the names alone cannot decide is named with the proposal ("Bitte
+   prüfen"), never decided silently: folders a guard keeps out, matches in office folders, names in a
+   wrong encoding, most proposed folders carrying an office word in their own name (A-2024-001
+   Angebot …), a further scheme in the same folders whose folders have far more structure of their
+   own, and numbered subfolders that are several times as many as the proposed folders and look like
+   projects themselves (1020 Stadt Aachen/1020-01 Kita …).
 """
 from __future__ import annotations
 
@@ -1265,8 +1275,9 @@ def _inner_note(matches: list[_Node], root: Path, depth: int) -> str | None:
     fixed = sum(Counter(v).most_common(1)[0][1] for v in judged)
     if 2 * fixed >= sum(len(v) for v in judged):
         return None  # an outline (same label for the same sub-number) or records of one kind
+
     def kept(c: _Node) -> bool:  # a folder or file of its own – listed already, or looked at now
-        return bool(c.children) or c.files > 0 if c.children is not None else _has_contents(root / c.rel)
+        return (bool(c.children) or c.files > 0) if c.children is not None else _has_contents(root / c.rel)
 
     sample = _sample([c for c, _ in kids], SAMPLE_MEMBERS)
     if 2 * sum(1 for c in sample if kept(c)) < len(sample):
@@ -1573,7 +1584,7 @@ def file_statistics(projects: list[ProjectFolder], root: Path | str, *, max_file
     truncated = False
     last_report = time.monotonic()
     for project in projects:
-        row = {"number": project.number, "files": 0, "bytes": 0, "readable": 0, "too_big": 0}
+        row = {"number": project.number, "files": 0, "bytes": 0, "readable": 0, "too_big": 0, "bad_names": 0}
         stack = [project.path]
         while stack and not truncated:
             folder = stack.pop()
@@ -1608,7 +1619,9 @@ def file_statistics(projects: list[ProjectFolder], root: Path | str, *, max_file
                 row["files"] += 1
                 row["bytes"] += size
                 if ext in SUPPORTED_EXT:
-                    if size <= MAX_FILE_BYTES:
+                    if has_bad_encoding(os.path.relpath(entry.path, project.path)):
+                        row["bad_names"] += 1  # cannot be stored – the documents pass skips it
+                    elif size <= MAX_FILE_BYTES:
                         row["readable"] += 1
                     else:
                         row["too_big"] += 1
@@ -1627,6 +1640,7 @@ def file_statistics(projects: list[ProjectFolder], root: Path | str, *, max_file
     readable = sum(r["readable"] for r in per_project)
     return {"projects": len(per_project), "files": total, "bytes": sum(r["bytes"] for r in per_project),
             "readable": readable, "too_big": sum(r["too_big"] for r in per_project),
+            "bad_names": sum(r["bad_names"] for r in per_project),
             "not_readable": total - readable, "extensions": extensions,
             "unsupported": [e for e in extensions if not e["read"]][:10],
             "per_project": per_project, "truncated": truncated, "max_files": max_files,
@@ -1899,13 +1913,15 @@ def scan_notices(notes: dict | None) -> list[str]:
                    f"(python -m projektakte.structure zeigt die Ordner) oder die Ordner umbenennen.")
     if b := notes.get("bad_names"):
         out.append(f"{de_count(b['count'], 'Ordnername hat', 'Ordnernamen haben')} eine falsche Zeichenkodierung "
-                   f"(z. B. {', '.join((b.get('examples') or [])[:3])}) – sie werden mit � angezeigt. {ENCODING_HINT}.")
+                   f"(z. B. {', '.join((b.get('examples') or [])[:3])}) – sie werden mit � angezeigt. "
+                   f"{ENCODING_HINT}.")
     if f := notes.get("bad_files"):
         one = f["count"] == 1
+        examples = ", ".join((f.get("examples") or [])[:3])
         out.append(f"{de_count(f['count'], 'Datei in Projektordnern wird', 'Dateien in Projektordnern werden')} nicht "
                    f"gelesen, weil {'ihr Name' if one else 'ihre Namen'} eine falsche Zeichenkodierung "
-                   f"{'hat' if one else 'haben'} (z. B. {', '.join((f.get('examples') or [])[:3])}) – {ENCODING_HINT}, "
-                   f"dann {'wird sie' if one else 'werden sie'} beim nächsten Indexierungslauf gelesen.")
+                   f"{'hat' if one else 'haben'} (z. B. {examples}) – {ENCODING_HINT}, dann "
+                   f"{'wird sie' if one else 'werden sie'} beim nächsten Indexierungslauf gelesen.")
     return out
 
 
@@ -2175,7 +2191,8 @@ def layout_for_index(conn: sqlite3.Connection, settings, *, now: datetime | None
         # a share that is suddenly empty is not mounted (like registry.sync_from_folder sees it): nothing
         # is detected, the confirmed scheme and a pending proposal stay as they are
         problem = (f"Projektordner {root} enthält keine Ordner mehr – Laufwerk nicht eingebunden? Die Erkennung "
-                   "wartet, bis er wieder Ordner enthält" + ("; der Vorschlag bleibt bestehen" if layout.proposal else ""))
+                   "wartet, bis er wieder Ordner enthält"
+                   + ("; der Vorschlag bleibt bestehen" if layout.proposal else ""))
         return (layout if layout.pattern else dataclasses.replace(layout, problem=problem)), info
     checked = _parse_time((layout.check or {}).get("checked_at"))
     if checked is not None and timedelta(0) <= now - checked < RECHECK_INTERVAL:
@@ -2414,8 +2431,8 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
         depth = current["depth_setting"]
         out.append(f"Aktuelle Einstellung: PROJECT_NUMBER_PATTERN={current['setting']}, PROJECT_FOLDER_DEPTH={depth}")
         if current.get("depth_ignored"):
-            out.append("  PROJECT_FOLDER_DEPTH gilt nicht zusammen mit PROJECT_NUMBER_PATTERN=auto – gelesen wird die "
-                       "Ordnertiefe des bestätigten Vorschlags (PROJECT_FOLDER_DEPTH weglassen)")
+            out.append("  PROJECT_FOLDER_DEPTH gilt nicht zusammen mit PROJECT_NUMBER_PATTERN=auto – gelesen wird "
+                       "die Ordnertiefe des bestätigten Vorschlags (PROJECT_FOLDER_DEPTH weglassen)")
         if current["pattern"] is None:
             out.append(f"  {current['problem']}")
         elif current.get("pending"):
@@ -2455,6 +2472,8 @@ def _format_files(f: dict) -> list[str]:
     read = [e for e in f["extensions"] if e["read"]]
     out.append(f"  liest Projektakte:       {de_int(f['readable'])}"
                + (" – " + ", ".join(f"{e['ext']} {de_int(e['files'])}" for e in read[:8]) if read else ""))
+    if f.get("bad_names"):
+        out.append(f"  nicht lesbar, Name mit falscher Zeichenkodierung: {de_int(f['bad_names'])} – {ENCODING_HINT}")
     if f["too_big"]:
         out.append(f"  davon zu groß (über {de_size(MAX_FILE_BYTES)}): {de_int(f['too_big'])}")
     out.append(f"  liest Projektakte nicht: {de_int(f['not_readable'])}")

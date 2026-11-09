@@ -285,24 +285,29 @@ def printable(text: str) -> str:
 def real_folder(stored: Path | str) -> Path | None:
     """The real path of a folder whose path is stored with � for bytes that are no valid UTF-8
     (:func:`printable`): every component holding � is looked up among the entries of its parent
-    folder whose printable name is that component. None if one of them is not found, not readable or
-    ambiguous (two names that differ only in such bytes). Paths without � are returned as they are."""
+    folder whose printable name is that component (two names that differ only in such bytes are
+    both followed, the rest of the path decides). None if no folder or more than one fits, or a
+    folder on the way cannot be listed. Paths without � are returned as they are."""
     path = Path(stored)
     if "\ufffd" not in str(path):
         return path
-    current = Path(path.parts[0])
+    candidates = [Path(path.parts[0])]
     for part in path.parts[1:]:
-        if "\ufffd" in part:
+        found: list[Path] = []
+        for folder in candidates:
+            if "\ufffd" not in part:
+                if (folder / part).is_dir():
+                    found.append(folder / part)
+                continue
             try:
-                with os.scandir(current) as entries:
-                    matches = [e.name for e in entries if printable(e.name) == part]
+                with os.scandir(folder) as entries:
+                    found += [folder / e.name for e in entries if printable(e.name) == part and e.is_dir()]
             except OSError:
-                return None
-            if len(matches) != 1:
-                return None
-            part = matches[0]
-        current = current / part
-    return current
+                continue
+        if not found:
+            return None
+        candidates = found
+    return candidates[0] if len(candidates) == 1 else None
 
 
 # -- project folders --------------------------------------------------------------------------------
