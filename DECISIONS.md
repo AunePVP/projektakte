@@ -525,3 +525,21 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   Dekodieren, Grenzen je Seite und Dokument – sie halten den normalen Speicherbedarf klein (A0-Plan
   0,33 statt 1,1 GB), der Leseprozess ist die Absicherung für alles, was sie nicht vorhersehen.
 
+**Projektordner vom Dateiserver**
+- *Vorschlag mit Bestätigung statt stiller Automatik*: Drei Runden Gegenprüfung mit über 150
+  nachgebauten Büro-Ablagen haben gezeigt, dass sich aus Ordnernamen allein nicht in jedem Fall sicher
+  erkennen lässt, welche Ordner Projekte sind – Prüfberichtsordner in Projekten, Kundennummern mit
+  Unterprojekten, Angebote im gleichen Nummernformat. Eine Automatik, die still entscheidet, verliert
+  dann unbemerkt Projekte oder liest Angebote als Projekte. Deshalb ist `auto` ein Vorschlag mit
+  Belegen (Beispiele, Fundorte, Ausnahmen, weitere Schemata, „Bitte prüfen“), den eine Person einmal
+  bestätigt; ein falscher Vorschlag fällt an den Beispielen auf. Eine bestätigte Struktur ändert sich nie
+  von selbst – eine halb eingebundene Freigabe darf nie ändern, welche Ordner als Projekte gelten.
+- *Feste Regeln in der Erkennung*: Kandidaten nur innerhalb einer Ebene; Jahre, Jahresbereiche, Monate,
+  Daten und Nummern mit höchstens zwei Ziffern sind nie Projektnummern; eine Nummer, die mit der des
+  übergeordneten Projekts beginnt, ist interne Gliederung; Ausreißer verbreitern kein Schema;
+  verschiedene Schemata werden nie automatisch verknüpft. Rein numerische Schemata bekommen eine
+  Jahressperre, die nie still Projekte ausschließt (sonst Hinweis oder kein Vorschlag).
+- *SMB nur lesend und außerhalb der Anwendung*: Der Server bindet die Freigabe mit einem Lesekonto und
+  `ro` ein; Projektakte sieht nur einen Ordner. `propagation: rslave`, weil automount und Neustarts des
+  Dateiservers die Freigabe nach dem Container einbinden.
+

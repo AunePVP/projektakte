@@ -274,7 +274,10 @@ Stand und Zahlen: `GET /api/status`; sofort neu indexieren: `POST /api/reindex` 
 `python -m projektakte.index` (ein Durchlauf im Vordergrund, ohne Webserver).
 
 Projekte sind Ordner unter `PROJECTS_DIR`, deren Name mit einer Projektnummer beginnt
-(`PROJECT_NUMBER_PATTERN`, auch eine Ebene tiefer, z. B. in Jahresordnern). Unterstützte Formate: TXT,
+(`PROJECT_NUMBER_PATTERN`), direkt oder tiefer, z. B. in Jahres- oder Kundenordnern
+(`PROJECT_FOLDER_DEPTH`). Das Nummernschema der eigenen Ablage nennt `python -m projektakte.structure`;
+mit `PROJECT_NUMBER_PATTERN=auto` schlägt Projektakte es selbst vor, liest aber erst nach einer
+Bestätigung auf der Statusseite (deploy/README.md, „Projektordner vom Dateiserver“). Unterstützte Formate: TXT,
 Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften und Tabellen), EML.
 Textdateien in UTF-8, UTF-16/32 (auch Windows-„Unicode“) oder cp1252. Bilder (PNG/JPG/TIFF) und
 PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1` über das multimodale Modell gelesen, sonst
@@ -451,7 +454,8 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LOG_LEVEL` | `INFO` | Log-Level für Anwendung und Webserver |
 | `PROJECTS_DIR` | `$DATA_DIR/projekte` (mit `DEMO_MODE=1`: `$DATA_DIR/demo/projekte`) | Projektordner (read-only) |
 | `MAIL_DIR` | `$DATA_DIR/mails` (mit `DEMO_MODE=1`: `$DATA_DIR/demo/mails`) | Ordner mit `.eml`-Dateien (read-only) |
-| `PROJECT_NUMBER_PATTERN` | `BS-\d{4}-\d{4}` | Regulärer Ausdruck für Projektnummern |
+| `PROJECT_NUMBER_PATTERN` | `BS-\d{4}-\d{4}` | Regulärer Ausdruck für Projektnummern; `auto` = Vorschlag, gilt erst nach Bestätigung auf der Statusseite |
+| `PROJECT_FOLDER_DEPTH` | `2` | Ebene der Projektordner: 1 = direkt in `PROJECTS_DIR`, 2 = auch in Jahresordnern, 3 = Kunde/Jahr/Projekt (bis 6); bei `auto` aus dem bestätigten Vorschlag |
 | `DEMO_MODE` | `0` | `1` = Demo-Datensatz verwenden (und beim Start erzeugen, falls er fehlt) |
 | `AI_MODE` | `real` | `fake` = Fake-KI-Dienste im selben Prozess starten, URLs werden ignoriert |
 | `LLM_URL` | `http://192.168.178.62:8000/v1` | Sprachmodell (OpenAI-kompatibel) |

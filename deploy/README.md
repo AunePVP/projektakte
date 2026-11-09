@@ -72,18 +72,41 @@ einen leeren Ordner anlegen (Docker legt fehlende Quellordner in dieser Schreibw
 Name mit einer Projektnummer beginnt (`2024-017 Kita Regenbogen`, `BS-2024-0137 Grundschule …`); was
 darin liegt, wird mit allen Unterordnern gelesen, egal wie sie heißen. Wie eure Nummern aussehen und
 auf welcher Ebene die Projektordner liegen (direkt in der Freigabe, unter Jahresordnern, unter
-Kundenordnern), prüft ein Befehl, der nur die Ordnernamen liest:
+Kundenordnern), lässt sich auf zwei Wegen festlegen:
+
+*a) Von Hand, mit Hilfe des Prüfbefehls* (empfohlen, wenn ihr euer Schema kennt). Der Befehl liest nur
+Ordner- und Dateinamen, nie Inhalte, und verändert nichts:
 
 ```bash
 docker compose exec app python -m projektakte.structure
 ```
 
-Er nennt das erkannte Nummernschema, die Ebene, die gefundenen Projekte, Ordner ohne Nummer (z. B.
-`Archiv`, `_Vorlagen`) und Dateitypen, die Projektakte nicht liest, und gibt die passenden Zeilen
-für `projektakte.env` aus (`PROJECT_NUMBER_PATTERN`, `PROJECT_FOLDER_DEPTH`). Alternativ
-`PROJECT_NUMBER_PATTERN=auto`: Projektakte erkennt das Schema beim ersten Lauf selbst, merkt es sich
-und wechselt danach nicht mehr von allein (eine halb eingebundene Freigabe darf nie ändern, welche
-Ordner als Projekte gelten); eine Abweichung meldet die Statusseite.
+Er nennt das erkannte Nummernschema in Worten und als Ausdruck, die Ebene, die gefundenen Projekte mit
+Beispielen und Fundorten, Ordner ohne Nummer (z. B. `Archiv`, `_Vorlagen`, `00_Allgemein`), weitere
+Nummernschemata (z. B. Angebote `AN-2024-001` – nie automatisch als Projekte), Dateitypen, die
+Projektakte nicht liest (`.doc`, `.xlsx`, `.msg`, `.dwg` …), und gibt die Zeilen für
+`projektakte.env` aus (`PROJECT_NUMBER_PATTERN`, `PROJECT_FOLDER_DEPTH`). Exit-Code 0 = Schema
+gefunden, 1 = kein eindeutiges Schema (mit Begründung und den nächsten Kandidaten), 2 = Ordner nicht
+lesbar, 3 = falscher Aufruf. Mit vorhandener Datenbank zeigt er außerdem je Projekt die Textmenge in
+Token und ob das Projekt ganz in ein Kontextfenster von 32k/128k/1M passen würde.
+
+*b) Vorschlag mit Bestätigung:* `PROJECT_NUMBER_PATTERN=auto`. Projektakte erkennt Schema und Ebene
+selbst, **liest aber nichts als Projekt, bevor eine Person den Vorschlag bestätigt hat**. Die
+Statusseite zeigt unter „Projektordner“ die Belege – Schema, Ebene, Anzahl, Fundorte, Beispiele,
+Ausnahmen, weitere Schemata und „Bitte prüfen“-Hinweise – und die Knöpfe „Übernehmen“ und „Ablehnen“;
+alternativ `python -m projektakte.structure --uebernehmen` (bestätigt, was der Befehl gerade
+ausgegeben hat). Gespeichert wird, wer wann bestätigt hat. Bis dahin pausieren Projekte, Dokumente und
+Mail-Zuordnung („Vorschlag zur Projektstruktur wartet auf Bestätigung“). Eine bestätigte Struktur
+ändert sich nie von selbst: Ergibt eine spätere Prüfung (höchstens stündlich, oder „Ordner jetzt neu
+prüfen“) etwas anderes, erscheint das als neuer Vorschlag daneben, die bestätigte Struktur gilt weiter.
+Warum mit Bestätigung: Aus Ordnernamen allein lässt sich nicht in jedem Fall sicher erkennen, was ein
+Projekt ist (Prüfberichtsordner in Projekten, Kundennummern, Angebote im gleichen Format) – ein
+falscher Vorschlag fällt an den Beispielen sofort auf, eine stille Automatik würde Projekte
+unbemerkt verlieren.
+
+Ordnernamen mit falscher Zeichenkodierung (Freigabe ohne `iocharset=utf8` eingebunden) zeigt
+Projektakte mit � an und meldet sie auf der Statusseite; die Freigabe dann wie oben mit
+`iocharset=utf8` einbinden.
 
 **6. Wenn die Freigabe fehlt.** Projektakte löscht dann nichts: Fehlt der Ordner oder ist er leer,
 obwohl Projekte bekannt sind, bleiben Projekte und Dokumente unverändert, die Statusseite warnt

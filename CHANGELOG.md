@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen. Format angelehnt an „Keep a Changelog“; ein Abschnitt je
 Roadmap-Schritt.
 
+## [Unveröffentlicht] – Projektordner vom Dateiserver
+
+- **Projektordner per SMB:** Anleitung in deploy/README.md (Lesekonto, `/etc/fstab` mit `ro` und
+  `iocharset=utf8`, automount); `compose.yaml` reicht die Freigabe mit `propagation: rslave` durch,
+  damit der Container sie auch sieht, wenn sie erst nach ihm eingebunden wird.
+- **Projektstruktur:** `PROJECT_FOLDER_DEPTH` (1–6) für Projektordner unter Jahres- oder
+  Kundenordnern. `python -m projektakte.structure` liest nur Ordner- und Dateinamen und nennt
+  Nummernschema, Ebene, gefundene Projekte, Ausnahmen, weitere Schemata, nicht gelesene Dateitypen,
+  die Textmenge je Projekt (Token, passt in 32k/128k/1M?) und die Zeilen für `projektakte.env`.
+- **`PROJECT_NUMBER_PATTERN=auto` als Vorschlag mit Bestätigung:** gelesen wird erst, wenn eine Person
+  den Vorschlag auf der Statusseite oder per Befehl bestätigt; eine bestätigte Struktur ändert sich nie
+  von selbst. Jahre, Daten und kurze Ordnernummern sind nie Projektnummern, nummerierte Unterordner
+  gehören zum Projekt, Angebote/Anfragen/Rechnungen werden nie automatisch Projekte.
+- Ordner- und Dateinamen mit falscher Zeichenkodierung brechen das Einlesen nicht mehr ab; ein
+  unbrauchbares `PROJECT_NUMBER_PATTERN` hält die Anwendung nicht an.
+
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 
 Nach 0.4.0 folgten eine Schlussprüfung (Code-Review und Live-Vorführung) und vier Runden
