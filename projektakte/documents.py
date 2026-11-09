@@ -498,14 +498,22 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
                 unlisted.append(stored_root / Path(os.fsdecode(e.filename)).relative_to(root))
             except ValueError:
                 unlisted.append(Path(printable(os.fsdecode(e.filename))))
+    kept = 0
     for key, row in state.by_path.items():
         if key in seen:
             continue
         if any(Path(key).is_relative_to(d) for d in unlisted):
             continue  # folder could not be listed this time – not proof that the file is gone
+        if bad and not key.isascii():
+            kept += 1  # maybe the same file, listed under a name in a wrong encoding (share mounted
+            continue  # without iocharset) – removing it would mean reading it all again after a fix
         conn.execute("DELETE FROM chunks WHERE doc_id = ?", (row["id"],))
         conn.execute("DELETE FROM documents WHERE id = ?", (row["id"],))
         stats["removed"] += 1
+    if kept:
+        warn_once(log, "Projekt %s: %d Dokument(e) mit Umlauten im Namen nicht gefunden, aber behalten – "
+                       "vermutlich dieselben Dateien unter falscher Zeichenkodierung (%s)",
+                  project["number"], kept, ENCODING_HINT)
     conn.commit()
     return stats
 

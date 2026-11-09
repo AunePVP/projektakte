@@ -455,7 +455,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `PROJECTS_DIR` | `$DATA_DIR/projekte` (mit `DEMO_MODE=1`: `$DATA_DIR/demo/projekte`) | Projektordner (read-only) |
 | `MAIL_DIR` | `$DATA_DIR/mails` (mit `DEMO_MODE=1`: `$DATA_DIR/demo/mails`) | Ordner mit `.eml`-Dateien (read-only) |
 | `PROJECT_NUMBER_PATTERN` | `BS-\d{4}-\d{4}` | Regulärer Ausdruck für Projektnummern; `auto` = Vorschlag, gilt erst nach Bestätigung auf der Statusseite |
-| `PROJECT_FOLDER_DEPTH` | `2` | Ebene der Projektordner: 1 = direkt in `PROJECTS_DIR`, 2 = auch in Jahresordnern, 3 = Kunde/Jahr/Projekt (bis 6); bei `auto` aus dem bestätigten Vorschlag |
+| `PROJECT_FOLDER_DEPTH` | `2` | Ebene der Projektordner: 1 = direkt in `PROJECTS_DIR`, 2 = auch in Jahresordnern, 3 = Kunde/Jahr/Projekt (bis 6); bei `auto` immer aus dem bestätigten Vorschlag (eine eingestellte Ebene wird dann nicht verwendet, Warnung beim Start) |
 | `DEMO_MODE` | `0` | `1` = Demo-Datensatz verwenden (und beim Start erzeugen, falls er fehlt) |
 | `AI_MODE` | `real` | `fake` = Fake-KI-Dienste im selben Prozess starten, URLs werden ignoriert |
 | `LLM_URL` | `http://192.168.178.62:8000/v1` | Sprachmodell (OpenAI-kompatibel) |

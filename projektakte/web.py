@@ -867,7 +867,15 @@ def original_file(s, d) -> Path | None:
         raw = d["path"]
     if not raw:
         return None
-    path = Path(raw).resolve()
+    path = Path(raw)
+    if "\ufffd" in raw:  # a folder name in a wrong encoding (stored with �): open it under its real name
+        from .documents import real_folder
+
+        parent = real_folder(path.parent)
+        if parent is None:
+            return None
+        path = parent / path.name
+    path = path.resolve()
     roots = [s.projects_dir.resolve(), s.cache_dir.resolve()]
     if not any(path.is_relative_to(r) for r in roots) or not path.is_file():
         return None

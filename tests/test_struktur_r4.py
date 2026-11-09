@@ -293,7 +293,7 @@ def test_a_more_structured_scheme_beside_is_flagged(tmp_path):
        *(f"{y}/{y}-{i:03d} {OBJ[i % 7]}/{sub}" for y in (2023, 2024) for i in range(1, 26) for sub in SUBS))
     p = analyse(tmp_path).proposal
     assert p.pattern == r"X-\d{4}-\d{3}"
-    assert len(p.notes) == 1 and r"die Ordner von \d{4}-\d{3} die Projekte?" in p.notes[0]
+    assert len(p.notes) == 1 and r"Sind die Ordner von \d{4}-\d{3} die Projekte" in p.notes[0]
 
 
 # ============================================================================ 5. customer numbers with sub-projects
@@ -308,7 +308,7 @@ def test_customers_holding_numbered_projects_are_flagged(tmp_path, prefix, base,
                        for j in range(1, rnd.randint(3, 7)) for sub in SUBS))
     p = analyse(tmp_path).proposal
     assert p.projects == 30
-    note = next(n for n in p.notes if "sind vielleicht die Unterordner die Projekte?" in n)
+    note = next(n for n in p.notes if "Sind es eigene Projekte" in n)
     assert note.startswith("Die vorgeschlagenen Ordner enthalten je mehrere nummerierte Unterordner mit eigener "
                            "Ablage") and f"(etwa {expression})" in note and "PROJECT_FOLDER_DEPTH=2" in note
 
@@ -319,7 +319,7 @@ def test_the_review_case_is_flagged_on_the_status_page(tmp_path):
     s = settings_for(tmp_path, root)
     run_index(s)
     page = section(client_for(s).get("/status").text)
-    assert "Bitte prüfen" in page and "sind vielleicht die Unterordner die Projekte?" in page
+    assert "Bitte prüfen" in page and "Sind es eigene Projekte" in page
 
 
 @pytest.mark.parametrize("layout", ["outline", "records", "few", "empty"])
@@ -491,3 +491,53 @@ def test_file_statistics_name_files_in_a_wrong_encoding(tmp_path, capsys):
     assert main([str(root)]) == 0
     assert "nicht lesbar, Name mit falscher Zeichenkodierung: 1 – Freigabe mit iocharset=utf8 einbinden" in (
         capsys.readouterr().out)
+
+
+# ============================================================================ verify4 follow-ups
+def test_a_remount_without_iocharset_keeps_the_documents_with_umlauts(tmp_path):
+    """verify4 e5: mounted once without iocharset=utf8, "Prüfbericht.txt" arrives as b"Pr\\xfcfbericht.txt";
+    the indexed document was removed and, after the share was mounted correctly again, extracted again
+    from scratch. Now it is kept (maybe the same file) and found unchanged afterwards."""
+    root = tmp_path / "p"
+    for i in (1, 2):
+        folder = mk(root, f"2024-{i:03d} Halle") / f"2024-{i:03d} Halle"
+        (folder / "Bericht.txt").write_text("Bericht: Rettungswege geprüft.", encoding="utf-8")
+        (folder / "Prüfbericht.txt").write_text("Prüfbericht: keine Mängel.", encoding="utf-8")
+    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN=YEAR_NUM)
+    assert run_index(s)["documents"]["new"] == 4
+    raw = os.fsencode(root / "2024-001 Halle")
+    os.rename(raw + "/Prüfbericht.txt".encode(), raw + b"/Pr\xfcfbericht.txt")  # what a wrong mount shows
+    stats = run_index(s)["documents"]
+    assert stats["removed"] == 0 and stats["bad_names"] == 1
+    assert documents_by_project(s) == {"2024-001": 2, "2024-002": 2}
+    os.rename(raw + b"/Pr\xfcfbericht.txt", raw + "/Prüfbericht.txt".encode())  # mounted correctly again
+    again = run_index(s)["documents"]
+    assert (again["new"], again["changed"], again["unchanged"], again["removed"]) == (0, 0, 4, 0)
+    # a file without umlauts that is really gone still leaves the index
+    os.remove(raw + b"/Bericht.txt")
+    assert run_index(s)["documents"]["removed"] == 1
+
+
+def test_original_file_in_a_folder_with_a_wrong_encoding_can_be_opened(tmp_path):
+    """verify4 e4: such documents were indexed, but "Originaldatei öffnen" answered 404."""
+    root = bad_share(tmp_path / "p")
+    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN=YEAR_NUM)
+    run_index(s)
+    with db.session(s.db_path) as conn:
+        doc_id = conn.execute("SELECT id FROM documents WHERE path LIKE '%�%' ORDER BY id").fetchone()[0]
+    r = client_for(s).get(f"/dokumente/{doc_id}/datei")
+    assert r.status_code == 200 and r.content
+
+
+def test_file_statistics_keep_davon_with_the_readable_files(tmp_path, capsys):
+    """verify4: "davon zu groß" followed the bad-name line and seemed to refer to it."""
+    root = five_projects(tmp_path / "p")
+    write(os.fsencode(root / f"2024-001 {name(1)}") + b"/Pr\xfcfung.txt")
+    big = root / f"2024-002 {name(2)}" / "Plan.pdf"
+    with open(big, "wb") as f:
+        f.truncate(documents.MAX_FILE_BYTES + 1)
+    assert main([str(root)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    i = next(n for n, line in enumerate(lines) if line.strip().startswith("liest Projektakte:"))
+    assert lines[i + 1].strip().startswith("davon zu groß")
+    assert lines[i + 2].strip().startswith("nicht lesbar, Name mit falscher Zeichenkodierung")

@@ -22,7 +22,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
-- Testsuite: `sh scripts/test.sh` (pytest-xdist, gut 1.750 Tests, etwa 75 s). Docker-Probelauf:
+- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.800 Tests, etwa 90 s). Docker-Probelauf:
   `sh scripts/docker-smoke.sh`.
 
 ## 3. Stand in Zahlen
@@ -30,7 +30,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
 | Was | Ergebnis |
 |---|---|
 | Phase A (14 Roadmap-Schritte), Zuordnung in plMail, Nachbesserungen | fertig (ROADMAP 1–16a) |
-| Testsuite | grün (zuletzt 1752 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
+| Testsuite | grün (zuletzt 1790 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
 | Docker-Probelauf | grün |
 | Eigener Evaluationssatz mit Fake-KI | 103/103 |
 | Zurückgehaltener Prüfsatz (unabhängiger Autor) mit Fake-KI | 19/28 beantwortbare richtig (0,68), 12/12 Absagen, 0 erfundene Antworten |
@@ -239,13 +239,11 @@ zusammenfassen: „Frage zu X wurde mit der richtigen Quelle beantwortet / nicht
 
 1. **Schritt 17: mit der lokalen KI messen und Schwellwerte einstellen** (Abschnitt 7). Erst danach
    ist die Antwortqualität im Echtbetrieb belegt. Danach Version 1.0.
-2. **Projektstruktur, letzte Runde:** Behoben werden
-   - eine einzelne Datei mit falsch kodiertem Namen, die heute das Einlesen späterer Projekte
-     blockiert;
-   - eine von Hand gesetzte `PROJECT_FOLDER_DEPTH`, die den bestätigten Vorschlag still überstimmt;
-   - zusätzlich kommen „Bitte prüfen“-Hinweise bei Kunden- und Angebotsordnern.
-
-   Der Stand steht im CHANGELOG unter „Unveröffentlicht“.
+2. **Projektstruktur:** fertig und viermal gegengeprüft (Vorschlag mit Bestätigung, Zeichenkodierung,
+   Ebene aus dem Vorschlag, „Bitte prüfen“-Hinweise). Bekannte Grenze: Aus Ordnernamen allein ist nicht
+   jede Ablage eindeutig – in Prüfungen mit über 150 nachgebauten Ablagen war der Vorschlag meist
+   richtig, sonst kein Vorschlag mit Begründung oder ein falscher, der an den Beispielen auffällt.
+   Deshalb immer die Beispiele ansehen, bevor man „Übernehmen“ drückt.
 3. **Nicht gelesene Dateitypen:** `.doc`, `.xls`/`.xlsx`, `.msg` (Outlook), `.pptx`, `.odt`, `.dwg`.
    Der Strukturbefehl zeigt, wie viele davon in euren Projekten liegen. `.msg` und `.xlsx` sind
    vermutlich die wichtigsten Kandidaten zum Ergänzen.

@@ -104,9 +104,16 @@ Projekt ist (Prüfberichtsordner in Projekten, Kundennummern, Angebote im gleich
 falscher Vorschlag fällt an den Beispielen sofort auf, eine stille Automatik würde Projekte
 unbemerkt verlieren.
 
-Ordnernamen mit falscher Zeichenkodierung (Freigabe ohne `iocharset=utf8` eingebunden) zeigt
-Projektakte mit � an und meldet sie auf der Statusseite; die Freigabe dann wie oben mit
-`iocharset=utf8` einbinden.
+Die beiden ausgegebenen Zeilen zusammen übernehmen – oder `PROJECT_NUMBER_PATTERN=auto` **ohne**
+`PROJECT_FOLDER_DEPTH`: Mit `auto` gilt immer die Ebene des bestätigten Vorschlags (genau das, was die
+Belege zeigten); eine daneben eingestellte Ebene wird nicht verwendet und beim Start gemeldet. Ist die
+Freigabe plötzlich leer, gilt sie als nicht eingebunden: Vorschlag und bestätigte Struktur bleiben.
+
+Namen mit falscher Zeichenkodierung (Freigabe ohne `iocharset=utf8` eingebunden): Ordner liest
+Projektakte unter ihrem echten Namen und zeigt sie mit � an; Dateien mit solchen Namen werden
+übersprungen (nicht gelesen) und auf der Statusseite gemeldet. Bereits eingelesene Dokumente mit
+Umlauten bleiben in diesem Fall im Index, statt nach dem Korrigieren der Einbindung neu gelesen
+werden zu müssen. Die Freigabe dann wie oben mit `iocharset=utf8` einbinden.
 
 **6. Wenn die Freigabe fehlt.** Projektakte löscht dann nichts: Fehlt der Ordner oder ist er leer,
 obwohl Projekte bekannt sind, bleiben Projekte und Dokumente unverändert, die Statusseite warnt

@@ -1245,9 +1245,10 @@ def _structure_note(best: _Scheme, hints: list[dict], depth: int) -> str | None:
             return (f"Daneben, in denselben Ordnern, liegt das Schema {h['pattern']} "
                     f"({'etwa ' if h['estimated'] else ''}{de_count(h['folders'], 'Ordner', 'Ordner')}, z. B. "
                     f"{', '.join(h['examples'][:2])}); {round(100 * theirs)} % seiner Ordner haben eigene Unterordner, "
-                    f"von den vorgeschlagenen Projektordnern nur {round(100 * mine)} % – sind vielleicht die Ordner "
-                    f"von {h['pattern']} die Projekte? Dann {_alone_setting(h, depth)} von Hand einstellen (beide "
-                    f"zusammen: PROJECT_NUMBER_PATTERN={h['combined']}).")
+                    f"von den vorgeschlagenen Projektordnern nur {round(100 * mine)} %. Sind das Angebote oder "
+                    f"eine Nebenablage, ist der Vorschlag richtig. Sind die Ordner von {h['pattern']} die Projekte, "
+                    f"dann {_alone_setting(h, depth)} von Hand einstellen (beide zusammen: "
+                    f"PROJECT_NUMBER_PATTERN={h['combined']}).")
     return None
 
 
@@ -1291,7 +1292,8 @@ def _inner_note(matches: list[_Node], root: Path, depth: int) -> str | None:
     level = max(c.depth for c, _ in kids)
     return (f"Die vorgeschlagenen Ordner enthalten je mehrere nummerierte Unterordner mit eigener Ablage (etwa "
             f"{de_int(count)} bei {de_count(proposed, 'Projektordner', 'Projektordnern')}, z. B. "
-            f"{', '.join(c.rel for c, _ in kids[:3])}) – sind vielleicht die Unterordner die Projekte? Dann "
+            f"{', '.join(c.rel for c, _ in kids[:3])}). Sind das Teile eines Projekts (Gutachten, Bauabschnitte, "
+            f"Teilaufträge), ist der Vorschlag richtig. Sind es eigene Projekte (z. B. Kunde → Projekt), dann "
             f"PROJECT_NUMBER_PATTERN passend zu ihren Nummern (etwa {expression}) und PROJECT_FOLDER_DEPTH="
             f"{max(level, depth)} von Hand einstellen und mit python -m projektakte.structure prüfen.")
 
@@ -2472,10 +2474,10 @@ def _format_files(f: dict) -> list[str]:
     read = [e for e in f["extensions"] if e["read"]]
     out.append(f"  liest Projektakte:       {de_int(f['readable'])}"
                + (" – " + ", ".join(f"{e['ext']} {de_int(e['files'])}" for e in read[:8]) if read else ""))
-    if f.get("bad_names"):
-        out.append(f"  nicht lesbar, Name mit falscher Zeichenkodierung: {de_int(f['bad_names'])} – {ENCODING_HINT}")
     if f["too_big"]:
         out.append(f"  davon zu groß (über {de_size(MAX_FILE_BYTES)}): {de_int(f['too_big'])}")
+    if f.get("bad_names"):
+        out.append(f"  nicht lesbar, Name mit falscher Zeichenkodierung: {de_int(f['bad_names'])} – {ENCODING_HINT}")
     out.append(f"  liest Projektakte nicht: {de_int(f['not_readable'])}")
     if f["unsupported"]:
         out.extend(_table([[e["ext"], de_int(e["files"]), de_size(e["bytes"])] for e in f["unsupported"]],

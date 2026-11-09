@@ -16,8 +16,15 @@ Roadmap-Schritt.
   den Vorschlag auf der Statusseite oder per Befehl bestätigt; eine bestätigte Struktur ändert sich nie
   von selbst. Jahre, Daten und kurze Ordnernummern sind nie Projektnummern, nummerierte Unterordner
   gehören zum Projekt, Angebote/Anfragen/Rechnungen werden nie automatisch Projekte.
-- Ordner- und Dateinamen mit falscher Zeichenkodierung brechen das Einlesen nicht mehr ab; ein
-  unbrauchbares `PROJECT_NUMBER_PATTERN` hält die Anwendung nicht an.
+- Ordner- und Dateinamen mit falscher Zeichenkodierung brechen das Einlesen nicht mehr ab: Ordner
+  werden unter ihrem echten Namen gelesen (auch „Originaldatei öffnen“), Dateien übersprungen und
+  gemeldet, bereits eingelesene Dokumente mit Umlauten bleiben bei einer falschen Einbindung im
+  Index. Ein unbrauchbares `PROJECT_NUMBER_PATTERN` hält die Anwendung nicht an.
+- Mit `auto` gilt die Ebene des bestätigten Vorschlags (eine eingestellte Ebene wird gemeldet, nicht
+  verwendet); „Bitte prüfen“-Hinweise bei Angebotsordnern, Schemata mit mehr Ablagestruktur und
+  Kundenordnern mit nummerierten Unterprojekten; ein leerer Einhängepunkt löscht keinen Vorschlag;
+  `/api/status` ohne absoluten Pfad der Freigabe.
+- 1790 Tests (4 Integrationstests übersprungen, 1 xfail).
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 
