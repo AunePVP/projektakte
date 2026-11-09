@@ -63,6 +63,27 @@ def _int(value: str | None, default: int) -> int:
         return default
 
 
+# below this the extraction worker cannot even load its libraries (about 80 MB) and a scan page
+EXTRACT_MEMORY_MIN_MB = 256
+
+
+def _extract_memory(env: Mapping[str, str], warnings: list[str]) -> int:
+    """EXTRACT_MEMORY_MB: a whole number of megabytes, at least EXTRACT_MEMORY_MIN_MB."""
+    raw = (env.get("EXTRACT_MEMORY_MB") or "").strip()
+    default = 2048
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        warnings.append(f"EXTRACT_MEMORY_MB={raw} ist keine ganze Zahl (Megabyte) – verwendet werden {default} MB")
+        return default
+    if value < EXTRACT_MEMORY_MIN_MB:
+        warnings.append(f"EXTRACT_MEMORY_MB={raw} ist zu klein – verwendet werden {EXTRACT_MEMORY_MIN_MB} MB")
+        return EXTRACT_MEMORY_MIN_MB
+    return value
+
+
 def _assign_mode(value: str | None, plmail: bool) -> str:
     value = (value or "").strip().lower()
     if value in ("auto", "manual"):
@@ -147,6 +168,13 @@ class Settings:
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
     rerank_api_key: str = field(default="", repr=False)
+    # reading PDF, Word and mail files in a worker process with operating-system limits (extract_worker):
+    # on unless APP_ENV=test; address space in MB, CPU seconds per file, and a wall-clock backstop in
+    # seconds without progress (every answer of the vision model starts it again)
+    extract_isolation: bool = True
+    extract_memory_mb: int = 2048
+    extract_cpu_seconds: float = 120.0
+    extract_wall_seconds: float = 3600.0
 
     @property
     def plmail_enabled(self) -> bool:
@@ -195,10 +223,19 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             extra_body = {}
     except json.JSONDecodeError:
         extra_body = {}
+    app_env = (e.get("APP_ENV") or "dev").strip().lower()
+    # computed before Settings(...): their warnings must be in config_warnings
+    extract = {
+        # the test suite patches the extraction and passes stub models: it stays in-process there
+        "extract_isolation": _bool(e.get("EXTRACT_ISOLATION"), app_env != "test"),
+        "extract_memory_mb": _extract_memory(e, warnings),
+        "extract_cpu_seconds": _timeout(e, "EXTRACT_CPU_SECONDS", 120.0, warnings),
+        "extract_wall_seconds": _timeout(e, "EXTRACT_WALL_SECONDS", 3600.0, warnings),
+    }
     return Settings(
         port=_int(e.get("PORT"), 8000),
         data_dir=data_dir,
-        app_env=(e.get("APP_ENV") or "dev").strip().lower(),
+        app_env=app_env,
         projects_dir=Path(e.get("PROJECTS_DIR") or default_projects),
         mail_dir=Path(e.get("MAIL_DIR") or default_mails),
         project_number_pattern=e.get("PROJECT_NUMBER_PATTERN") or DEFAULT_PROJECT_NUMBER_PATTERN,
@@ -257,4 +294,5 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         llm_api_key=e.get("LLM_API_KEY", ""),
         embed_api_key=e.get("EMBED_API_KEY", ""),
         rerank_api_key=e.get("RERANK_API_KEY", ""),
+        **extract,
     )

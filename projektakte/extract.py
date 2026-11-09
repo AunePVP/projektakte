@@ -21,6 +21,12 @@ TEXT_EXT = {".txt", ".text", ".md", ".markdown", ".csv", ".log"}
 IMAGE_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
              ".tif": "image/tiff", ".tiff": "image/tiff", ".webp": "image/webp"}
 SUPPORTED_EXT = TEXT_EXT | {".pdf", ".docx", ".eml"} | set(IMAGE_EXT)
+# Formats whose structure is parsed (PDF objects and images, ZIP/XML, MIME): during an indexing pass with
+# EXTRACT_ISOLATION they are read in the extraction worker process with operating-system limits (see
+# extract_worker). Text files are only decoded, and images go to the vision model as they are.
+STRUCTURED_EXT = {".pdf", ".docx", ".eml"}
+# The address-space limit of the process in MB, if it has one (set in the extraction worker): for messages.
+MEMORY_LIMIT_MB: int | None = None
 VISION_PROMPT = (
     "Transkribiere den gesamten lesbaren Text dieses gescannten Dokuments bzw. Plans auf Deutsch. "
     "Beschreibe bei Plänen kurz Inhalt, Beschriftungen und Brandschutz-Symbole. Erfinde nichts."
@@ -37,7 +43,12 @@ VISION_PROMPT = (
 #    content walk and each document are bounded; inline images inside forms are read; large JPEGs are
 #    decoded at reduced scale – incomplete documents of version 4 are read again (e.g. a page with "184
 #    Bild(er) nicht ausgewertet" that holds one image under many names).
-EXTRACT_VERSION = 5
+# 6: soft masks (/SMask) are measured, counted and applied by the extraction itself (onto white), never
+#    in chains; JPEG 2000 and JPEGs with /Decode or a soft mask are decoded at reduced scale; pages that
+#    can draw no image (vector drawings, CAD plans with outlined text) count as blank instead of "Inhalt
+#    zu umfangreich"; images that are too large to decode (memory, pypdf's data limits) or have no size
+#    are told apart and not retried – incomplete documents of version 5 are read again.
+EXTRACT_VERSION = 6
 # Images of one PDF page that are sent to the model one by one (scanners write one image per page).
 # A page with more images – scanners and PDF tools that cut a page into strips or tiles – is put
 # together into one image at the images' positions on the page and sent as that.
@@ -74,8 +85,16 @@ MAX_PAGE_PIXELS = 150_000_000
 MAX_DOC_VISION_CALLS = 500
 MAX_DOC_PIXELS = 4_000_000_000
 # Each decoding is charged at least this many pixels against MAX_DOC_PIXELS (a decoding has a fixed
-# cost, JBIG2 even starts a program): bounds documents made of thousands of tiny images.
+# cost, JBIG2 even starts a program): bounds documents made of thousands of tiny images. Decoded data
+# beyond what the image's size needs (raw samples that inflate far beyond /Width × /Height, which pypdf
+# decompresses all the same, up to 75 MB) is charged on top, one byte as one pixel: the charge follows the
+# work, not the declaration.
 _MIN_DECODE_CHARGE = 250_000
+_BYTES_PER_PIXEL = 4  # decoded data an image may plausibly need per pixel (8-bit CMYK) before it is excess
+# A JPEG 2000 image that cannot be decoded at reduced scale (indexed or special colour spaces, alpha in the
+# data, 16 bit) goes through pypdf, which decodes it in full – OpenJPEG holds four bytes per sample – and
+# encodes and decodes it once more: about 36 bytes per pixel. It counts this many times its pixels.
+_JPX_FULL_DECODE_WEIGHT = 8
 # Putting a page together may paste and rescale at most this multiple of MAX_IMAGE_PIXELS (strips and
 # tiles cover the page about once; heavily overlapping placements are no strip or tile scan).
 _COMPOSE_WORK_FACTOR = 8
@@ -213,12 +232,18 @@ def _pdf(data: bytes, llm, name: str) -> Extracted:
     reader = PdfReader(io.BytesIO(data))
     pages = []
     empty_pages = []
+    texts: dict[tuple, str] = {}  # pages drawing the same content with the same resources: one extraction
     for i, page in enumerate(reader.pages, start=1):
+        key = _text_key(page)
         try:
-            text = page.extract_text() or ""
+            text = texts[key] if key in texts else page.extract_text() or ""
+        except MemoryError:
+            raise
         except Exception as exc:  # noqa: BLE001 – broken pages must not stop indexing
             log.warning("%s Seite %d: Text nicht lesbar (%s)", name, i, exc)
             text = ""
+        if key is not None:
+            texts[key] = text
         if len(text.strip()) < 20:
             empty_pages.append((i, page))
         else:
@@ -248,9 +273,49 @@ def _pdf(data: bytes, llm, name: str) -> Extracted:
                      message=f"Scan ohne Textebene – {scan.reason()}", incomplete=True, retry=scan.retry)
 
 
+def _text_key(page) -> tuple | None:
+    """What a page's text depends on – its content streams (by PDF object), resources (by PDF object, or
+    the entries of a small direct dictionary) and rotation; None if that cannot be told. A file repeating
+    one content on thousands of pages has its text extracted once."""
+    contents = page.get("/Contents")
+    parts = []
+    for obj in contents if isinstance(contents, list) else [contents]:
+        if getattr(obj, "idnum", None) is None:
+            return None
+        parts.append((obj.idnum, obj.generation))
+    resources = page.get("/Resources")
+    if getattr(resources, "idnum", None) is not None:
+        parts.append((resources.idnum, resources.generation))
+    else:  # written into each page: equal entries (references to the same objects) are the same resources
+        text = repr(resources)
+        if len(text) > 10_000:
+            return None
+        parts.append(text)
+    return tuple(parts), str(page.get("/Rotate", 0))
+
+
 def _n(number: int) -> str:
     """A number with German thousands separators."""
     return f"{number:,}".replace(",", ".")
+
+
+def _memory_bound() -> str:
+    if MEMORY_LIMIT_MB:
+        return f"Speichergrenze von {_n(MEMORY_LIMIT_MB)} MB erreicht"
+    return "nicht genug Speicher"
+
+
+def too_big_to_read() -> Extracted:
+    """The result for a file whose extraction ran out of memory: deterministic within the worker's memory
+    limit, so it is not retried (another extraction version reads it again)."""
+    return Extracted([], status="skipped", message=f"Datei zu groß zum Lesen ({_memory_bound()})",
+                     incomplete=True)
+
+
+def _too_big(exc: BaseException) -> bool:
+    """Decoding failed because the image is too large: memory, pypdf's limits on decoded data, Pillow's
+    decompression bomb check – deterministic, not worth a retry."""
+    return isinstance(exc, MemoryError) or type(exc).__name__ in ("LimitReachedError", "DecompressionBombError")
 
 
 def _page_bounds() -> str:
@@ -272,6 +337,8 @@ class _ScanResult:
     undecodable: int = 0  # page images could not be decoded (Pillow/jbig2dec missing, broken image)
     model_failed: int = 0  # the model call failed (timeout, server down)
     too_large: int = 0  # all images of the page over MAX_PAGE_PIXELS (checked before decoding)
+    too_big: int = 0  # its images too large to decode (memory, pypdf's data limits)
+    unsized: int = 0  # its images state no size (raw samples without /Width or /Height)
     too_complex: int = 0  # the content walk hit a page bound before it found an image
     doc_limit: int = 0  # left out: the document's bounds (MAX_DOC_*) were used up
     decode_error: str = ""  # first decoding problem, for the message
@@ -283,13 +350,15 @@ class _ScanResult:
     partial_failed: int = 0
     partial_left_out: int = 0
     partial_over_limit: int = 0
+    partial_too_big: int = 0
+    partial_unsized: int = 0
     partial_doc_limit: int = 0
     partial_truncated: int = 0
 
     @property
     def unread(self) -> int:
-        return (self.no_text + self.undecodable + self.model_failed + self.too_large + self.too_complex
-                + self.doc_limit)
+        return (self.no_text + self.undecodable + self.model_failed + self.too_large + self.too_big
+                + self.unsized + self.too_complex + self.doc_limit)
 
     @property
     def retry(self) -> bool:
@@ -310,6 +379,10 @@ class _ScanResult:
         if self.partial_over_limit:
             parts.append(f"{self.partial_over_limit} Bild(er) nicht ausgewertet (mehr als {MAX_PAGE_IMAGES} "
                          f"Bilder bzw. {MAX_PAGE_PIXELS // 1_000_000} Megapixel je Seite)")
+        if self.partial_too_big:
+            parts.append(f"{self.partial_too_big} Bild(er) zu groß zum Lesen ({_IMAGE_BOUND})")
+        if self.partial_unsized:
+            parts.append(f"{self.partial_unsized} Bild(er) ohne Größenangabe nicht ausgewertet")
         if self.partial_doc_limit:
             parts.append(f"{self.partial_doc_limit} Bild(er) nicht ausgewertet ({_doc_bounds()})")
         if self.partial_truncated:
@@ -329,6 +402,10 @@ class _ScanResult:
         if self.too_large:
             reasons.append((self.too_large,
                             f"Bilder zu groß (über {MAX_PAGE_PIXELS // 1_000_000} Megapixel je Seite)"))
+        if self.too_big:
+            reasons.append((self.too_big, f"Bilder zu groß zum Lesen ({_IMAGE_BOUND})"))
+        if self.unsized:
+            reasons.append((self.unsized, "Bilder ohne Größenangabe (Breite/Höhe fehlen)"))
         if self.too_complex:
             reasons.append((self.too_complex, f"Seiteninhalt zu umfangreich ({_page_bounds()})"))
         if self.doc_limit:
@@ -338,12 +415,15 @@ class _ScanResult:
         return "; ".join(text for _n_pages, text in reasons)
 
 
+_IMAGE_BOUND = "Speicher- oder Datengrenze überschritten"
 _pillow_warned = False
 
 
 def _decode_problem(exc: Exception) -> str:
     """Short German description of why a PDF image could not be decoded."""
     global _pillow_warned
+    if isinstance(exc, MemoryError):
+        return _memory_bound()
     text = str(exc)
     if isinstance(exc, ImportError) and ("pillow" in text.lower() or getattr(exc, "name", None) == "PIL"):
         if not _pillow_warned:
@@ -395,7 +475,23 @@ class _PageImage:
     # matrices it is drawn at, in drawing order (a dict as ordered set); None: positions unknown
     placements: dict | None = field(default_factory=dict)
     size: tuple[int, int] | None = None  # pixel size it decodes to (set by _measure)
-    pixels: int | None = None  # counted against the limits: the larger of declared and real size; None: unknown
+    # counted against the limits: the larger of declared and real size (weighted for a JPEG 2000 image decoded
+    # in full, see _JPX_FULL_DECODE_WEIGHT); None: unknown
+    pixels: int | None = None
+    mask: _Mask | None = None  # its soft mask (/SMask), shared with the other images using it (set by _measure)
+
+
+@dataclass(eq=False)
+class _Mask:
+    """A soft mask (/SMask): an image of its own, measured once per document and decoded at the sizes
+    the images using it need (kept for reuse: many images may share one mask). Its own /SMask is ignored,
+    as the PDF specification says – masks are never followed in chains."""
+    ident: tuple
+    stream: object
+    size: tuple[int, int]
+    pixels: int
+    decoded: dict = field(default_factory=dict)  # size needed -> mask image (mode L), see _MASK_CACHE_PIXELS
+    broken: bool = False  # its data could not be decoded: the images using it are read without it
 
 
 @dataclass
@@ -408,6 +504,7 @@ class _Drawing:
     content_bytes: int = 0  # decoded content parsed
     truncated: bool = False  # a page bound stopped the walk: the page may draw more than was found
     unplaced: bool = False  # positions could not be followed (odd matrix values): images are read unplaced
+    form_streams: list = field(default_factory=list)  # forms visited (_listed_images only)
 
     def add(self, ident: tuple, make, ctm: tuple[float, ...]) -> None:
         image = self.images.get(ident)
@@ -610,6 +707,7 @@ def _listed_images(xobjects) -> _Drawing:
                 drawing.forms += 1
                 if drawing.forms > MAX_PAGE_FORMS:
                     raise _PageLimit
+                drawing.form_streams.append(xobj)
                 visit(_xobjects_of(_resolved(xobj.get("/Resources"))), depth + 1)
 
     try:
@@ -624,19 +722,57 @@ def _page_images(page, name: str, number: int, doc: _DocState) -> _Drawing:
     listed in its resources (unplaced). Raises if not even the resources can be read."""
     try:
         drawing = _drawn_images(page, doc)
+    except MemoryError:
+        raise
     except Exception as exc:  # noqa: BLE001 – unusual content stream: the listed images, unplaced
         log.debug("%s Seite %d: Bildpositionen nicht bestimmbar (%s)", name, number, exc)
         drawing = None
     if drawing is not None and drawing.images:
         return drawing
+    listed = _listed(page, doc)
+    if drawing is not None and drawing.truncated and not listed.truncated:
+        listed = _Drawing(listed.images, truncated=True, unplaced=True)
+    return listed
+
+
+def _listed(page, doc: _DocState) -> _Drawing:
+    """The images listed in the page's XObject resources (see _listed_images), once per resources."""
     xobjects = _xobjects_of(_resolved(page.get("/Resources")))
     cached = doc.listed.get(id(xobjects))  # pages often share their XObject resources
     if cached is None or cached[0] is not xobjects:
         cached = doc.listed[id(xobjects)] = (xobjects, _listed_images(xobjects))
-    listed = cached[1]
-    if drawing is not None and drawing.truncated and not listed.truncated:
-        listed = _Drawing(listed.images, truncated=True, unplaced=True)
-    return listed
+    return cached[1]
+
+
+# The inline image operator as a token of its own (PDF delimiters or white space around it).
+_INLINE_IMAGE = re.compile(rb"(?<![^\s\x00\[\]()<>{}/%])BI(?=[\s\x00/])")
+# Decoded content searched for inline images per document (about a second): beyond, pages are walked.
+MAX_DOC_SEARCH_BYTES = 1_000_000_000
+
+
+def _can_draw_images(page, doc: _DocState) -> bool:
+    """Could the page draw an image for the model? Not if its resources (and those of their forms) list no
+    image and neither its content nor the forms' contain an inline image: a vector drawing – a CAD plan
+    with its text as outlines – or a blank page, for the model nothing to read however large its content.
+    Checked by searching the decoded bytes, without parsing them, so such pages use none of the content
+    bounds. When in doubt: yes."""
+    listed = _listed(page, doc)
+    if listed.images or listed.truncated:
+        return True
+    try:
+        contents = page.get_contents()
+        for stream in ([contents] if contents is not None else []) + listed.form_streams:
+            data = stream.get_data()
+            doc.searched_bytes += len(data)
+            if stream is not contents:
+                _forget_decoded(stream)  # forms are PDF objects that live with the reader
+            if doc.searched_bytes > MAX_DOC_SEARCH_BYTES or _INLINE_IMAGE.search(data):
+                return True
+    except MemoryError:
+        raise
+    except Exception:  # noqa: BLE001 – unreadable content: the walk decides as before
+        return True
+    return False
 
 
 def _last_filter(stream) -> str | None:
@@ -649,15 +785,34 @@ def _last_filter(stream) -> str | None:
 def _forget_decoded(stream) -> None:
     """pypdf keeps the decoded data of a stream as long as the reader lives; image data is needed once,
     so it is released right away (else a document with many large images would hold all of them)."""
-    for s in (stream, _resolved(stream.get("/SMask"))):
-        if getattr(s, "decoded_self", None) is not None:
-            s.decoded_self = None
+    if getattr(stream, "decoded_self", None) is not None:
+        stream.decoded_self = None
 
 
-def _real_size(stream) -> tuple[int, int] | None:
-    """The pixel size the image data itself states (JPEG, JPEG 2000, CCITT, JBIG2), read from its header
-    without decoding the pixels; None for raw samples, which are decoded at the declared size. Raises if
-    the data is no readable image."""
+def _decoded_length(stream) -> int:
+    """Length of the stream's decoded data, if it was decoded (pypdf keeps it until _forget_decoded)."""
+    cached = getattr(stream, "decoded_self", None)
+    if cached is not None:
+        return len(cached.get_data())
+    return 0 if _resolved(stream.get("/Filter")) else len(getattr(stream, "_data", b"") or b"")
+
+
+def _without_mask(stream):
+    """The image stream without its /SMask (the same data): pypdf would decode the mask in full, follow
+    chains of masks and encode masked JPEGs once more as JPEG 2000 – masks are measured and applied by
+    the extraction itself (_Mask)."""
+    if "/SMask" not in stream:
+        return stream
+    from pypdf.generic import StreamObject
+
+    entries = {k: v for k, v in stream.items() if k != "/SMask"}
+    return StreamObject.initialize_from_dictionary({"__streamdata__": stream._data, **entries})
+
+
+def _header(stream) -> tuple[tuple[int, int], str] | None:
+    """The pixel size and Pillow mode the image data itself states (JPEG, JPEG 2000, CCITT, JBIG2), read
+    from its header without decoding the pixels; None for raw samples, which are decoded at the declared
+    size. Raises if the data is no readable image."""
     last = _last_filter(stream)
     formats = _FILE_FORMATS.get(last)
     if formats is None:
@@ -666,7 +821,7 @@ def _real_size(stream) -> tuple[int, int] | None:
 
     try:
         with Image.open(io.BytesIO(stream.get_data()), formats=formats) as img:  # lazy: header only
-            return img.size
+            return img.size, img.mode
     except UnidentifiedImageError:
         if last in _MAYBE_RAW:
             return None
@@ -680,64 +835,108 @@ class _DocState:
     """What the scan pages of one document share: each image (PDF object) is measured, decoded and read
     once per document, and the whole document is bounded (MAX_DOC_*)."""
     vision_calls: int = 0
-    decoded_pixels: int = 0
-    sizes: dict = field(default_factory=dict)  # image ident -> (size, pixels, problem)
+    decoded_pixels: int = 0  # work charged against MAX_DOC_PIXELS (see _MIN_DECODE_CHARGE)
+    sizes: dict = field(default_factory=dict)  # image ident -> (size, pixels, problem, mask)
+    masks: dict = field(default_factory=dict)  # mask ident -> _Mask, or None if it is unusable
     failed: dict = field(default_factory=dict)  # image ident -> why it could not be decoded
+    too_big: set = field(default_factory=set)  # image idents too large to decode (memory, data limits)
     transcripts: dict = field(default_factory=dict)  # what was sent (_Job.key) -> the model's answer
     listed: dict = field(default_factory=dict)  # id(XObject resources) -> (them, their images)
+    drawings: dict = field(default_factory=dict)  # _text_key of a page -> what it draws
     content_bytes: int = 0  # decoded content parsed for all pages
+    searched_bytes: int = 0  # decoded content searched for inline images (_can_draw_images)
     warned: bool = False  # the document bounds were reported
 
     def charge(self, image: _PageImage) -> None:
         self.decoded_pixels += _decode_charge(image)
 
     def can_decode(self, *images: _PageImage) -> bool:
-        return self.decoded_pixels + sum(_decode_charge(image) for image in images) <= MAX_DOC_PIXELS
+        """Is there room for decoding these images? A soft mask shared by several of them counts once
+        (it is decoded once at the size they need)."""
+        masks = {image.mask.ident: image.mask.pixels for image in images if image.mask is not None}
+        need = sum(max(image.pixels or 0, _MIN_DECODE_CHARGE) for image in images) + sum(masks.values())
+        return self.decoded_pixels + need <= MAX_DOC_PIXELS
 
 
 def _decode_charge(image: _PageImage) -> int:
-    return max(image.pixels or 0, _MIN_DECODE_CHARGE)
+    """The work one decoding of the image is expected to take (before it is known): its pixels, at least
+    _MIN_DECODE_CHARGE, and those of its soft mask."""
+    return max(image.pixels or 0, _MIN_DECODE_CHARGE) + (image.mask.pixels if image.mask is not None else 0)
 
 
 _DOC_LIMIT = object()  # _measure: the document's bounds leave no room to measure the image
+_TOO_BIG = object()  # _probe: the image's data is too large to decode (memory, pypdf's data limits)
 
 
 def _measure(image: _PageImage, doc: _DocState):
-    """Sets the image's size and the pixels it counts with; returns why it cannot be decoded, if so (or
-    _DOC_LIMIT when the document bounds leave no room to look). Once per image and document."""
+    """Sets the image's size, the pixels it counts with and its soft mask; returns why it cannot be
+    decoded, if so (_TOO_BIG, or _DOC_LIMIT when the document bounds leave no room to look). Once per image
+    and document."""
     known = doc.sizes.get(image.ident)
     if known is None:
         if _last_filter(image.stream) == "/JBIG2Decode":  # its size is known only after jbig2dec ran
             if not doc.can_decode(image):
                 return _DOC_LIMIT
             doc.charge(image)
-        known = doc.sizes[image.ident] = _probe(image)
-    image.size, image.pixels, problem = known
+        size, pixels, problem = _probe(image.stream, image.declared)
+        mask = _mask_of(image, doc) if problem is None and size is not None else None
+        if mask is _TOO_BIG:
+            problem, mask = _TOO_BIG, None
+        known = doc.sizes[image.ident] = (size, pixels, problem, mask)
+    image.size, image.pixels, problem, image.mask = known
     return problem
 
 
-def _probe(image: _PageImage) -> tuple:
+def _probe(stream, declared) -> tuple:
+    """(size, pixels counted, problem) of an image stream, from its header – nothing decoded."""
     from PIL import Image
 
-    declared = image.declared
     try:
-        real = _real_size(image.stream)
+        header = _header(stream)
     except Image.DecompressionBombError:  # Pillow's own bound (about 179 MP) is above MAX_PAGE_PIXELS
         return declared, _OVERSIZED, None
     except Exception as exc:  # noqa: BLE001 – broken data, missing Pillow/jbig2dec: like a failed decoding
+        if _too_big(exc):  # the data itself is beyond pypdf's limits or the memory: never decodable
+            return declared, None, _TOO_BIG
         return None, None, _decode_problem(exc)
+    real = header[0] if header else None
     size = real or declared
     if size is None:
         return None, None, None  # unknown: never counted as nothing
     pixels = max(w * h for w, h in (declared or (0, 0), real or (0, 0)))
+    if (header and _last_filter(stream) == "/JPXDecode"
+            and not (_plain_colours(stream) and header[1] in _REDUCIBLE_MODES["/JPXDecode"])):
+        pixels *= _JPX_FULL_DECODE_WEIGHT  # decoded in full by pypdf (see _decode_reduced)
     return size, pixels, None
+
+
+def _mask_of(image: _PageImage, doc: _DocState):
+    """The image's soft mask (measured once per document), None if it has none or an unusable one (the
+    image is then read without it), _TOO_BIG if its data is too large to decode."""
+    from pypdf.generic import StreamObject
+
+    stream = _resolved(image.stream.get("/SMask"))
+    if not isinstance(stream, StreamObject):
+        return None
+    ident = _ident(stream)
+    if ident not in doc.masks:
+        size, pixels, problem = _probe(stream, _declared_size(stream))
+        if problem is _TOO_BIG:
+            doc.masks[ident] = _TOO_BIG
+        elif problem is not None or size is None or not size[0] or not size[1]:
+            log.debug("Weiche Maske nicht lesbar, Bild ohne Maske gelesen (%s)", problem or "ohne Größe")
+            doc.masks[ident] = None
+        else:
+            doc.masks[ident] = _Mask(ident, _without_mask(stream), size, pixels)
+    return doc.masks[ident]
 
 
 @dataclass
 class _Decoded:
-    image: object  # Pillow image
+    image: object  # Pillow image (with an alpha channel if a soft mask was applied)
     data: bytes | None = None  # the image encoded as pypdf hands it out (sent as it is if JPEG/PNG)
     mime: str | None = None
+    work: int = 0  # charged against MAX_DOC_PIXELS: pixels, excess decoded data and a mask decoded
 
 
 class _Decoder:
@@ -752,25 +951,87 @@ class _Decoder:
 
 
 def _decode(image: _PageImage, target: tuple[int, int] | None) -> _Decoded:
-    stream = image.stream
-    try:
-        size = image.size
-        if target is not None and size is not None and size[0] * size[1] > target[0] * target[1]:
-            reduced = _decode_reduced(stream, target)
-            if reduced is not None:
-                return _Decoded(reduced)
-        from pypdf.generic._image_xobject import _xobj_to_image  # what page.images uses for one image
+    """Decode an image (without its soft mask, see _without_mask) – at reduced scale where the format
+    allows – and apply its soft mask as alpha channel."""
+    decoded = _decode_stream(_without_mask(image.stream), image.size, image.pixels, target)
+    mask = image.mask
+    if mask is not None and not mask.broken:
+        try:
+            alpha, work = _mask_image(mask, target or image.size, decoded.image.size)
+        except Exception as exc:  # noqa: BLE001 – a broken mask: the image is read without it
+            if _too_big(exc):
+                raise
+            log.debug("Weiche Maske nicht lesbar, Bild ohne Maske gelesen (%s)", exc)
+            mask.broken = True
+        else:
+            decoded = _Decoded(_with_alpha(decoded.image, alpha), work=decoded.work + work)
+    return decoded
 
-        ext, data, img = _xobj_to_image(stream)
-        return _Decoded(img, data, _SENDABLE.get((ext or "").lower()))
+
+def _decode_stream(stream, size, pixels, target) -> _Decoded:
+    try:
+        img = None
+        larger = target is not None and size is not None and size[0] * size[1] > target[0] * target[1]
+        if larger or (size is not None and _last_filter(stream) == "/JPXDecode"):
+            # JPEG 2000 directly also at full size: pypdf would encode it once more and decode it again
+            img = _decode_reduced(stream, target if larger else size)
+        if img is not None:
+            decoded = _Decoded(img)
+        else:
+            from pypdf.generic._image_xobject import _xobj_to_image  # what page.images uses for one image
+
+            ext, data, img = _xobj_to_image(stream)
+            decoded = _Decoded(img, data, _SENDABLE.get((ext or "").lower()))
+        # raw samples that inflate far beyond the image's size cost work the declaration does not show
+        need = size[0] * size[1] * _BYTES_PER_PIXEL if size else 0
+        decoded.work = max(pixels or 0, _MIN_DECODE_CHARGE) + max(0, _decoded_length(stream) - need)
+        return decoded
     finally:
         _forget_decoded(stream)
 
 
+# Most masks are shared by images of the same size: decoded masks are kept per document, together at most
+# this many pixels (mode L: one byte each).
+_MASK_CACHE_PIXELS = MAX_IMAGE_PIXELS
+
+
+def _mask_image(mask: _Mask, needed: tuple[int, int], size: tuple[int, int]):
+    """The soft mask as an alpha channel (mode L) of ``size``, decoded at the size ``needed`` (reduced
+    where the format allows), and the work that took (0 if it was decoded before)."""
+    from PIL import Image
+
+    alpha = mask.decoded.get(needed)
+    work = 0
+    if alpha is None:
+        decoded = _decode_stream(mask.stream, mask.size, mask.pixels, _fit(mask.size, needed[0] * needed[1]))
+        alpha = decoded.image if decoded.image.mode == "L" else decoded.image.convert("L")
+        if alpha.size != needed:
+            alpha = alpha.resize(needed, Image.Resampling.BILINEAR)
+        work = decoded.work
+        kept = sum(w * h for w, h in mask.decoded)
+        if kept + needed[0] * needed[1] <= _MASK_CACHE_PIXELS:
+            mask.decoded[needed] = alpha
+    if alpha.size != size:  # reduced decoding stops at a scale step: the image may be a little larger
+        alpha = alpha.resize(size, Image.Resampling.BILINEAR)
+    return alpha, work
+
+
+def _with_alpha(img, alpha):
+    """The image with the mask as alpha channel (LA for bilevel and grey, RGBA otherwise)."""
+    if img.mode in _GREY_MODES:
+        img = img.convert("L")
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+    img.putalpha(alpha)
+    return img
+
+
+# Pillow modes of JPEG and JPEG 2000 data that are decoded at reduced scale; others go through pypdf.
+_REDUCIBLE_MODES = {"/DCTDecode": ("L", "RGB", "CMYK"), "/JPXDecode": ("L", "RGB")}
+
+
 def _plain_colours(stream) -> bool:
-    """No soft mask, no /Decode remapping and a colour space whose samples Pillow reads as they are."""
-    if "/SMask" in stream or "/Decode" in stream:
-        return False
+    """A colour space whose samples Pillow reads as they are (a /Decode array is applied afterwards)."""
     space = _resolved(stream.get("/ColorSpace"))
     if isinstance(space, str):
         return space in ("/DeviceGray", "/DeviceRGB", "/DeviceCMYK")
@@ -780,23 +1041,23 @@ def _plain_colours(stream) -> bool:
 
 
 def _decode_reduced(stream, target: tuple[int, int]):
-    """A large JPEG or JPEG 2000 image decoded directly at reduced scale – libjpeg scales by 1/2, 1/4 or
-    1/8 while decoding, OpenJPEG drops resolution levels – to the smallest such size that still covers
-    ``target``: an A0 plan never takes its full size in memory. None for images that need pypdf's colour
-    handling (masks, /Decode, indexed or special colour spaces); those are decoded in full."""
-    from PIL import Image, ImageChops
+    """A JPEG or JPEG 2000 image decoded directly at reduced scale – libjpeg scales by 1/2, 1/4 or 1/8
+    while decoding, OpenJPEG drops resolution levels – to the smallest such size that still covers
+    ``target``: an A0 plan never takes its full size in memory. The colours are those of pypdf (its /Decode
+    handling, inverted CMYK JPEG data). None for images that need pypdf's colour handling (indexed or
+    special colour spaces, alpha or 16 bit in the data); those are decoded in full."""
+    from PIL import Image
+    from pypdf.generic._image_xobject import _apply_decode
 
     last = _last_filter(stream)
-    if last not in ("/DCTDecode", "/JPXDecode") or not _plain_colours(stream):
+    if last not in _REDUCIBLE_MODES or not _plain_colours(stream):
         return None
     img = Image.open(io.BytesIO(stream.get_data()), formats=("JPEG",) if last == "/DCTDecode" else ("JPEG2000",))
+    if img.mode not in _REDUCIBLE_MODES[last]:
+        return None
     if last == "/DCTDecode":
-        if img.mode not in ("L", "RGB", "CMYK"):
-            return None
         img.draft(img.mode, target)
     else:
-        if img.mode not in ("L", "RGB"):
-            return None
         width, height = img.size
         levels = 0
         while levels < 5 and width >> (levels + 1) >= target[0] and height >> (levels + 1) >= target[1]:
@@ -805,9 +1066,12 @@ def _decode_reduced(stream, target: tuple[int, int]):
     img.load()
     if img.size[0] * img.size[1] > target[0] * target[1]:  # scaled the rest of the way right away
         img = img.resize(target, Image.Resampling.LANCZOS)
-    if img.mode == "CMYK":  # read as pypdf does: CMYK JPEG data is stored inverted (Adobe)
-        img = ImageChops.invert(img)
-    return img
+    space = _resolved(stream.get("/ColorSpace"))
+    if isinstance(space, list) and len(space) == 1:
+        space = _resolved(space[0])
+    # as pypdf: CMYK JPEG data is stored inverted (Adobe), a /Decode array remaps the samples (pypdf's own
+    # inversion flag only matters for grey images in colour spaces that are not plain)
+    return _apply_decode(img, stream, last, space, False)
 
 
 def _image_payload(image: _Decoded) -> tuple[bytes, str]:
@@ -831,19 +1095,33 @@ def _encode(img) -> tuple[bytes, str]:
     from PIL import Image  # installed with requirements.txt; pypdf needs it for images anyway
 
     width, height = img.size
-    if img.mode not in ("1", "L", "RGB"):
-        img = img.convert("RGB")  # CMYK, palette, alpha channel, 16 bit
+    if img.mode in ("P", "PA"):
+        img = img.convert("RGBA" if img.mode == "PA" or "transparency" in img.info else "RGB")
+    elif img.mode not in ("1", "L", "LA", "RGB", "RGBA"):
+        img = img.convert("RGB")  # CMYK, 16 bit
     if width * height > MAX_IMAGE_PIXELS:
         if img.mode == "1":
             img = img.convert("L")  # scaling bilevel scans keeps text readable in grey
         f = (MAX_IMAGE_PIXELS / (width * height)) ** 0.5
         img = img.resize((max(1, int(width * f)), max(1, int(height * f))), Image.Resampling.LANCZOS)
+    if img.mode in ("LA", "RGBA"):  # a soft mask: the transparent parts show the white page
+        img = _on_white(img)
     out = io.BytesIO()
     if img.mode == "RGB":  # photos and colour plans: JPEG keeps the request small
         img.save(out, "JPEG", quality=90)
         return out.getvalue(), "image/jpeg"
     img.save(out, "PNG", optimize=True)  # bilevel/grey scans: lossless and compact
     return out.getvalue(), "image/png"
+
+
+def _on_white(img):
+    """An image with alpha channel (LA or RGBA) put onto white, as on a white page."""
+    from PIL import Image
+
+    mode = img.mode[:-1]
+    base = Image.new(mode, img.size, "white")
+    base.paste(img.convert(mode), mask=img.getchannel("A"))
+    return base
 
 
 def _fit(size: tuple[int, int], limit: int) -> tuple[int, int] | None:
@@ -988,22 +1266,32 @@ def _scaled(img, size: tuple[int, int]):
 
 
 def _prepared(img, turned: bool, flip_x: bool, flip_y: bool, target: tuple[int, int], mode: str):
-    """An image turned, flipped and scaled for its place on the page, with its transparency mask."""
+    """An image turned, flipped and scaled for its place on the page, with its transparency mask. It is
+    scaled first – in its own orientation – and only then turned and converted to the mode of the page
+    image: an A0 bilevel plan is never converted to colour at its full size."""
     from PIL import Image
 
-    if turned:  # image columns run down the page: swap axes first
-        img = img.transpose(Image.Transpose.TRANSPOSE)
-    if flip_x:
-        img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-    if flip_y:  # PDF y grows upwards: the image's rows run up the page
-        img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-    mask = None
-    if img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info):
+    if img.mode == "P":
+        img = img.convert("RGBA" if "transparency" in img.info else "RGB")
+    elif img.mode == "PA":
         img = img.convert("RGBA")
-        mask = img.getchannel("A").resize(target, Image.Resampling.BILINEAR)
-    if img.mode == "1":
+    elif img.mode == "1":
         img = img.convert("L")  # scaling bilevel scans keeps text readable in grey
-    return img.convert(mode).resize(target, Image.Resampling.LANCZOS), mask
+    elif img.mode not in ("L", "LA", "RGB", "RGBA", "CMYK"):  # 16 bit and other modes Pillow cannot scale
+        img = img.convert(mode)
+    size = (target[1], target[0]) if turned else target  # in the image's own orientation
+    if img.size != size:
+        img = img.resize(size, Image.Resampling.LANCZOS)
+    mask = None
+    if img.mode in ("LA", "RGBA"):
+        mask = img.getchannel("A")
+        img = img.convert(img.mode[:-1])
+    for flag, how in ((turned, Image.Transpose.TRANSPOSE), (flip_x, Image.Transpose.FLIP_LEFT_RIGHT),
+                      (flip_y, Image.Transpose.FLIP_TOP_BOTTOM)):  # PDF y grows upwards: rows may run up
+        if flag:
+            img = img.transpose(how)
+            mask = mask.transpose(how) if mask is not None else None
+    return img.convert(mode), mask
 
 
 # -- reading the pages -------------------------------------------------------------------------------------
@@ -1023,8 +1311,14 @@ class _PageOutcome:
     undecodable: int = 0  # images that could not be decoded
     left_out: int = 0  # images beyond MAX_IMAGES_PER_PAGE that could not be put together
     over_limit: int = 0  # images beyond MAX_PAGE_IMAGES/MAX_PAGE_PIXELS
+    too_big: int = 0  # images too large to decode (memory, pypdf's data limits)
+    unsized: int = 0  # images without a size (raw samples without /Width or /Height)
     doc_limited: int = 0  # images left out because the document's bounds are used up
     truncated: bool = False  # the content walk hit a page bound
+
+    def missing(self) -> int:
+        """Images of the page not read for a reason that is not a failure (no retry)."""
+        return self.left_out + self.over_limit + self.too_big + self.unsized + self.doc_limited
 
 
 def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
@@ -1032,9 +1326,9 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
 
     Up to MAX_IMAGES_PER_PAGE images of a page are sent one by one; a page with more (strip or tile
     scans) is put together into one page image at the images' positions. Pages without any image
-    (blank pages) count as nothing to read. A page none of whose images could be read counts as
-    undecodable or failed – the document is retried later; only a page whose images the model read
-    without finding text counts as "no text". A page of which only some images were read counts as
+    (blank pages, vector drawings) count as nothing to read. A page none of whose images could be read
+    counts as undecodable or failed – the document is retried later; only a page whose images the model
+    read without finding text counts as "no text". A page of which only some images were read counts as
     read *partly*: its text is kept and the document stays incomplete (and is retried when the cause
     may go away). An image (or page image) already read on an earlier page is not sent again: its
     answer is reused."""
@@ -1042,8 +1336,16 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
     doc = _DocState()
     decoder = _Decoder()
     for i, page in empty_pages:
+        key = _text_key(page)  # pages with the same content and resources draw the same
+        drawn = doc.drawings.get(key) if key is not None else None
         try:
-            drawn = _page_images(page, name, i, doc)
+            if drawn is None:
+                # nothing the model could read on vector drawings and blank pages, however large the content
+                drawn = _page_images(page, name, i, doc) if _can_draw_images(page, doc) else _Drawing()
+                if key is not None:
+                    doc.drawings[key] = drawn
+        except MemoryError:
+            raise
         except Exception as exc:  # noqa: BLE001 – broken resources: the page cannot be read now
             log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, i, exc)
             result.decode_error = result.decode_error or _decode_problem(exc)
@@ -1076,17 +1378,18 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
                 texts.append(text)
         if texts:
             result.pages.append(Page(i, "\n".join(texts)))
-            if out.undecodable or failed or out.left_out or out.over_limit or out.doc_limited or out.truncated:
+            if out.undecodable or failed or out.missing() or out.truncated:
                 result.partial += 1
                 result.partial_undecodable += out.undecodable
                 result.partial_failed += failed
                 result.partial_left_out += out.left_out
                 result.partial_over_limit += out.over_limit
+                result.partial_too_big += out.too_big
+                result.partial_unsized += out.unsized
                 result.partial_doc_limit += out.doc_limited
                 result.partial_truncated += out.truncated
                 log.warning("%s Seite %d nur teilweise gelesen (%d nicht lesbar, %d fehlgeschlagen, %d nicht "
-                            "ausgewertet%s)", name, i, out.undecodable, failed,
-                            out.left_out + out.over_limit + out.doc_limited,
+                            "ausgewertet%s)", name, i, out.undecodable, failed, out.missing(),
                             ", Inhalt nicht vollständig durchsucht" if out.truncated else "")
         elif out.undecodable:
             result.undecodable += 1
@@ -1096,6 +1399,10 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
             result.no_text += 1
         elif out.over_limit:
             result.too_large += 1
+        elif out.too_big:
+            result.too_big += 1
+        elif out.unsized:
+            result.unsized += 1
         elif out.doc_limited:
             result.doc_limit += 1
         elif out.truncated:
@@ -1109,13 +1416,15 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
                    doc: _DocState | None = None) -> _PageOutcome:
     """The images of one page for the model (as _Job), with the numbers of images that could not be
     decoded, that were left out (more than MAX_IMAGES_PER_PAGE, not put together), that were over the
-    page limits and over the document's bounds. ``images`` decodes (see _Decoder).
+    page limits, too large to decode, without size and over the document's bounds. ``images`` decodes
+    (see _Decoder).
 
     Each different image is decoded and sent once, however often and under whatever names the page
     draws it – and once per document: an image read on an earlier page is not decoded again. Images
-    beyond MAX_PAGE_IMAGES/MAX_PAGE_PIXELS (real sizes, measured from the headers) are left out
-    undecoded. More than MAX_IMAGES_PER_PAGE different images are put together into one page image;
-    if that is not possible, the largest ones are sent."""
+    beyond MAX_PAGE_IMAGES/MAX_PAGE_PIXELS (real sizes, measured from the headers, soft masks included)
+    are left out undecoded. More than MAX_IMAGES_PER_PAGE different images are put together into one page
+    image; if that is not possible, the largest ones are sent. Every decoding is charged to the document
+    with the work it took (see _MIN_DECODE_CHARGE) and checked against its bounds before it starts."""
     doc = doc if doc is not None else _DocState()
     out = _PageOutcome(truncated=drawn.truncated)
     chosen, broken = _choose(drawn, doc, out, name, number, result)
@@ -1126,15 +1435,28 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
         if image.ident in doc.failed:  # failed on an earlier page of this document
             out.undecodable += 1
             return None
-        doc.charge(image)
+        if image.ident in doc.too_big:
+            out.too_big += 1
+            return None
+        if not doc.can_decode(image):
+            out.doc_limited += 1
+            return None
         try:
-            return images[image, target]
+            decoded = images[image, target]
         except Exception as exc:  # noqa: BLE001 – missing Pillow/jbig2dec, unsupported or broken image
+            doc.charge(image)
+            if _too_big(exc):  # deterministic: not retried, not tried again on later pages
+                log.warning("%s Seite %d: Bild zu groß zum Lesen (%s)", name, number, _decode_problem(exc))
+                doc.too_big.add(image.ident)
+                out.too_big += 1
+                return None
             log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, exc)
             problem = doc.failed[image.ident] = _decode_problem(exc)
             result.decode_error = result.decode_error or problem
             out.undecodable += 1
             return None
+        doc.decoded_pixels += getattr(decoded, "work", 0) or _decode_charge(image)
+        return decoded
 
     if len(chosen) + broken > MAX_IMAGES_PER_PAGE and chosen:
         layout = _layout(chosen)
@@ -1146,16 +1468,17 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
             if doc.vision_calls >= MAX_DOC_VISION_CALLS or not doc.can_decode(*chosen):
                 out.doc_limited += len(chosen)
                 return out
-            undecodable = out.undecodable
+            before = (out.undecodable, out.too_big, out.doc_limited)
             try:
                 combined = _compose(layout, decode)
                 if combined is not None:
                     data, mime = _encode(combined)
-                    out.jobs.append(_Job(key, data=data, mime=mime, reusable=out.undecodable == undecodable))
+                    complete = (out.undecodable, out.too_big, out.doc_limited) == before
+                    out.jobs.append(_Job(key, data=data, mime=mime, reusable=complete))
                 return out
             except Exception as exc:  # noqa: BLE001 – e.g. out of memory: fall back to the largest images
                 log.warning("%s Seite %d: Bilder nicht zusammensetzbar (%s)", name, number, exc)
-                out.undecodable = undecodable  # counted again below
+                out.undecodable, out.too_big, out.doc_limited = before  # counted again below
         chosen = sorted(chosen, key=lambda image: -image.pixels)  # stable: equal sizes keep drawing order
     for k, image in enumerate(chosen):
         if len(out.jobs) >= MAX_IMAGES_PER_PAGE:
@@ -1165,7 +1488,7 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
         if key in doc.transcripts:
             out.jobs.append(_Job(key, text=doc.transcripts[key]))
             continue
-        if doc.vision_calls + new_jobs >= MAX_DOC_VISION_CALLS or not doc.can_decode(image):
+        if doc.vision_calls + new_jobs >= MAX_DOC_VISION_CALLS:
             out.doc_limited += 1
             continue
         decoded = decode(image, _fit(image.size, MAX_IMAGE_PIXELS))
@@ -1174,6 +1497,11 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
         try:
             data, mime = _image_payload(decoded)
         except Exception as exc:  # noqa: BLE001 – unsupported format, conversion failed
+            if _too_big(exc):
+                log.warning("%s Seite %d: Bild zu groß zum Lesen (%s)", name, number, _decode_problem(exc))
+                doc.too_big.add(image.ident)
+                out.too_big += 1
+                continue
             log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, exc)
             problem = doc.failed[image.ident] = _decode_problem(exc)
             result.decode_error = result.decode_error or problem
@@ -1188,8 +1516,10 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
 
 def _choose(drawn: _Drawing, doc: _DocState, out: _PageOutcome, name: str, number: int, result: _ScanResult):
     """The images of a page within MAX_PAGE_IMAGES and MAX_PAGE_PIXELS, in drawing order – measured (real
-    size from the header) but not decoded – and the number of images whose data is no readable image."""
+    size from the header, soft mask included: a mask shared by several images counts once per page) but
+    not decoded – and the number of images whose data is no readable image."""
     chosen, pixels, broken = [], 0, 0
+    masks: set[tuple] = set()  # masks counted on this page
     for image in drawn.images.values():
         if len(chosen) >= MAX_PAGE_IMAGES:
             out.over_limit += 1
@@ -1200,19 +1530,30 @@ def _choose(drawn: _Drawing, doc: _DocState, out: _PageOutcome, name: str, numbe
             continue
         first = image.ident not in doc.sizes
         problem = _measure(image, doc)
+        mask = image.mask.pixels if image.mask is not None and image.mask.ident not in masks else 0
         if problem is _DOC_LIMIT:
             out.doc_limited += 1
+        elif problem is _TOO_BIG:
+            if first:
+                log.warning("%s Seite %d: Bild zu groß zum Lesen (%s)", name, number, _IMAGE_BOUND)
+            out.too_big += 1
         elif problem is not None:
             if first:  # reported once per document
                 log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, problem)
             result.decode_error = result.decode_error or problem
             out.undecodable += 1
             broken += 1
-        elif image.pixels is None or pixels + image.pixels > MAX_PAGE_PIXELS:
+        elif image.size is None:
+            if first:
+                log.warning("%s Seite %d: Bild ohne Größenangabe nicht ausgewertet", name, number)
+            out.unsized += 1
+        elif pixels + image.pixels + mask > MAX_PAGE_PIXELS:
             out.over_limit += 1
         else:
             chosen.append(image)
-            pixels += image.pixels
+            pixels += image.pixels + mask
+            if image.mask is not None:
+                masks.add(image.mask.ident)
     if out.over_limit:
         log.warning("%s Seite %d: %d Bild(er) nicht ausgewertet (mehr als %d Bilder bzw. %d Megapixel je Seite)",
                     name, number, out.over_limit, MAX_PAGE_IMAGES, MAX_PAGE_PIXELS // 1_000_000)
@@ -1281,6 +1622,9 @@ def extract(path: Path | str, data: bytes | None = None, *, llm=None) -> Extract
                                  message="Bild – Bildauswertung ausgeschaltet (LLM_VISION=0)")
             text = llm.describe_image(data, IMAGE_EXT[ext], VISION_PROMPT).text
             result = Extracted([Page(1, text)], method="vision", incomplete=not (text or "").strip())
+    except MemoryError:  # within the worker's memory limit (EXTRACT_MEMORY_MB): the file will not fit later
+        log.warning("Extraktion abgebrochen: %s (%s)", path.name, _memory_bound())
+        return too_big_to_read()
     except Exception as exc:  # noqa: BLE001 – one broken file must not stop indexing
         log.warning("Extraktion fehlgeschlagen: %s (%s)", path.name, exc)
         return Extracted([], status="error", message=f"{type(exc).__name__}: {exc}"[:300],

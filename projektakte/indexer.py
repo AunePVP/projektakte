@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 
-from . import db
+from . import db, extract_worker
 from .ai.services import AIServices
 from .assign import assign_mails
 from .config import Settings
@@ -40,7 +40,9 @@ def run_index(settings: Settings, ai: AIServices | None = None, progress=None) -
         if progress:
             progress(name)
 
-    with _RUN_LOCK:  # never two passes at the same time (background worker + CLI/test)
+    # never two passes at the same time (background worker + CLI/test); files are read in the extraction
+    # worker process if the settings say so (EXTRACT_ISOLATION) – it is kept for the next pass
+    with _RUN_LOCK, extract_worker.isolation(settings):
         return _run(settings, ai, phase)
 
 

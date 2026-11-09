@@ -69,11 +69,23 @@ class LLMClient:
         self.timeout = timeout
         self.max_tokens = max_tokens
         self.vision = vision
+        self._api_key = api_key
         self._headers = bearer(api_key)
         self.extra_body = dict(extra_body or {})
         self._lock = threading.Lock()
         self.last_error: str | None = None
         self.last_error_at: float | None = None
+
+    def config(self) -> dict:
+        """What this client was built with (plain data, contains the API key): the extraction worker
+        process builds the same client from it with :meth:`from_config`."""
+        return {"url": self.url, "model": self.model, "timeout": self.timeout, "max_tokens": self.max_tokens,
+                "vision": self.vision, "api_key": self._api_key, "extra_body": dict(self.extra_body)}
+
+    @classmethod
+    def from_config(cls, config: dict) -> "LLMClient":
+        return cls(config["url"], config["model"], timeout=config["timeout"], max_tokens=config["max_tokens"],
+                   vision=config["vision"], api_key=config["api_key"], extra_body=config["extra_body"])
 
     def _note_error(self, msg: str) -> None:
         with self._lock:

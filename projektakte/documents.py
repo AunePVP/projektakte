@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from . import extract_worker
 from .chunking import Chunk, chunk_pages
 from .extract import SUPPORTED_EXT, Extracted, extract, extraction_profile
 from .textutil import find_date, fold
@@ -112,9 +113,13 @@ class PreparedDocument:
 def prepare_document(*, rel_path: str, data: bytes, mtime: float | None, llm=None,
                      doc_date: str | None = None) -> PreparedDocument:
     """Extract and chunk one file. Slow (PDF parsing, vision model) and touches no database, so the
-    caller should not hold a write transaction meanwhile."""
+    caller should not hold a write transaction meanwhile.
+
+    During an indexing pass with isolation switched on, PDF, Word and mail files are read in the
+    extraction worker process with operating-system limits (see extract_worker); it raises
+    ExtractionAborted when the app shuts down meanwhile – nothing is to be written for the file then."""
     filename = Path(rel_path).name
-    result = extract(Path(filename), data, llm=llm)
+    result = extract_worker.extract_file(filename, data, llm, extract)
     chunks = chunk_pages(result.pages) if result.status == "ok" else []
     return PreparedDocument(
         rel_path=rel_path, filename=filename, ext=Path(filename).suffix.lower(), size=len(data),

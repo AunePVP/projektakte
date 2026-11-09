@@ -207,7 +207,7 @@ def test_image_without_declared_size_is_not_decoded(decodes):
     r = extract(Path("x.pdf"), doc.build(), llm=Vision())
     assert decodes == []
     assert (r.status, r.incomplete, r.retry) == ("skipped", True, False)
-    assert "Bilder zu groß" in r.message
+    assert "Bilder ohne Größenangabe" in r.message  # round 6: no longer "Bilder zu groß" (it may be small)
 
 
 # -- listed images when positions are unknown ------------------------------------------------------------------
@@ -351,10 +351,10 @@ def test_huge_content_is_not_parsed_and_the_document_content_is_bounded(monkeypa
     monkeypatch.setattr(extract_mod, "MAX_DOC_CONTENT_BYTES", 1_000_000)
     doc = Doc()
     img = doc.image(flate(scan((200, 200))), (200, 200))
-    shared = b"q Q\n" * 100_000 + draw("Im1", (200, 0, 0, 200, 50, 50))
-    shared = doc.stream(b"/Filter /FlateDecode", zlib.compress(shared, 9))
-    for _ in range(6):  # 400 KB each: two pages parsed, then the document bound is used up
-        doc.page_with(shared, {"Im1": img})
+    for k in range(6):  # 400 KB each: two pages parsed, then the document bound is used up
+        # (round 6: one content stream per page – pages sharing content and resources are walked once)
+        content = b"q Q\n" * 100_000 + b"%% Seite %d\n" % k + draw("Im1", (200, 0, 0, 200, 50, 50))
+        doc.page_with(doc.stream(b"/Filter /FlateDecode", zlib.compress(content, 9)), {"Im1": img})
     llm = Vision()
     r = extract(Path("Geteilt.pdf"), doc.build(), llm=llm)
     assert [p.number for p in r.pages] == [1, 2, 3, 4, 5, 6]

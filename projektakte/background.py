@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from . import demo
+from . import demo, extract_worker
 from .ai.services import AIServices
 from .config import Settings
 from .demo_cleanup import demo_purge_note
@@ -52,6 +52,9 @@ class BackgroundIndexer:
     def stop(self, timeout: float = 10.0) -> None:
         self._stop.set()
         self._wake.set()
+        # the extraction worker process ends with the app: a file being read is abandoned at once (it is
+        # read again on the next start) instead of holding up the shutdown
+        extract_worker.shutdown()
         if self._thread:
             self._thread.join(timeout)
 
@@ -83,6 +86,10 @@ class BackgroundIndexer:
                     log.warning("Indexierung: %s", w)
             self._set(last_stats=stats, last_error=None, last_warnings=warnings, last_success=_now())
             return stats
+        except extract_worker.ExtractionAborted:  # the app shuts down: the pass ends, nothing failed
+            log.info("Indexierung beim Beenden abgebrochen – angefangene Dateien werden beim nächsten Start "
+                     "gelesen")
+            return None
         except Exception as exc:  # noqa: BLE001 – the worker must survive any single failure
             log.exception("Indexierung fehlgeschlagen")
             self._set(last_error=f"{type(exc).__name__}: {exc}")
