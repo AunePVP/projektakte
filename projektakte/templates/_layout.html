@@ -40,7 +40,7 @@
   <h2>Projektordner</h2>
   <dl class="meta">
     <dt>Nummernschema</dt><dd>{% if layout.pattern %}<code>{{ layout.pattern }}</code> – {{ layout.source }}{% elif layout.auto %}<strong>noch kein bestätigtes Schema</strong> – Projekte, Dokumente und die Mail-Zuordnung warten{% else %}unbrauchbar{% endif %}</dd>
-    <dt>Ordnertiefe</dt><dd>{{ layout.depth }}{% if layout.auto and layout.depth_auto %} (automatisch){% endif %} – {{ layout.depth_text }}</dd>
+    {% if layout.pattern or not layout.auto %}<dt>Ordnertiefe</dt><dd>{{ layout.depth }}{% if layout.auto and layout.depth_auto %} (aus dem bestätigten Vorschlag){% endif %} – {{ layout.depth_text }}</dd>{% endif %}
     {% if layout.confirmed %}<dt>Erkannt an</dt><dd>{% for e in layout.examples %}{{ e|path }}{{ ', ' if not loop.last }}{% endfor %}{% if layout.projects_at_detection %} ({{ layout.projects_at_detection|de_num }} Projektordner bei der Erkennung am {{ layout.detected_at|de_date(true) }}){% endif %}</dd>{% endif %}
     {% if layout.problem and layout.state != 'pending' %}<dt>Problem</dt><dd><p class="note warn">{{ layout.problem }}</p></dd>{% endif %}
     {% for n in layout.notices %}<dt>Hinweis</dt><dd><p class="note warn">{{ n }}</p></dd>{% endfor %}
@@ -66,8 +66,8 @@
   <form method="post" action="/status/projektstruktur/neu-pruefen"><input type="hidden" name="ablehnung" value="aufheben"><button class="secondary">Ablehnung aufheben und neu prüfen</button></form>
   {% endif %}
 
-  {% if layout.state == 'none' and layout.check %}{% set c = layout.check %}
-  <h3>Kein eindeutiges Schema erkannt</h3>
+  {% if layout.unclear %}{% set c = layout.check %}
+  <h3>Kein eindeutiges Schema erkannt{% if layout.rejected %} (neueste Erkennung nach der Ablehnung){% endif %}</h3>
   <p>{{ c.reason }}</p>
   {% if c.candidates %}
   <div class="table-wrap"><table class="list evidence">

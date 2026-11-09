@@ -444,8 +444,11 @@ def test_file_names_that_are_no_utf8_do_not_stop_the_pass(tmp_path):
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN=YEAR_NUM)
     eml(s.mail_dir / "a.eml", "Frage zu 2024-004")
     stats = run_index(s)
-    assert stats["projects"]["added"] == 5 and "iocharset=utf8" in stats["documents"]["warning"]
+    assert stats["projects"]["added"] == 5 and stats["documents"]["bad_names"] == 1
+    assert stats["documents"]["bad_name_examples"] == ["2024-002 Kita 2/Bericht �ber.txt"]
     assert stats["mails"]["new"] == 1 and "assigned" in json.dumps(stats["assignment"])
+    notices = client_for(s).get("/api/status").json()["layout"]["notices"]
+    assert any("1 Datei in Projektordnern wird nicht gelesen" in n and "iocharset=utf8" in n for n in notices)
 
 
 def test_detection_and_cli_with_names_that_are_no_utf8(tmp_path):

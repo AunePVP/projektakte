@@ -10,8 +10,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import DEFAULT_PROJECT_FOLDER_DEPTH, PROJECT_FOLDER_DEPTH_MAX, pattern_problem
-from .documents import (_sqlite_time, hide_project_documents, link_problem, refresh_fts_titles,
-                        remove_project_documents, restore_project_documents, warn_once)
+# names that are no valid UTF-8 (ENCODING_HINT, has_bad_encoding, printable) are handled in documents.py,
+# which reads the files, and imported from here as well
+from .documents import (ENCODING_HINT, _sqlite_time, has_bad_encoding, hide_project_documents, link_problem,
+                        printable, refresh_fts_titles, remove_project_documents, restore_project_documents,
+                        warn_once)
 
 log = logging.getLogger("projektakte.registry")
 
@@ -32,25 +35,6 @@ class ProjectFolder:
     number: str
     name: str
     path: Path  # the real path (for reading); names may hold surrogate escapes, see printable()
-
-
-# ------------------------------------------------------------------------------------- names
-# A share mounted without iocharset=utf8 (SMB) delivers names that are no valid UTF-8; Python keeps
-# their bytes as lone surrogates (PEP 383). Such names can be read with the real path but never be
-# written to the database, a JSON answer or a UTF-8 terminal: they are shown and stored with U+FFFD.
-ENCODING_HINT = "Freigabe mit iocharset=utf8 einbinden"
-
-
-def has_bad_encoding(text: str) -> bool:
-    """Does a file or folder name hold bytes that are no valid UTF-8 (surrogate escapes)?"""
-    return any("\ud800" <= c <= "\udfff" for c in text)
-
-
-def printable(text: str) -> str:
-    """A file or folder name for display and storage: every byte that is no valid UTF-8 as �."""
-    if not has_bad_encoding(text):
-        return text
-    return "".join("\ufffd" if "\ud800" <= c <= "\udfff" else c for c in text)
 
 
 # ------------------------------------------------------------------------------------- expressions
@@ -115,14 +99,37 @@ def alternatives(pattern: str) -> frozenset[str]:
     return frozenset(a.strip() for a in _split_alternatives(_unwrap(pattern)))
 
 
+# The guards the detection puts in front of a bare-digit scheme so that years, year ranges and dates
+# never count as project numbers (structure.py, rule 5). Only these are guards: a negative lookahead
+# written by hand ((?!AN)[A-Z]{2}-\d{4}) is a decision of the admin and excludes nothing to report.
+YEAR_GUARD = r"(?!(?:19|20)\d\d(?!\d))"
+DATE_GUARD = r"(?!(?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d))"
+_RANGE_HEAD, _RANGE_TAIL = r"(?!(?:19|20)\d\d", r"(?:19|20)\d\d(?!\d))"
+# the separator between the two years as structure._sep_regex writes it: -, _, \., \s or a class of
+# them, optionally followed by ?
+_RANGE_GUARD = re.compile(re.escape(_RANGE_HEAD) + r"(?:-|_|\\\.|\\s|\[(?:-|_|\.|\\s)+\])?\??"
+                          + re.escape(_RANGE_TAIL))
+
+
+def year_range_guard(separator: str) -> str:
+    """The guard against a year range (2017-2018) for a scheme of two four-digit groups."""
+    return _RANGE_HEAD + separator + _RANGE_TAIL
+
+
+def is_guard(text: str) -> bool:
+    """Is ``text`` (a negative lookahead) one of the guards the detection generates?"""
+    return text in (YEAR_GUARD, DATE_GUARD) or _RANGE_GUARD.fullmatch(text) is not None
+
+
 def loose_pattern(pattern: str) -> str | None:
-    """The expression without its guards – the negative lookaheads at the start of an alternative,
-    e.g. (?!(?:19|20)\\d\\d(?!\\d))\\d{4} → \\d{4} – or None if it has none. Matches of the loose
-    expression that the real one refuses are the folders a guard excludes."""
+    """The expression without its guards – the year, year-range and date guards the detection puts at
+    the start of an alternative (:func:`is_guard`), e.g. (?!(?:19|20)\\d\\d(?!\\d))\\d{4} → \\d{4} – or
+    None if it has none. Matches of the loose expression that the real one refuses are the folders a
+    guard excludes. Other negative lookaheads (written by hand) stay: what they exclude is intended."""
     parts, changed = [], False
     for alt in _split_alternatives(_unwrap(pattern)):
         alt = alt.strip()
-        while alt.startswith("(?!") and (end := _group_end(alt, 0)) > 0:
+        while alt.startswith("(?!") and (end := _group_end(alt, 0)) > 0 and is_guard(alt[:end]):
             alt, changed = alt[end:], True
         parts.append(alt)
     if not changed or any(not a for a in parts):

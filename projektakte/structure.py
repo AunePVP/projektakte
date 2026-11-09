@@ -96,8 +96,9 @@ from .config import (AUTO, DEFAULT_PROJECT_FOLDER_DEPTH, DEFAULT_PROJECT_NUMBER_
                      load_settings, pattern_problem)
 from .documents import MAX_FILE_BYTES, link_problem
 from .extract import SUPPORTED_EXT
-from .registry import (ENCODING_HINT, ProjectFolder, alternatives, clamp_depth, has_bad_encoding, loose_pattern,
-                       printable, project_head, projects_root_problem, scan_projects)
+from .registry import (DATE_GUARD, ENCODING_HINT, YEAR_GUARD, ProjectFolder, alternatives, clamp_depth,
+                       has_bad_encoding, loose_pattern, printable, project_head, projects_root_problem, scan_projects,
+                       year_range_guard)
 
 log = logging.getLogger("projektakte.structure")
 
@@ -121,6 +122,7 @@ DEPTH_MIN_SHARE = 0.1  # a level with only this share of the matches does not ra
 CONTAINER_SHARE = 0.5  # container: more than this (median) share of its subfolders belong to the deeper scheme …
 CONTAINER_SHARE_WITH_FILES = 0.75  # … at least this for folders that keep files of their own (as projects do)
 MAX_HINTS = 3  # further schemes named in the report
+INNER_RATIO = 2.5  # numbered subfolders per proposed folder from which they may be the projects (a point to check)
 MAX_FILES = 200_000  # files counted by the file statistics (all projects together)
 MAX_LISTED = 15  # rows of the text report per list
 CHARS_PER_TOKEN = 3.5  # German text, typical tokenizer of current models
@@ -214,6 +216,11 @@ _SIDE_NAME = re.compile(r"angebot|anfrage|ausschreibung|rechnung|verwaltung|buch
 # … and customer registers: projects may well be filed there, but a numbering found there yields to
 # one found elsewhere (customer numbers next to project numbers)
 _CUSTOMER_NAME = re.compile(r"kunde", re.IGNORECASE)
+# words of the office's own records in the label of a numbered folder (A-2024-001 Angebot Kita): most of
+# the proposed project folders carrying one is a point to check (offers instead of projects?)
+_OFFICE_LABEL = re.compile(r"angebot|anfrage|ausschreibung|rechnung|honorar|kalkulation|akquise", re.IGNORECASE)
+# a label that names projects is no kind of record (1020-001 Projekt, 2024-017 Bauvorhaben)
+_PROJECT_LABEL = re.compile(r"(?:projekt|bauvorhaben|vorhaben|bv)(?![a-zäöüß])", re.IGNORECASE)
 _BRANCH_ORDER = ("main", "customers", "archive")  # where projects are looked for, best first; never "side"
 _BRANCH_TEXT = {"archive": "unter einem Archivordner – ältere Nummerierung?",
                 "side": "in einer Nebenablage (Angebote, Anfragen, Rechnungen …) – meist keine Projekte",
@@ -222,9 +229,9 @@ _LABEL_START = re.compile(r"^[\s_\-–—:.,]+")
 # German plural of the kinds of numbers that are no project numbers (rule 2)
 _KIND_TEXT = {"Jahr": "Jahreszahlen", "Jahresbereich": "Jahresbereiche", "Monat": "Monatsangaben",
               "Datum": "Datumsangaben", "kurz": "kurze Gliederungsnummern"}
-# guards against the date-like numbers a bare-digit scheme could match (rule 5)
-_YEAR_GUARD = r"(?!(?:19|20)\d\d(?!\d))"
-_DATE_GUARD = r"(?!(?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d))"
+# guards against the date-like numbers a bare-digit scheme could match (rule 5; registry.is_guard knows them)
+_YEAR_GUARD = YEAR_GUARD
+_DATE_GUARD = DATE_GUARD
 # what a guard excludes, for the explanation (singular, plural)
 _GUARD_KIND = {"Jahr": ("Jahreszahl", "Jahreszahlen"), "Jahresbereich": ("Jahresbereich", "Jahresbereiche"),
                "Datum": ("Datum", "Datumsangaben")}
@@ -618,8 +625,7 @@ class _Cand:
         elif self.k == 2:
             (lo0, hi0), (lo1, hi1) = self.lengths
             if lo0 <= 4 <= hi0 and lo1 <= 4 <= hi1:
-                out.append((rf"(?!(?:19|20)\d\d{_sep_regex(self.seps[0])}(?:19|20)\d\d(?!\d))",
-                            "kein Jahresbereich"))
+                out.append((year_range_guard(_sep_regex(self.seps[0])), "kein Jahresbereich"))
         return out
 
     @property
@@ -762,11 +768,13 @@ def _record_series(cand: _Cand) -> bool:
     """Numbered records of one kind: most folders carry the same label after the number in several
     parent folders (PB-22-1001 Prüfbericht, G30001 Gutachten, 2024-017-001 Bauteil) and hold no
     folders of their own – project folders carry names of their own (2024-017 Kita Regenbogen) or
-    their own structure (Pläne, Schriftverkehr)."""
+    their own structure (Pläne, Schriftverkehr), or a label that says so (1020-001 Projekt)."""
     labels = Counter(m.label for m in cand.members if m.label)
     if not labels:
         return False
     label, n = labels.most_common(1)[0]
+    if _PROJECT_LABEL.match(label):  # "1020-001 Projekt": folders that say they are projects
+        return False
     parents = {m.parent for m in cand.members if m.label == label}
     opened = [m for m in cand.members if m.children is not None and not m.unreadable]
     leaves = sum(1 for m in opened if not m.children)
@@ -1163,12 +1171,118 @@ def _hint(tree: _Tree, best: _Scheme, other: _Scheme, max_depth: int, pattern: s
     ``pattern``: the proposed expression (the scheme's own unless its guard was left out)."""
     combined = f"(?:{pattern or best.pattern}|{other.pattern})"
     depth, _ = _depth_for(tree.root, project_head(combined), max_depth, side=True)
+    own_depth, _ = _depth_for(tree.root, project_head(other.pattern), max_depth, side=True)
     parents = {m.parent for m in best.members}
     beside = sum(1 for m in other.members if m.parent in parents)
     return {"pattern": other.pattern, "description": other.text, "folders": round(other.est),
             "estimated": round(other.est) != len(other.members), "where": _where(other.members),
             "branch": other.branch, "examples": [n.name for n in other.members[:3]],
-            "combined": combined, "depth": depth, "beside": 2 * beside >= len(other.members)}
+            "combined": combined, "depth": depth, "beside": 2 * beside >= len(other.members),
+            "own_depth": own_depth, "structured": _structured_share(other.members)}
+
+
+def _structured_share(nodes: list[_Node]) -> float | None:
+    """The share of the opened folders that hold folders of their own (None: none was opened)."""
+    opened = [n for n in nodes if n.children is not None and not n.unreadable]
+    return sum(1 for n in opened if n.children) / len(opened) if opened else None
+
+
+def _has_contents(path: Path) -> bool:
+    """Does a folder hold anything (a folder or a file, hidden ones aside)? Unreadable: no."""
+    try:
+        with os.scandir(path) as entries:
+            return any(not e.name.startswith(".") for e in entries)
+    except OSError:
+        return False
+
+
+def _office_note(matches: list[_Node], hints: list[dict], depth: int, remedy: bool = True) -> str | None:
+    """Rule 7, a point to check: most proposed project folders carry an office word in their own label
+    (A-2024-001 Angebot Kita) – offers or invoices rather than projects? ``remedy``: name the settings
+    for a further scheme in the same folders (unless another note does)."""
+    office = [n for n in matches if _OFFICE_LABEL.search(n.label)]
+    total = sum(n.weight for n in matches)
+    share = sum(n.weight for n in office) / total if total else 0.0
+    if share <= 0.5:
+        return None
+    note = (f"{round(100 * share)} % der vorgeschlagenen Projektordner tragen ein Wort der Büroablage (Angebot, "
+            f"Anfrage, Rechnung, Honorar …) im Namen (z. B. {', '.join(n.rel for n in office[:3])}) – sind das "
+            "Angebote, Anfragen oder Rechnungen statt Projekte?")
+    if remedy and (h := next((h for h in hints if h["beside"] and not _OFFICE_LABEL.search(" ".join(h["examples"]))),
+                             None)):
+        note += (f" Sind die Ordner von {h['pattern']} (z. B. {', '.join(h['examples'][:2])}) die Projekte: "
+                 f"{_alone_setting(h, depth)} von Hand einstellen.")
+    return note
+
+
+def _alone_setting(h: dict, depth: int) -> str:
+    """The settings for a further scheme on its own (not combined with the proposed one)."""
+    own = h.get("own_depth") or depth
+    return f"PROJECT_NUMBER_PATTERN={h['pattern']} und PROJECT_FOLDER_DEPTH={own}"
+
+
+def _structure_note(best: _Scheme, hints: list[dict], depth: int) -> str | None:
+    """Rule 7, a point to check: a further scheme in the same folders as the proposed project folders
+    whose folders mostly hold folders of their own (Pläne, Schriftverkehr …) while the proposed ones
+    hardly do – the further scheme may be the projects."""
+    mine = _structured_share(best.members)
+    if mine is None:
+        return None
+    for h in hints:
+        theirs = h.get("structured")
+        if (h["beside"] and theirs is not None and theirs >= 0.5 and mine * 2 <= theirs
+                and h["folders"] >= VARIANT_MIN_SHARE * best.est):
+            return (f"Daneben, in denselben Ordnern, liegt das Schema {h['pattern']} "
+                    f"({'etwa ' if h['estimated'] else ''}{de_count(h['folders'], 'Ordner', 'Ordner')}, z. B. "
+                    f"{', '.join(h['examples'][:2])}); {round(100 * theirs)} % seiner Ordner haben eigene Unterordner, "
+                    f"von den vorgeschlagenen Projektordnern nur {round(100 * mine)} % – sind vielleicht die Ordner "
+                    f"von {h['pattern']} die Projekte? Dann {_alone_setting(h, depth)} von Hand einstellen (beide "
+                    f"zusammen: PROJECT_NUMBER_PATTERN={h['combined']}).")
+    return None
+
+
+def _inner_note(matches: list[_Node], root: Path, depth: int) -> str | None:
+    """Rule 7, a point to check: the numbered subfolders inside the proposed project folders are several
+    times (:data:`INNER_RATIO`) as many, carry names of their own – not one label per sub-number as an
+    outline (2024-017_01 Pläne, _02 Schriftverkehr …) has, nor one label for all as records have – and
+    keep folders or files of their own: they may be the projects, the proposed folders their customers
+    (1020 Stadt Aachen/1020-01 Kita …). Reads at most :data:`SAMPLE_MEMBERS` of them (names only)."""
+    kids = [(c, m) for m in matches for c in (m.children or ())
+            if c.token is not None and _number_kind(c.token.prefix, c.token.groups) is None]
+    proposed = sum(m.weight for m in matches)
+    count = sum(c.weight for c, _ in kids)
+    if not kids or count < INNER_RATIO * proposed:
+        return None
+    labels: dict[tuple | None, list[str]] = {}  # by sub-number (1020-01 → 01), None: an own numbering
+    for c, m in kids:
+        pt, t = m.token, c.token
+        n = len(pt.groups) if pt is not None else 0
+        sub = t.groups[n:] if pt is not None and t.prefix == pt.prefix and t.groups[:n] == pt.groups else None
+        labels.setdefault(sub or None, []).append(c.label)
+    judged = [v for k, v in labels.items() if len(v) >= 2 or k is None]
+    if sum(len(v) for v in judged) < MIN_PROJECTS:
+        return None
+    fixed = sum(Counter(v).most_common(1)[0][1] for v in judged)
+    if 2 * fixed >= sum(len(v) for v in judged):
+        return None  # an outline (same label for the same sub-number) or records of one kind
+    def kept(c: _Node) -> bool:  # a folder or file of its own – listed already, or looked at now
+        return bool(c.children) or c.files > 0 if c.children is not None else _has_contents(root / c.rel)
+
+    sample = _sample([c for c, _ in kids], SAMPLE_MEMBERS)
+    if 2 * sum(1 for c in sample if kept(c)) < len(sample):
+        return None
+    # the expression their numbers have (the most common shape) and the depth they lie at – a starting
+    # point to set by hand (it is no proposal: such numbers may be too short to be told from others)
+    shapes = Counter((c.token.prefix, len(c.token.groups)) for c, _ in kids)
+    (prefix, k), _ = shapes.most_common(1)[0]
+    items = [(c, c.token) for c, _ in kids if (c.token.prefix, len(c.token.groups)) == (prefix, k)]
+    expression = _build(items[0][0].depth, prefix, k, items).pattern
+    level = max(c.depth for c, _ in kids)
+    return (f"Die vorgeschlagenen Ordner enthalten je mehrere nummerierte Unterordner mit eigener Ablage (etwa "
+            f"{de_int(count)} bei {de_count(proposed, 'Projektordner', 'Projektordnern')}, z. B. "
+            f"{', '.join(c.rel for c, _ in kids[:3])}) – sind vielleicht die Unterordner die Projekte? Dann "
+            f"PROJECT_NUMBER_PATTERN passend zu ihren Nummern (etwa {expression}) und PROJECT_FOLDER_DEPTH="
+            f"{max(level, depth)} von Hand einstellen und mit python -m projektakte.structure prüfen.")
 
 
 def _reject(result: Analysis, reason: str, started: float) -> Analysis:
@@ -1419,6 +1533,10 @@ def analyse(root: Path | str, *, max_depth: int = MAX_DEPTH, max_folders: int = 
         notes.append(_unreadable_text(tree).strip())
     parents = Counter(_rel(p.path.parent, root) for p in found if p.path.parent != root)
     hints = [_hint(tree, best, other, max_depth, pattern) for other in choice.others[:MAX_HINTS]]
+    matched = [n for n, _ in final.matches]
+    structured = _structure_note(best, hints, depth)
+    notes += [note for note in (_office_note(matched, hints, depth, remedy=not structured), structured,
+                                _inner_note(matched, root, depth)) if note]
     result.projects = found
     result.alternatives = hints
     result.proposal = Proposal(
@@ -1649,6 +1767,9 @@ class Layout:
     check: dict | None = None  # auto mode: the latest detection (time, outcome, candidates, further schemes)
     notes: dict | None = None  # what the latest project scan with this scheme noticed
     next_check: str | None = None  # auto mode without a clear scheme: the next detection (UTC, ISO)
+    # auto mode: a PROJECT_FOLDER_DEPTH that is set but not used – the depth is the one the confirmed
+    # proposal was detected (and its evidence computed) at, never another one
+    ignored_depth: int | None = None
 
     @property
     def state(self) -> str:
@@ -1662,6 +1783,13 @@ class Layout:
         if self.rejected:
             return "rejected"
         return "none" if self.check and self.check.get("outcome") != "proposal" else "unchecked"
+
+    @property
+    def unclear(self) -> bool:
+        """Auto mode with neither a confirmed scheme nor a proposal, and the latest detection found no
+        clear scheme – also after a rejection, so its reason and candidates are shown."""
+        return (self.auto and not self.confirmed and not self.proposal and bool(self.check)
+                and self.check.get("outcome") != "proposal")
 
     @property
     def detected_at(self) -> str | None:
@@ -1699,10 +1827,27 @@ class Layout:
                 f"Statusseite oder mit: {ACCEPT_HINT}")
 
     @property
+    def depth_notice(self) -> str | None:
+        """Auto mode with PROJECT_FOLDER_DEPTH set to another depth than the (proposed) scheme's: it is
+        not used – said on the status page and at start-up, never applied silently."""
+        rec = self.confirmed or self.proposal
+        if self.ignored_depth is None or rec is None or self.ignored_depth == rec.get("depth"):
+            return None
+        which = ("des bestätigten Vorschlags" if self.confirmed else "des Vorschlags (nach dem Übernehmen)")
+        return (f"PROJECT_FOLDER_DEPTH={self.ignored_depth} ist eingestellt, gilt aber nicht zusammen mit "
+                f"PROJECT_NUMBER_PATTERN=auto: gelesen wird die Ordnertiefe {which}, {rec.get('depth')} – genau "
+                "die, auf der die Erkennung und ihre Belege beruhen. PROJECT_FOLDER_DEPTH aus projektakte.env "
+                "entfernen (oder auf auto setzen); soll eine andere Tiefe gelten, PROJECT_NUMBER_PATTERN und "
+                "PROJECT_FOLDER_DEPTH beide fest einstellen (Vorschlag: python -m projektakte.structure).")
+
+    @property
     def notices(self) -> list[str]:
-        """Warnings of the latest project scan with this scheme (guard, names in a wrong encoding) and,
-        next to a confirmed scheme, a newer detection that found no clear scheme at all."""
+        """Warnings of the latest project scan with this scheme (guard, names in a wrong encoding), a
+        PROJECT_FOLDER_DEPTH that auto mode does not use and, next to a confirmed scheme, a newer
+        detection that found no clear scheme at all."""
         out = scan_notices(self.notes)
+        if notice := self.depth_notice:
+            out.insert(0, notice)
         c = self.check
         if self.confirmed and c and c.get("outcome") != "proposal" and c.get("checked_at"):
             out.append(f"Die neueste Erkennung ({local_time_text(c.get('checked_at'))}) ergibt kein eindeutiges "
@@ -1727,13 +1872,19 @@ class Layout:
         return f"{self.pattern} ({self.source}), {depth}"
 
     def to_dict(self) -> dict:
+        """For the status page and /api/status – the stored records without the absolute PROJECTS_DIR
+        they are kept for (``root``): the path of the share is no business of the API."""
+        def public(rec: dict | None) -> dict | None:
+            return {k: v for k, v in rec.items() if k != "root"} if rec else rec
+
         return clean({
             "pattern": self.pattern, "depth": self.depth, "auto": self.auto, "depth_auto": self.depth_auto,
-            "state": self.state, "source": self.source, "depth_text": depth_text(self.depth),
+            "state": self.state, "unclear": self.unclear, "source": self.source, "depth_text": depth_text(self.depth),
             "detected_at": self.detected_at, "examples": list(self.examples), "projects_at_detection": self.projects,
             "problem": self.problem, "warning": self.warning, "notices": self.notices,
-            "next_check": self.next_check, "confirmed": self.confirmed, "proposal": self.proposal,
-            "rejected": self.rejected, "check": self.check, "accept_hint": ACCEPT_HINT})
+            "ignored_depth": self.ignored_depth, "next_check": self.next_check, "confirmed": public(self.confirmed),
+            "proposal": public(self.proposal), "rejected": public(self.rejected), "check": public(self.check),
+            "accept_hint": ACCEPT_HINT})
 
 
 def scan_notices(notes: dict | None) -> list[str]:
@@ -1748,8 +1899,13 @@ def scan_notices(notes: dict | None) -> list[str]:
                    f"(python -m projektakte.structure zeigt die Ordner) oder die Ordner umbenennen.")
     if b := notes.get("bad_names"):
         out.append(f"{de_count(b['count'], 'Ordnername hat', 'Ordnernamen haben')} eine falsche Zeichenkodierung "
-                   f"(z. B. {', '.join((b.get('examples') or [])[:3])}) – sie werden mit � angezeigt, die Dateien "
-                   f"in solchen Projektordnern erst nach dem Neu-Einbinden gelesen. {ENCODING_HINT}.")
+                   f"(z. B. {', '.join((b.get('examples') or [])[:3])}) – sie werden mit � angezeigt. {ENCODING_HINT}.")
+    if f := notes.get("bad_files"):
+        one = f["count"] == 1
+        out.append(f"{de_count(f['count'], 'Datei in Projektordnern wird', 'Dateien in Projektordnern werden')} nicht "
+                   f"gelesen, weil {'ihr Name' if one else 'ihre Namen'} eine falsche Zeichenkodierung "
+                   f"{'hat' if one else 'haben'} (z. B. {', '.join((f.get('examples') or [])[:3])}) – {ENCODING_HINT}, "
+                   f"dann {'wird sie' if one else 'werden sie'} beim nächsten Indexierungslauf gelesen.")
     return out
 
 
@@ -1873,7 +2029,7 @@ def _waiting_problem(proposal: dict | None, rejected: dict | None, check: dict |
                 "Ordnerübersicht: python -m projektakte.structure) oder die Ordner anpassen; eine geänderte "
                 "Erkennung wird wieder vorgeschlagen")
     if check and check.get("outcome") != "proposal":
-        return (f"Kein eindeutiges Projektnummern-Schema in {printable(root_key(root))} erkannt "
+        return (f"Kein eindeutiges Projektnummern-Schema in PROJECTS_DIR erkannt "
                 f"(PROJECT_NUMBER_PATTERN=auto, Prüfung {local_time_text(check.get('checked_at'))}): "
                 f"{check.get('reason')} Nächste Prüfung "
                 f"{'frühestens ' + local_time_text(nxt) if (nxt := _next_check(check)) else 'beim nächsten Indexierungslauf'}. Bitte "
@@ -1907,15 +2063,17 @@ def current_layout(settings, conn: sqlite3.Connection | None = None) -> Layout:
     if proposal and ((rejected and rejected.get("id") == proposal.get("id"))
                      or (confirmed and confirmed.get("id") == proposal.get("id"))):
         proposal = None  # written by a detection that ran while the person decided
-    depth_auto = configured_depth is None
+    # the depth is the confirmed proposal's: the person confirmed evidence computed at that depth, so a
+    # configured PROJECT_FOLDER_DEPTH is not used (and said so, see Layout.depth_notice)
+    ignored = clamp_depth(configured_depth) if configured_depth is not None else None
     if confirmed:
-        depth = configured_depth or confirmed["depth"]
-        return Layout(confirmed["pattern"], depth, True, depth_auto, confirmed=confirmed, proposal=proposal,
-                      rejected=rejected, check=check, notes=_scan_notes(conn, root, confirmed["pattern"]))
-    none = check is not None and check.get("outcome") != "proposal" and not proposal and not rejected
-    return Layout(None, clamp_depth(configured_depth), True, depth_auto,
+        return Layout(confirmed["pattern"], confirmed["depth"], True, True, confirmed=confirmed, proposal=proposal,
+                      rejected=rejected, check=check, notes=_scan_notes(conn, root, confirmed["pattern"]),
+                      ignored_depth=ignored)
+    unclear = check is not None and check.get("outcome") != "proposal" and not proposal
+    return Layout(None, proposal["depth"] if proposal else DEFAULT_PROJECT_FOLDER_DEPTH, True, True,
                   problem=_waiting_problem(proposal, rejected, check, root), proposal=proposal, rejected=rejected,
-                  check=check, next_check=_next_check(check) if none else None)
+                  check=check, next_check=_next_check(check) if unclear else None, ignored_depth=ignored)
 
 
 def number_pattern(settings, conn: sqlite3.Connection | None = None) -> str:
@@ -1934,19 +2092,14 @@ def _parse_time(value: str | None) -> datetime | None:
     return when
 
 
-def _agrees(confirmed: dict, rec: dict, result: Analysis, root: Path, settings) -> tuple[bool, int | None]:
+def _agrees(confirmed: dict, rec: dict, result: Analysis, root: Path) -> tuple[bool, int | None]:
     """Is a new detection the confirmed scheme? Compared by meaning, not as text: the same set of
     alternatives with the same depth – or exactly the same project folders found. Also returns how
     many folders the confirmed scheme finds now, if that had to be scanned."""
-    configured_depth = getattr(settings, "project_folder_depth", None)
-    if alternatives(confirmed["pattern"]) == alternatives(rec["pattern"]) and (
-            configured_depth is not None or rec["depth"] == confirmed["depth"]):
+    if alternatives(confirmed["pattern"]) == alternatives(rec["pattern"]) and rec["depth"] == confirmed["depth"]:
         return True, None
-    depth = configured_depth or confirmed["depth"]
-    stored = scan_projects(root, confirmed["pattern"], depth, unreadable=[], duplicates=[])
-    new = result.projects if configured_depth is None else scan_projects(root, rec["pattern"], depth,
-                                                                         unreadable=[], duplicates=[])
-    return bool(stored) and {p.path for p in stored} == {p.path for p in new}, len(stored)
+    stored = scan_projects(root, confirmed["pattern"], confirmed["depth"], unreadable=[], duplicates=[])
+    return bool(stored) and {p.path for p in stored} == {p.path for p in result.projects}, len(stored)
 
 
 def _apply_detection(conn: sqlite3.Connection, settings, result: Analysis, now: datetime) -> None:
@@ -1964,15 +2117,16 @@ def _apply_detection(conn: sqlite3.Connection, settings, result: Analysis, now: 
     _save(conn, CHECK_KEY, check)
     _delete(conn, *LEGACY_KEYS)
     if result.proposal is None:
-        if check["outcome"] == "none" and pending:
-            _delete(conn, PROPOSAL_KEY)  # the share does not show it any more (half mounted, renamed …)
+        if check["outcome"] == "none" and pending and result.folders:
+            # the share does not show it any more (renamed, reorganised …) – an empty one is not mounted
+            _delete(conn, PROPOSAL_KEY)
         if check["reason"] != previous.get("reason"):
             log.warning("Projektnummern-Schema: keine eindeutige Erkennung in %s: %s", printable(str(root)),
                         check["reason"])
         return
     rec = proposal_record(result, root, now)
     if confirmed:
-        same, now_found = _agrees(confirmed, rec, result, root, settings)
+        same, now_found = _agrees(confirmed, rec, result, root)
         if same:
             if pending:
                 _delete(conn, PROPOSAL_KEY)
@@ -1993,6 +2147,15 @@ def _apply_detection(conn: sqlite3.Connection, settings, result: Analysis, now: 
     _save(conn, PROPOSAL_KEY, rec)
 
 
+def _without_folders(root: Path) -> bool:
+    """Does ``root`` hold no folder at all (hidden ones aside)? An empty mount point looks like that."""
+    try:
+        with os.scandir(root) as entries:
+            return not any(not e.name.startswith(".") and e.is_dir() for e in entries)
+    except OSError:
+        return False  # projects_root_problem reports an unreadable folder
+
+
 def layout_for_index(conn: sqlite3.Connection, settings, *, now: datetime | None = None,
                      max_folders: int = MAX_FOLDERS) -> tuple[Layout, dict]:
     """The layout for an indexing pass. With PROJECT_NUMBER_PATTERN=auto the share is analysed – at
@@ -2007,6 +2170,12 @@ def layout_for_index(conn: sqlite3.Connection, settings, *, now: datetime | None
     root = Path(settings.projects_dir)
     info = {"pattern": layout.pattern, "depth": layout.depth, "source": layout.source, "state": layout.state}
     if problem := projects_root_problem(root):
+        return (layout if layout.pattern else dataclasses.replace(layout, problem=problem)), info
+    if (layout.proposal or layout.confirmed) and _without_folders(root):
+        # a share that is suddenly empty is not mounted (like registry.sync_from_folder sees it): nothing
+        # is detected, the confirmed scheme and a pending proposal stay as they are
+        problem = (f"Projektordner {root} enthält keine Ordner mehr – Laufwerk nicht eingebunden? Die Erkennung "
+                   "wartet, bis er wieder Ordner enthält" + ("; der Vorschlag bleibt bestehen" if layout.proposal else ""))
         return (layout if layout.pattern else dataclasses.replace(layout, problem=problem)), info
     checked = _parse_time((layout.check or {}).get("checked_at"))
     if checked is not None and timedelta(0) <= now - checked < RECHECK_INTERVAL:
@@ -2036,9 +2205,10 @@ def store_confirmed(conn: sqlite3.Connection, rec: dict, user: str | None, via: 
                  "confirmed_via": via}
     _save(conn, CONFIRMED_KEY, confirmed)
     _delete(conn, PROPOSAL_KEY, REJECTED_KEY, *LEGACY_KEYS)
-    log.warning("Projektstruktur bestätigt von %s (%s): %s, Tiefe %d (%s Projektordner bei der Erkennung am %s)",
-                confirmed["confirmed_by"], via, confirmed["pattern"], confirmed["depth"], confirmed.get("projects"),
-                local_time_text(confirmed.get("detected_at")))
+    who = confirmed["confirmed_by"]
+    log.warning("Projektstruktur bestätigt von %s: %s, Tiefe %d (%s Projektordner bei der Erkennung am %s)",
+                who if f"({via})" in who else f"{who} ({via})", confirmed["pattern"], confirmed["depth"],
+                confirmed.get("projects"), local_time_text(confirmed.get("detected_at")))
     return clean(confirmed)
 
 
@@ -2090,17 +2260,24 @@ def request_recheck(conn: sqlite3.Connection, settings, *, forget_rejection: boo
 
 
 def record_scan_notes(conn: sqlite3.Connection, settings, layout: Layout, stats: dict,
-                      now: datetime | None = None) -> None:
-    """Keep what the project scan noticed (folders a guard excludes, names in a wrong encoding) for
-    the status page, and log it once – when it first appears or changes, not at every pass."""
+                      documents: dict | None = None, now: datetime | None = None) -> None:
+    """Keep what the project scan (``stats``) and the documents pass (``documents``) noticed – folders a
+    guard excludes, folder and file names in a wrong encoding – for the status page, and log it once:
+    when it first appears or changes, not at every pass."""
     if not layout.pattern or not isinstance(stats, dict) or stats.get("warning"):
         return
-    notes = {"root": root_key(settings.projects_dir), "pattern": layout.pattern, "depth": layout.depth,
-             "guard": stats.get("guard_excluded"), "bad_names": stats.get("bad_names")}
+    root = root_key(settings.projects_dir)
     old = _load(conn, NOTES_KEY) or {}
+    if isinstance(documents, dict) and "bad_names" in documents:
+        bad_files = ({"count": documents["bad_names"], "examples": documents.get("bad_name_examples") or []}
+                     if documents["bad_names"] else None)
+    else:  # the documents were not read this time: what the last pass found still holds
+        bad_files = old.get("bad_files") if (old.get("root"), old.get("pattern")) == (root, layout.pattern) else None
+    notes = {"root": root, "pattern": layout.pattern, "depth": layout.depth,
+             "guard": stats.get("guard_excluded"), "bad_names": stats.get("bad_names"), "bad_files": bad_files}
     if all(old.get(k) == clean(v) for k, v in notes.items()):
         return
-    if not notes["guard"] and not notes["bad_names"]:
+    if not notes["guard"] and not notes["bad_names"] and not notes["bad_files"]:
         _delete(conn, NOTES_KEY)
         return
     notes["noticed_at"] = _iso(now or _now())
@@ -2116,6 +2293,7 @@ def current_check(root: Path, settings) -> dict:
     depth_setting = getattr(settings, "project_folder_depth", None)
     out = {"setting": settings.project_number_pattern,
            "depth_setting": AUTO if depth_setting is None else depth_setting,
+           "depth_ignored": layout.auto and depth_setting is not None,
            "pattern": layout.pattern, "depth": layout.depth, "source": layout.source, "problem": layout.problem,
            "state": layout.state, "pending": (layout.proposal or {}).get("pattern"), "projects": None, "examples": []}
     if layout.pattern:
@@ -2235,6 +2413,9 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
         out.append("")
         depth = current["depth_setting"]
         out.append(f"Aktuelle Einstellung: PROJECT_NUMBER_PATTERN={current['setting']}, PROJECT_FOLDER_DEPTH={depth}")
+        if current.get("depth_ignored"):
+            out.append("  PROJECT_FOLDER_DEPTH gilt nicht zusammen mit PROJECT_NUMBER_PATTERN=auto – gelesen wird die "
+                       "Ordnertiefe des bestätigten Vorschlags (PROJECT_FOLDER_DEPTH weglassen)")
         if current["pattern"] is None:
             out.append(f"  {current['problem']}")
         elif current.get("pending"):

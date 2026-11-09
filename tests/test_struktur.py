@@ -707,9 +707,10 @@ def test_folder_depth_setting(raw, depth, warned):
     assert any(w.startswith("PROJECT_FOLDER_DEPTH=") for w in s.config_warnings) is warned
 
 
-@pytest.mark.parametrize("raw, depth, warned", [("", None, False), ("auto", None, False), ("3", 3, False),
+@pytest.mark.parametrize("raw, depth, warned", [("", None, False), ("auto", None, False), ("3", 3, True),
                                                 ("9", None, True)])
 def test_folder_depth_with_automatic_pattern(raw, depth, warned):
+    """A number is kept (the status page names it) but not used with auto – said at start-up."""
     s = load_settings({"PROJECT_NUMBER_PATTERN": " Auto ", "PROJECT_FOLDER_DEPTH": raw})
     assert s.project_number_pattern == "auto" and s.project_pattern_auto
     assert s.project_folder_depth == depth
@@ -1045,14 +1046,19 @@ def test_detection_for_another_projects_dir_is_not_used(tmp_path):
     assert structure.current_layout(s).pattern == r"P\d{5}"
 
 
-def test_configured_depth_wins_over_the_detected_one(tmp_path):
+def test_configured_depth_is_not_used_with_auto(tmp_path):
+    """Review verify3 f1/f3: the person confirms evidence computed at the detected depth – exactly that
+    depth is read; a configured PROJECT_FOLDER_DEPTH is named on the status page, never applied."""
     root = mk(tmp_path / "p", *(f"2024/BS-2024-{i:04d} X" for i in range(1, 4)), "Archiv/2010/BS-2010-0001 Alt")
-    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto", PROJECT_FOLDER_DEPTH="3")
+    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto", PROJECT_FOLDER_DEPTH="1")
+    assert any(w.startswith("PROJECT_FOLDER_DEPTH=1 gilt nicht zusammen mit") for w in s.config_warnings)
     run_index(s)
+    assert "PROJECT_FOLDER_DEPTH=1 ist eingestellt" in structure.current_layout(s).notices[0]
     _confirm(s)
     run_index(s)
     layout = structure.current_layout(s)
-    assert layout.depth == 3 and not layout.depth_auto and len(_active(s)) == 4
+    assert (layout.depth, layout.depth_auto, layout.ignored_depth) == (3, True, 1) and len(_active(s)) == 4
+    assert "gelesen wird die Ordnertiefe des bestätigten Vorschlags, 3" in layout.notices[0]
 
 
 def test_recheck_waits_for_the_interval(tmp_path, monkeypatch):

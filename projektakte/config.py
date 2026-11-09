@@ -56,7 +56,9 @@ def _project_number_pattern(env: Mapping[str, str], warnings: list[str]) -> str:
 
 def _project_folder_depth(env: Mapping[str, str], auto: bool, warnings: list[str]) -> int | None:
     """PROJECT_FOLDER_DEPTH: 1 to PROJECT_FOLDER_DEPTH_MAX, or None = taken from the automatic
-    detection (only with PROJECT_NUMBER_PATTERN=auto; there also when it is not set)."""
+    detection (only with PROJECT_NUMBER_PATTERN=auto; there also when it is not set). With
+    PROJECT_NUMBER_PATTERN=auto a number is kept (the status page names it) but not used: the depth is
+    the one the confirmed proposal was detected at (structure.current_layout) – said at start-up."""
     raw = (env.get("PROJECT_FOLDER_DEPTH") or "").strip()
     fallback = None if auto else DEFAULT_PROJECT_FOLDER_DEPTH
     if not raw:
@@ -75,6 +77,10 @@ def _project_folder_depth(env: Mapping[str, str], auto: bool, warnings: list[str
         used = "die automatisch erkannte Tiefe" if auto else str(DEFAULT_PROJECT_FOLDER_DEPTH)
         warnings.append(f"PROJECT_FOLDER_DEPTH={raw} ist ungültig (erlaubt: {allowed}) – verwendet wird {used}")
         return fallback
+    if auto:
+        warnings.append(f"PROJECT_FOLDER_DEPTH={raw} gilt nicht zusammen mit PROJECT_NUMBER_PATTERN=auto – verwendet "
+                        "wird die Ordnertiefe des bestätigten Vorschlags, auf der seine Belege beruhen "
+                        "(PROJECT_FOLDER_DEPTH weglassen; eine feste Tiefe nur mit festem PROJECT_NUMBER_PATTERN)")
     return value
 
 
@@ -239,7 +245,8 @@ class Settings:
     extract_cpu_seconds: float = 120.0
     extract_wall_seconds: float = 3600.0
     # levels below PROJECTS_DIR at which project folders are looked for (PROJECT_FOLDER_DEPTH);
-    # None: the depth found by the automatic detection (PROJECT_NUMBER_PATTERN=auto, see structure.py)
+    # None: the depth found by the automatic detection (PROJECT_NUMBER_PATTERN=auto, see structure.py –
+    # with auto a number set here is not used, the confirmed proposal's depth is)
     project_folder_depth: int | None = DEFAULT_PROJECT_FOLDER_DEPTH
 
     @property

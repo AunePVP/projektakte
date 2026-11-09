@@ -69,9 +69,11 @@ def _paused(layout: structure.Layout) -> str:
 
 
 def _index_documents(conn, llm, settings: Settings) -> dict:
-    """The files of all active projects. A file name that is no valid UTF-8 (a share mounted without
-    iocharset=utf8) cannot be stored: the documents of this pass stop there with a warning – the
-    mails, embeddings and the assignment still run – instead of the whole pass failing."""
+    """The files of all active projects. File names that are no valid UTF-8 (a share mounted without
+    iocharset=utf8) are skipped and counted by the documents pass itself, a project it cannot store
+    is skipped there; should anything else of that kind slip through, the documents of this pass stop
+    with a warning – the mails, embeddings and the assignment still run – instead of the whole pass
+    failing."""
     try:
         return index_all_documents(conn, llm=llm, projects_dir=settings.projects_dir)
     except UnicodeError as exc:
@@ -101,7 +103,6 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
         else:
             stats["projects"] = sync_from_folder(conn, settings.projects_dir, layout.pattern,
                                                  max_depth=layout.depth)
-            structure.record_scan_notes(conn, settings, layout, stats["projects"])
         conn.commit()
         llm = ai.llm if ai else None
         phase("Dokumente")
@@ -111,6 +112,9 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
             stats["documents"] = {"note": "nicht abgeglichen – Projektordner nicht verfügbar"}
         else:
             stats["documents"] = _index_documents(conn, llm, settings)
+        if layout.pattern is not None:  # what the scans noticed (guard, names in a wrong encoding)
+            structure.record_scan_notes(conn, settings, layout, stats["projects"], stats["documents"])
+            conn.commit()
         phase("Mails")
         # MAIL_ALLOW_EMPTY=1: an empty MAIL_DIR is intended – remove its mails (normally a missing
         # mount, so nothing is removed then)

@@ -262,6 +262,49 @@ def refresh_fts_titles(conn: sqlite3.Connection, project: str, project_name: str
     return len(rows)
 
 
+# -- names that are no valid UTF-8 --------------------------------------------------------------------
+# A share mounted without iocharset=utf8 (SMB) delivers names that are no valid UTF-8; Python keeps
+# their bytes as lone surrogates (PEP 383). Such names can be read with the real path but never be
+# written to the database, a JSON answer or a UTF-8 terminal: they are shown and stored with U+FFFD.
+ENCODING_HINT = "Freigabe mit iocharset=utf8 einbinden"
+MAX_BAD_EXAMPLES = 8  # file names in a wrong encoding named per pass
+
+
+def has_bad_encoding(text: str) -> bool:
+    """Does a file or folder name hold bytes that are no valid UTF-8 (surrogate escapes)?"""
+    return any("\ud800" <= c <= "\udfff" for c in text)
+
+
+def printable(text: str) -> str:
+    """A file or folder name for display and storage: every byte that is no valid UTF-8 as �."""
+    if not has_bad_encoding(text):
+        return text
+    return "".join("\ufffd" if "\ud800" <= c <= "\udfff" else c for c in text)
+
+
+def real_folder(stored: Path | str) -> Path | None:
+    """The real path of a folder whose path is stored with � for bytes that are no valid UTF-8
+    (:func:`printable`): every component holding � is looked up among the entries of its parent
+    folder whose printable name is that component. None if one of them is not found, not readable or
+    ambiguous (two names that differ only in such bytes). Paths without � are returned as they are."""
+    path = Path(stored)
+    if "\ufffd" not in str(path):
+        return path
+    current = Path(path.parts[0])
+    for part in path.parts[1:]:
+        if "\ufffd" in part:
+            try:
+                with os.scandir(current) as entries:
+                    matches = [e.name for e in entries if printable(e.name) == part]
+            except OSError:
+                return None
+            if len(matches) != 1:
+                return None
+            part = matches[0]
+        current = current / part
+    return current
+
+
 # -- project folders --------------------------------------------------------------------------------
 _warned: set[tuple] = set()
 
@@ -316,7 +359,7 @@ def _project_files(root: Path, boundary: Path | None = None, errors: list | None
                 continue
             f = Path(dirpath) / name
             if f.is_symlink() and (problem := link_problem(f, boundary)):
-                warn_once(log, "%s: %s", problem, f)
+                warn_once(log, "%s: %s", problem, printable(str(f)))
                 continue
             yield f
 
@@ -359,12 +402,20 @@ class _ProjectState:
 def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *,
                             projects_dir: Path | str | None = None) -> dict:
     """Bring the documents of one project folder up to date. Every file is read and extracted
-    without holding the write lock, then written and committed on its own."""
-    root = Path(project["path"])
+    without holding the write lock, then written and committed on its own.
+
+    The register stores folder names that are no valid UTF-8 with � (:func:`printable`); such a
+    project folder is read under its real path (:func:`real_folder`), its documents are stored under
+    the printable one. Files whose name (or a folder name inside the project) is no valid UTF-8 cannot
+    be stored: they are skipped before they are read – counted in ``skipped`` and ``bad_names``,
+    named in ``bad_name_examples`` and warned about once."""
+    stored_root = Path(project["path"])
     stats = {"new": 0, "changed": 0, "unchanged": 0, "reprocessed": 0, "moved": 0, "removed": 0,
-             "skipped": 0, "errors": 0}
-    if not root.is_dir():  # vanished since the register was read, or share not reachable: keep all
-        log.warning("Projektordner nicht erreichbar, Dokumente bleiben unverändert: %s", root)
+             "skipped": 0, "errors": 0, "bad_names": 0}
+    root = real_folder(stored_root)
+    if root is None or not root.is_dir():  # vanished since the register was read, or share not reachable
+        log.warning("Projektordner nicht erreichbar, Dokumente bleiben unverändert: %s%s", stored_root,
+                    f" – {ENCODING_HINT}" if "\ufffd" in str(stored_root) else "")
         return stats
     boundary = Path(projects_dir).resolve() if projects_dir else root.resolve()
     profile = extraction_profile(llm)
@@ -372,23 +423,31 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
     state = _ProjectState(conn, project["number"])
     seen: set[str] = set()
     walk_errors: list[OSError] = []
+    bad: list[str] = []
     if is_inside(root, boundary):
         files = _project_files(root, boundary, walk_errors)
     else:
-        warn_once(log, "Projektordner liegt außerhalb von PROJECTS_DIR und wird nicht gelesen: %s", root)
+        warn_once(log, "Projektordner liegt außerhalb von PROJECTS_DIR und wird nicht gelesen: %s",
+                  printable(str(root)))
         files = ()
     for f in files:
         if f.suffix.lower() not in SUPPORTED_EXT:
+            stats["skipped"] += 1
+            continue
+        rel_path = f.relative_to(root)
+        rel = str(rel_path)
+        if has_bad_encoding(rel):  # cannot be stored – never read it (nor extract it again at every pass)
+            bad.append(printable(rel))
             stats["skipped"] += 1
             continue
         try:
             st = f.stat()
         except OSError:
             continue
-        key, rel = str(f), str(f.relative_to(root))
+        key = str(stored_root / rel_path)
         seen.add(key)
         row = state.by_path.get(key)
-        if row is None and (row := state.relocate(conn, key, rel, root)) is not None:
+        if row is None and (row := state.relocate(conn, key, rel, stored_root)) is not None:
             conn.commit()
             stats["moved"] += 1
         due = row is not None and reprocess_due(row, profile, now, extract_worker.limits_for(f.name, llm))
@@ -401,7 +460,7 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
         try:
             data = _read_inside(f, boundary)
         except OSError as exc:
-            log.warning("Datei nicht lesbar: %s (%s)", f, exc)
+            log.warning("Datei nicht lesbar: %s (%s)", key, exc)
             stats["errors"] += 1
             continue
         if row and not due and row["sha256"] == sha256(data):  # touched but not changed
@@ -410,13 +469,30 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
             stats["unchanged"] += 1
             continue
         doc = prepare_document(rel_path=rel, data=data, mtime=st.st_mtime, llm=llm)  # no lock held
-        write_document(conn, doc, path=key, project=project["number"], project_name=project["name"])
+        try:
+            write_document(conn, doc, path=key, project=project["number"], project_name=project["name"])
+        except UnicodeError as exc:  # text that cannot be stored – this file only, the pass goes on
+            conn.rollback()
+            warn_once(log, "Datei nicht gespeichert, ein Text ist kein gültiges UTF-8: %s (%s)", key, exc)
+            stats["errors"] += 1
+            continue
         conn.commit()  # one short write transaction per file – the web UI never waits long
         if row is None:
             stats["new"] += 1
         else:
             stats["reprocessed" if due and row["sha256"] == doc.sha256 else "changed"] += 1
-    unlisted = [Path(e.filename) for e in walk_errors if getattr(e, "filename", None)]
+    if bad:
+        stats["bad_names"] = len(bad)
+        stats["bad_name_examples"] = [f"{stored_root.name}/{name}" for name in bad[:MAX_BAD_EXAMPLES]]
+        warn_once(log, "Projekt %s: %d Datei(en) nicht gelesen – der Name hat eine falsche Zeichenkodierung "
+                       "(z. B. %s) – %s", project["number"], len(bad), ", ".join(bad[:3]), ENCODING_HINT)
+    unlisted = []  # folders that could not be listed, as stored (with � where the name is no UTF-8)
+    for e in walk_errors:
+        if getattr(e, "filename", None):
+            try:
+                unlisted.append(stored_root / Path(os.fsdecode(e.filename)).relative_to(root))
+            except ValueError:
+                unlisted.append(Path(printable(os.fsdecode(e.filename))))
     for key, row in state.by_path.items():
         if key in seen:
             continue
@@ -453,13 +529,27 @@ def mark_garbled_eml_documents(conn: sqlite3.Connection) -> int:
 
 def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Path | str | None = None) -> dict:
     """Index the files of all active projects (files of unknown projects leave the index first).
-    ``projects_dir`` is the boundary for links (default: each project folder itself)."""
-    total: dict = {"removed": purge_inactive_documents(conn)}
+    ``projects_dir`` is the boundary for links (default: each project folder itself). A project whose
+    files cannot be stored (a name that is no valid UTF-8 the checks missed) is skipped with a warning
+    – never the projects after it. ``bad_names`` counts the files skipped for a name in a wrong
+    encoding, ``bad_name_examples`` names some of them (project folder/path)."""
+    total: dict = {"removed": purge_inactive_documents(conn), "bad_names": 0, "bad_name_examples": []}
     conn.commit()
     mark_garbled_eml_documents(conn)
     projects = [dict(r) for r in conn.execute("SELECT number, name, path FROM projects WHERE active = 1")]
     for p in projects:
-        for k, v in index_project_documents(conn, p, llm=llm, projects_dir=projects_dir).items():
+        try:
+            stats = index_project_documents(conn, p, llm=llm, projects_dir=projects_dir)
+        except UnicodeError as exc:
+            conn.rollback()
+            warn_once(log, "Projekt %s: Dokumente nicht vollständig gelesen – ein Name ist kein gültiges UTF-8 "
+                           "(%s) – %s", p["number"], exc, ENCODING_HINT)
+            total["errors"] = total.get("errors", 0) + 1
+            continue
+        examples = stats.pop("bad_name_examples", [])
+        room = MAX_BAD_EXAMPLES - len(total["bad_name_examples"])
+        total["bad_name_examples"] += examples[:max(0, room)]
+        for k, v in stats.items():
             total[k] = total.get(k, 0) + v
     return total
 
