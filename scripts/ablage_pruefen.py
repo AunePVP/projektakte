@@ -218,8 +218,10 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
                     _rule(report, path, name, child_level, chain, sub_chain, project is not None)
                 else:
                     sub_chain["ignored"] = True  # no number in front: not part of the numbered filing
-            if (not inside and not chain.get("lost") and not sub_chain.get("ignored") and ORDER.match(name)
-                    and head.match(name) and str(path) not in skipped_paths):
+            if str(path) in skipped_paths:  # a duplicate: reported as such, its folders (109402_140306 …) with it
+                sub_chain["lost"] = True
+            elif (not inside and not chain.get("lost") and not sub_chain.get("ignored") and ORDER.match(name)
+                    and head.match(name)):
                 # only the outermost: folders such as 104900_Archiv inside a lost order belong to it
                 report.add("nicht_gefunden", path, f"liegt auf Ebene {child_level}, gelesen wird bis Ebene {depth}")
                 sub_chain["lost"] = True

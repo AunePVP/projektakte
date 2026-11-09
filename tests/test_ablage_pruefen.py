@@ -52,7 +52,8 @@ def test_every_deviation_is_found(tmp_path, capsys):
     lost = order(root, "2/28/2842_Beratung Filiale/1015_PDF_100303/284205_Alter Auftrag")  # in a numbered
     (lost / "284205-CAD" / "284205_Archiv").mkdir()  # inside the lost order: reported with it, not again
     order(root, "2/28/2843_Halle/284301_Halle A")
-    order(root, "2/29/2943_Halle Zwei/284301_Halle B")  # number twice (and misfiled)
+    dup = order(root, "2/29/2943_Halle Zwei/284301_Halle B")  # number twice (and misfiled)
+    (dup / "284301-Bilder" / "284301_140306").mkdir()  # a dated photo folder in the skipped duplicate
     (root / "2/28/2844_Lager/284401-Mail").mkdir(parents=True)  # a category without its order folder
     (root / "2/28/2844_Lager/284401-Mail/Mail.eml").write_bytes(b"x")
     order(root, "1/18/1827_Siemens/182700_Konzept")
