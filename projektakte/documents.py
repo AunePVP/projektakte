@@ -1,8 +1,9 @@
 """Index project files: extract → chunk → store (SQLite + FTS5). Incremental via size/mtime and
 SHA-256: unchanged files are not read again, changed files are re-processed, deleted files removed.
 Incomplete results (scans without vision, failed model calls, errors) are processed again when the
-extraction profile changes or after a back-off. Files are extracted outside the write transaction
-and committed one by one, so the web UI never waits long for the database."""
+extraction profile changes or after a back-off – and those cut short by a limit of the extraction
+worker once that limit is raised. Files are extracted outside the write transaction and committed one
+by one, so the web UI never waits long for the database."""
 from __future__ import annotations
 
 import errno
@@ -82,14 +83,32 @@ def retry_delay(attempts: int) -> timedelta:
     return min(RETRY_BASE * (2 ** max(0, min(attempts - 1, 20))), RETRY_MAX)
 
 
-def reprocess_due(row, profile: str, now: str) -> bool:
+# Separates the extraction profile from the limit that cut a result short in the stored profile, e.g.
+# "v6:vision:qwen|limit:cpu=120" (see stored_profile).
+LIMIT_MARK = "|limit:"
+
+
+def stored_profile(profile: str, result: Extracted) -> str:
+    """The profile stored with a document: the extraction profile, and for a result cut short by a limit
+    of the extraction worker (``Extracted.limit``) that limit – only these documents depend on the
+    limits, so changing them does not touch any other incomplete document."""
+    return f"{profile}{LIMIT_MARK}{result.limit}" if result.limit else profile
+
+
+def reprocess_due(row, profile: str, now: str, limits: extract_worker.Limits | None = None) -> bool:
     """Should an unchanged file be extracted again?
 
     Only incomplete results (scan without vision, failed model call, error) are: when the extraction
-    profile changed (e.g. LLM_VISION switched on, another model) or when their retry time is due."""
+    profile changed (e.g. LLM_VISION switched on, another model), when their retry time is due, or – for
+    a result cut short by a limit of the extraction worker (EXTRACT_CPU_SECONDS, EXTRACT_MEMORY_MB) –
+    when ``limits``, those the file would be read under now (None: none, it is read in this process),
+    raise that limit."""
     if not row["incomplete"]:
         return False
-    if row["extract_profile"] != profile:
+    base, marked, limit = (row["extract_profile"] or "").partition(LIMIT_MARK)
+    if base != profile:
+        return True
+    if marked and (limits is None or limits.lifts(limit)):
         return True
     return bool(row["retry_after"]) and row["retry_after"] <= now
 
@@ -125,7 +144,7 @@ def prepare_document(*, rel_path: str, data: bytes, mtime: float | None, llm=Non
         rel_path=rel_path, filename=filename, ext=Path(filename).suffix.lower(), size=len(data),
         sha256=sha256(data), mtime=mtime, doc_date=doc_date or document_date(filename, result.text, mtime),
         pages=max((p.number or 0 for p in result.pages), default=0) or None, result=result,
-        chunks=chunks, profile=extraction_profile(llm))
+        chunks=chunks, profile=stored_profile(extraction_profile(llm), result))
 
 
 def write_document(conn: sqlite3.Connection, doc: PreparedDocument, *, path: str, project: str | None,
@@ -372,7 +391,7 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
         if row is None and (row := state.relocate(conn, key, rel, root)) is not None:
             conn.commit()
             stats["moved"] += 1
-        due = row is not None and reprocess_due(row, profile, now)
+        due = row is not None and reprocess_due(row, profile, now, extract_worker.limits_for(f.name, llm))
         if row and row["size"] == st.st_size and row["mtime"] == st.st_mtime and not due:
             stats["unchanged"] += 1
             continue
@@ -459,7 +478,7 @@ def reprocess_attachments(conn: sqlite3.Connection, llm=None) -> dict:
         "LEFT JOIN projects p ON p.number = d.project WHERE d.mail_id IS NOT NULL AND d.incomplete = 1"
     ).fetchall()
     for row in rows:
-        if not reprocess_due(row, profile, now):
+        if not reprocess_due(row, profile, now, extract_worker.limits_for(Path(row["rel_path"]).name, llm)):
             continue
         try:
             if not row["cache_path"]:

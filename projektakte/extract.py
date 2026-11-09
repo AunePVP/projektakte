@@ -10,6 +10,8 @@ import io
 import logging
 import math
 import re
+from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from email import policy
 from html.parser import HTMLParser
@@ -25,8 +27,12 @@ SUPPORTED_EXT = TEXT_EXT | {".pdf", ".docx", ".eml"} | set(IMAGE_EXT)
 # EXTRACT_ISOLATION they are read in the extraction worker process with operating-system limits (see
 # extract_worker). Text files are only decoded, and images go to the vision model as they are.
 STRUCTURED_EXT = {".pdf", ".docx", ".eml"}
-# The address-space limit of the process in MB, if it has one (set in the extraction worker): for messages.
+# The address-space limit of the process in MB, if it has one (set in the extraction worker): for messages,
+# and a result cut short by it names it (Extracted.limit), so a higher limit reads the file again.
 MEMORY_LIMIT_MB: int | None = None
+# Called before each page of a PDF is read, if set. The extraction worker ends itself there when the app
+# that started it has gone (see extract_worker._serve).
+PAGE_CHECK: Callable[[], None] | None = None
 VISION_PROMPT = (
     "Transkribiere den gesamten lesbaren Text dieses gescannten Dokuments bzw. Plans auf Deutsch. "
     "Beschreibe bei Plänen kurz Inhalt, Beschriftungen und Brandschutz-Symbole. Erfinde nichts."
@@ -128,6 +134,10 @@ class Extracted:
     incomplete: bool = False
     # a (possibly transient) failure occurred – try again later even with the same profile
     retry: bool = False
+    # the operating-system limit of the extraction worker that cut the result short, as "memory=<MB>" or
+    # "cpu=<seconds>" (see extract_worker.Limits.lifts): the file is read again once that limit is raised
+    # (documents.reprocess_due), although the file and the profile stay the same
+    limit: str | None = None
 
     @property
     def text(self) -> str:
@@ -234,6 +244,7 @@ def _pdf(data: bytes, llm, name: str) -> Extracted:
     empty_pages = []
     texts: dict[tuple, str] = {}  # pages drawing the same content with the same resources: one extraction
     for i, page in enumerate(reader.pages, start=1):
+        _check_page()
         key = _text_key(page)
         try:
             text = texts[key] if key in texts else page.extract_text() or ""
@@ -307,15 +318,40 @@ def _memory_bound() -> str:
 
 def too_big_to_read() -> Extracted:
     """The result for a file whose extraction ran out of memory: deterministic within the worker's memory
-    limit, so it is not retried (another extraction version reads it again)."""
+    limit, so it is not retried (another extraction version, or a higher limit, reads it again)."""
     return Extracted([], status="skipped", message=f"Datei zu groß zum Lesen ({_memory_bound()})",
                      incomplete=True)
+
+
+class _Shortage:
+    """Whether the extraction of one file ran out of memory somewhere and went on without that part."""
+    met = False
+
+
+_SHORTAGE: ContextVar[_Shortage | None] = ContextVar("extract_shortage", default=None)
+
+
+def _out_of_memory(exc: BaseException) -> bool:
+    """Is ``exc`` a MemoryError? If so, it is remembered for the file being extracted: within a memory
+    limit, a higher limit may read what was left out (see Extracted.limit)."""
+    if not isinstance(exc, MemoryError):
+        return False
+    shortage = _SHORTAGE.get()
+    if shortage is not None:
+        shortage.met = True
+    return True
 
 
 def _too_big(exc: BaseException) -> bool:
     """Decoding failed because the image is too large: memory, pypdf's limits on decoded data, Pillow's
     decompression bomb check – deterministic, not worth a retry."""
-    return isinstance(exc, MemoryError) or type(exc).__name__ in ("LimitReachedError", "DecompressionBombError")
+    return _out_of_memory(exc) or type(exc).__name__ in ("LimitReachedError", "DecompressionBombError")
+
+
+def _check_page() -> None:
+    """Before a page is read: PAGE_CHECK, if set (the extraction worker ends there if the app has gone)."""
+    if PAGE_CHECK is not None:
+        PAGE_CHECK()
 
 
 def _page_bounds() -> str:
@@ -1336,6 +1372,7 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
     doc = _DocState()
     decoder = _Decoder()
     for i, page in empty_pages:
+        _check_page()
         key = _text_key(page)  # pages with the same content and resources draw the same
         drawn = doc.drawings.get(key) if key is not None else None
         try:
@@ -1477,6 +1514,7 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
                     out.jobs.append(_Job(key, data=data, mime=mime, reusable=complete))
                 return out
             except Exception as exc:  # noqa: BLE001 – e.g. out of memory: fall back to the largest images
+                _out_of_memory(exc)  # with more memory, the page would be read as a whole
                 log.warning("%s Seite %d: Bilder nicht zusammensetzbar (%s)", name, number, exc)
                 out.undecodable, out.too_big, out.doc_limited = before  # counted again below
         chosen = sorted(chosen, key=lambda image: -image.pixels)  # stable: equal sizes keep drawing order
@@ -1600,8 +1638,22 @@ def _eml(data: bytes) -> Extracted:
 
 
 def extract(path: Path | str, data: bytes | None = None, *, llm=None) -> Extracted:
-    """Extract text from a file. ``data`` may be given (mail attachments); the file is only read."""
-    path = Path(path)
+    """Extract text from a file. ``data`` may be given (mail attachments); the file is only read.
+
+    Within a memory limit (MEMORY_LIMIT_MB, the extraction worker), an incomplete result of an extraction
+    that ran out of memory names the limit (Extracted.limit): a higher limit reads the file again."""
+    shortage = _Shortage()
+    token = _SHORTAGE.set(shortage)
+    try:
+        result = _extract(Path(path), data, llm)
+    finally:
+        _SHORTAGE.reset(token)
+    if shortage.met and MEMORY_LIMIT_MB and result.incomplete:
+        result.limit = f"memory={MEMORY_LIMIT_MB}"
+    return result
+
+
+def _extract(path: Path, data: bytes | None, llm) -> Extracted:
     ext = path.suffix.lower()
     if ext not in SUPPORTED_EXT:
         return Extracted([], status="skipped", message=f"Format {ext or '(ohne Endung)'} nicht unterstützt")
@@ -1622,7 +1674,8 @@ def extract(path: Path | str, data: bytes | None = None, *, llm=None) -> Extract
                                  message="Bild – Bildauswertung ausgeschaltet (LLM_VISION=0)")
             text = llm.describe_image(data, IMAGE_EXT[ext], VISION_PROMPT).text
             result = Extracted([Page(1, text)], method="vision", incomplete=not (text or "").strip())
-    except MemoryError:  # within the worker's memory limit (EXTRACT_MEMORY_MB): the file will not fit later
+    except MemoryError as exc:  # within the worker's memory limit (EXTRACT_MEMORY_MB): it will not fit later
+        _out_of_memory(exc)
         log.warning("Extraktion abgebrochen: %s (%s)", path.name, _memory_bound())
         return too_big_to_read()
     except Exception as exc:  # noqa: BLE001 – one broken file must not stop indexing

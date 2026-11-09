@@ -18,7 +18,20 @@ with isolation switched on (``EXTRACT_ISOLATION``, on unless ``APP_ENV=test``; s
   kernel's out-of-memory killer, a crash in a decoder) is handled the same way;
 * a wall-clock backstop (``EXTRACT_WALL_SECONDS``) ends a worker that hangs without using CPU; every
   answer of the vision model starts it again, so a long scan read page by page is not cut off. Running
-  out of it is not deterministic (a slow model): the file is retried later with the usual back-off.
+  out of it is not deterministic (a slow model): the file is retried later with the usual back-off;
+* a result cut short by the memory or the CPU limit names that limit (``Extracted.limit``, stored with the
+  document's profile): the file is read again once the limit is raised (``documents.reprocess_due``) –
+  raising another limit, or lowering one, reads nothing again;
+* it ends when the app ends, also when the app is killed (``kill -9``) and cannot stop it: on Linux the
+  kernel signals it when its parent dies (``PR_SET_PDEATHSIG``); elsewhere, and as a fallback, it checks
+  that the app is still its parent before every page and every call of the vision model and ends when
+  the app no longer reads its messages – an orphaned worker must not keep calling the model;
+* if it cannot be started (process limits of the system, too little memory for its libraries, a start
+  timeout), the error is logged once per indexing pass and the pass goes on without it: PDF, Word and
+  mail files are recorded as not read and retried with the usual back-off, everything else (text files,
+  images, mails, embeddings, assignment) is processed. They are deliberately not read in the app process
+  instead: a worker that does not start usually means the system is short of processes or memory, and
+  reading untrusted files without the limits is what the isolation exists to prevent.
 
 One file at a time: indexing runs in one background thread, and calls from other threads wait. The
 vision model is rebuilt in the worker from the configuration of the app's LLMClient; with another model
@@ -36,6 +49,7 @@ import math
 import multiprocessing
 import os
 import signal
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -80,6 +94,29 @@ class Limits:
         return (f"Datei nicht fertig gelesen (über {seconds_text(self.wall_seconds)} s ohne Fortschritt) – "
                 "neuer Versuch später")
 
+    def memory_limit(self) -> str:
+        """``Extracted.limit`` of a result cut short by the memory limit."""
+        return f"memory={self.memory_mb}"
+
+    def cpu_limit(self) -> str:
+        """``Extracted.limit`` of a result cut short by the CPU limit."""
+        return f"cpu={self.cpu_seconds:g}"
+
+    def lifts(self, limit: str) -> bool:
+        """Are these limits higher than the one that cut a result short (``Extracted.limit``, e.g.
+        "memory=256")? Then the file may be read now. Only that limit counts: another one raised, or this
+        one lowered, reads nothing again. Unknown: yes (read once more)."""
+        kind, _, value = limit.partition("=")
+        try:
+            before = float(value)
+        except ValueError:
+            return True
+        if kind == "memory":
+            return self.memory_mb > before
+        if kind == "cpu":
+            return self.cpu_seconds > before
+        return True
+
 
 class ExtractionAborted(BaseException):
     """The worker was closed (app shutdown) while it read a file: nothing may be recorded for the file –
@@ -89,13 +126,19 @@ class ExtractionAborted(BaseException):
 
 
 class ExtractWorkerError(RuntimeError):
-    """The worker process cannot be started (e.g. EXTRACT_MEMORY_MB too small to load its libraries)."""
+    """The worker process cannot be started (e.g. EXTRACT_MEMORY_MB too small to load its libraries, no
+    process can be started). :meth:`ExtractWorker.extract` turns it into a result to be retried."""
 
 
-def failed(message: str, *, retry: bool) -> Extracted:
+NOT_STARTED_TEXT = "Datei nicht gelesen (Leseprozess für Dateien startet nicht) – neuer Versuch später"
+
+
+def failed(message: str, *, retry: bool, limit: str | None = None) -> Extracted:
     """The result for a file the worker could not read: deterministic limits are not retried (the file
-    will not change), anything else is retried with the usual back-off."""
-    return Extracted([], status="error" if retry else "skipped", message=message, incomplete=True, retry=retry)
+    will not change; ``limit`` names the limit, so that raising it reads the file again), anything else is
+    retried with the usual back-off."""
+    return Extracted([], status="error" if retry else "skipped", message=message, incomplete=True, retry=retry,
+                     limit=limit)
 
 
 def portable(llm) -> bool:
@@ -116,7 +159,7 @@ def _signal_name(number: int) -> str:
 # -- the app's side ---------------------------------------------------------------------------------------
 class ExtractWorker:
     """One worker process at a time, started on first use and again after it ended. Thread-safe: one
-    file at a time."""
+    file at a time. If it cannot be started, files are not read until the next pass (:meth:`new_pass`)."""
 
     def __init__(self, limits: Limits | None = None):
         self.limits = limits or Limits()
@@ -124,7 +167,12 @@ class ExtractWorker:
         self._proc = None
         self._conn = None
         self._closed = False
+        self._failure: str | None = None  # why the worker could not be started in this pass
         self.started = 0  # worker processes started (for tests and the log)
+
+    def new_pass(self) -> None:
+        """An indexing pass begins: a worker that could not be started is tried again (once)."""
+        self._failure = None
 
     @property
     def closed(self) -> bool:
@@ -141,27 +189,27 @@ class ExtractWorker:
 
     def extract(self, filename: str, data: bytes, llm=None) -> Extracted:
         """Extract one file (``filename`` gives the format) in the worker. ``llm`` must be
-        :func:`portable`. Raises ExtractionAborted if the worker is closed meanwhile, ExtractWorkerError
-        if it cannot be started."""
+        :func:`portable`. Raises ExtractionAborted if the worker is closed meanwhile. If the worker cannot
+        be started, the error is logged once and this and every further file until the next pass are
+        recorded as not read, to be retried later (see the module docstring)."""
         request = json.dumps({
             "filename": filename,
             "llm": llm.config() if llm is not None else None,
             "level": logging.getLogger().getEffectiveLevel(),
         }).encode()
         with self._lock:
-            for attempt in (1, 2):
-                if self._closed:
-                    raise ExtractionAborted("Leseprozess wurde beendet")
-                conn = self._running()
+            if self._closed:
+                raise ExtractionAborted("Leseprozess wurde beendet")
+            if self._failure is None:
                 try:
-                    conn.send_bytes(request)
-                    conn.send_bytes(data)
-                    break
-                except (OSError, EOFError, ValueError):  # ended while idle (e.g. killed): a new one
-                    self._discard()
-                    if attempt == 2:
-                        raise ExtractWorkerError("Leseprozess nimmt keine Datei an") from None
-            return self._result(filename, llm)
+                    self._hand_over(request, data)
+                except ExtractWorkerError as exc:
+                    self._failure = str(exc)
+                    log.error("%s – PDF-, Word- und Mail-Dateien werden in diesem Durchlauf nicht gelesen und "
+                              "später erneut versucht", exc)
+                else:
+                    return self._result(filename, llm)
+            return failed(NOT_STARTED_TEXT, retry=True)
 
     def close(self) -> None:
         """Stop the worker (app shutdown). A file being read is abandoned: the reading thread gets
@@ -182,6 +230,19 @@ class ExtractWorker:
             self._lock.release()
 
     # -- inside the lock --
+    def _hand_over(self, request: bytes, data: bytes) -> None:
+        for _attempt in (1, 2):
+            if self._closed:
+                raise ExtractionAborted("Leseprozess wurde beendet")
+            conn = self._running()
+            try:
+                conn.send_bytes(request)
+                conn.send_bytes(data)
+                return
+            except (OSError, EOFError, ValueError):  # ended while idle (e.g. killed): a new one
+                self._discard()
+        raise ExtractWorkerError("Leseprozess für Dateien nimmt keine Datei an")
+
     def _running(self):
         proc = self._proc
         if proc is not None and proc.is_alive():
@@ -189,7 +250,8 @@ class ExtractWorker:
         self._discard()
         ctx = multiprocessing.get_context("spawn")
         conn, child = ctx.Pipe(duplex=True)
-        proc = ctx.Process(target=_serve, args=(child, self.limits), name="projektakte-extract", daemon=True)
+        proc = ctx.Process(target=_serve, args=(child, self.limits, os.getpid()), name="projektakte-extract",
+                           daemon=True)
         try:
             proc.start()
         except OSError as exc:  # no process can be started (process or file limits of the system)
@@ -216,6 +278,9 @@ class ExtractWorker:
             proc.join(1)
             code = proc.exitcode
             self._discard()
+            if code is None:  # still running: not ready in time (an overloaded system)
+                raise ExtractWorkerError(f"Leseprozess für Dateien startet nicht (nicht bereit nach "
+                                         f"{seconds_text(_START_SECONDS)} s)")
             raise ExtractWorkerError(
                 f"Leseprozess für Dateien startet nicht (Exitcode {code}) – EXTRACT_MEMORY_MB zu klein?")
         self.started += 1
@@ -268,16 +333,17 @@ class ExtractWorker:
         self._discard()
         if self._closed:
             raise ExtractionAborted("Leseprozess wurde beendet")
+        limit = None
         if code == -signal.SIGXCPU:
-            message, retry = self.limits.cpu_text(), False
-        elif code == -signal.SIGKILL:
-            message, retry = self.limits.killed_text(), False
+            message, retry, limit = self.limits.cpu_text(), False, self.limits.cpu_limit()
+        elif code == -signal.SIGKILL:  # presumably memory (see killed_text): more of it may read the file
+            message, retry, limit = self.limits.killed_text(), False, self.limits.memory_limit()
         elif code is not None and code < 0:  # a crash in a decoder: the same file crashes it again
             message, retry = f"Datei nicht lesbar (Leseprozess abgestürzt: {_signal_name(-code)})", False
         else:
             message, retry = f"Datei nicht lesbar (Leseprozess unerwartet beendet, Exitcode {code})", True
         log.warning("%s: %s", filename, message)
-        return failed(message, retry=retry)
+        return failed(message, retry=retry, limit=limit)
 
     def _discard(self, *, graceful: bool = False) -> None:
         proc, conn = self._proc, self._conn
@@ -303,12 +369,13 @@ class ExtractWorker:
 def _extracted(data: dict) -> Extracted:
     return Extracted([Page(number, text) for number, text in data["pages"]], status=data["status"],
                      message=data["message"], method=data["method"], incomplete=bool(data["incomplete"]),
-                     retry=bool(data["retry"]))
+                     retry=bool(data["retry"]), limit=str(data["limit"]) if data.get("limit") else None)
 
 
 # -- the worker's side ------------------------------------------------------------------------------------
-def _serve(conn, limits: Limits) -> None:  # pragma: no cover - runs in the worker process
-    """Main function of the worker process: read files until the app says stop or goes away."""
+def _serve(conn, limits: Limits, parent: int) -> None:  # pragma: no cover - runs in the worker process
+    """Main function of the worker process: read files until the app (process ``parent``) says stop or
+    goes away."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl+C in a terminal reaches the whole process group
     _set_soft_limit("RLIMIT_CORE", 0)  # no core file when the CPU limit ends the worker
     _set_soft_limit("RLIMIT_AS", limits.memory_mb * 1024 * 1024)
@@ -316,10 +383,12 @@ def _serve(conn, limits: Limits) -> None:  # pragma: no cover - runs in the work
     root = logging.getLogger()
     root.handlers[:] = [forward]
     logging.captureWarnings(True)  # Pillow's and pypdf's warnings go to the app's log as well
+    _end_with_app(parent)
     from . import extract
     from .ai.llm import LLMClient
 
     extract.MEMORY_LIMIT_MB = limits.memory_mb
+    extract.PAGE_CHECK = lambda: _check_app(parent)
     _send(conn, {"ready": True})
     while True:
         try:
@@ -332,7 +401,7 @@ def _serve(conn, limits: Limits) -> None:  # pragma: no cover - runs in the work
         root.setLevel(int(request["level"]))
         forward.left = _MAX_LOG_RECORDS
         _set_soft_limit("RLIMIT_CPU", math.ceil(_cpu_used() + limits.cpu_seconds))
-        llm = _Reporting(LLMClient.from_config(request["llm"]), conn) if request["llm"] else None
+        llm = _Reporting(LLMClient.from_config(request["llm"]), conn, parent) if request["llm"] else None
         result = extract.extract(Path(request["filename"]), data, llm=llm)
         del data
         # memory a large file took is not always given back to the system: a new worker for the next file
@@ -340,13 +409,57 @@ def _serve(conn, limits: Limits) -> None:  # pragma: no cover - runs in the work
         _send(conn, {"kind": "result", "recycle": recycle, "llm_error": llm.error if llm else None,
                      "result": {"pages": [[p.number, p.text] for p in result.pages], "status": result.status,
                                 "message": result.message, "method": result.method,
-                                "incomplete": result.incomplete, "retry": result.retry}})
+                                "incomplete": result.incomplete, "retry": result.retry,
+                                "limit": result.limit}})
         if recycle:
             return
 
 
 def _send(conn, message: dict) -> None:
-    conn.send_bytes(json.dumps(message).encode())
+    """Send a message to the app; if the app no longer reads (it has gone), the worker ends."""
+    try:
+        conn.send_bytes(json.dumps(message).encode())
+    except OSError:  # broken pipe: nobody would read the result of the work
+        _leave()
+
+
+_PR_SET_PDEATHSIG = 1  # prctl option (linux/prctl.h)
+
+
+def _end_with_app(parent: int) -> None:
+    """Make sure this worker ends when the app (process ``parent``) ends, also when the app is killed
+    (``kill -9``) and cannot stop it. On Linux the kernel sends SIGUSR1 when the parent dies; the handler
+    ends the worker if the app is no longer its parent – the signal also comes when merely the app's
+    thread that started the worker ends (the kernel tracks the thread), and then the app lives on.
+    Elsewhere, and as a fallback, :func:`_check_app` runs before every page and model call."""
+    if sys.platform.startswith("linux"):
+        def on_parent_death(_signum, _frame) -> None:
+            _check_app(parent)
+
+        try:
+            import ctypes
+
+            signal.signal(signal.SIGUSR1, on_parent_death)
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.prctl(_PR_SET_PDEATHSIG, int(signal.SIGUSR1), 0, 0, 0) != 0:
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error))
+        except (ImportError, AttributeError, OSError, ValueError) as exc:
+            log.warning("Leseprozess: Ende mit der App nicht beim Betriebssystem anmeldbar (%s) – geprüft "
+                        "wird vor jeder Seite und jedem Modellaufruf", exc)
+    _check_app(parent)  # the app may have ended before the signal was set up
+
+
+def _check_app(parent: int) -> None:
+    """End the worker if the app that started it has gone (the worker was handed to another parent)."""
+    if os.getppid() != parent:
+        _leave()
+
+
+def _leave() -> None:
+    """The app has gone: end the worker at once. Nothing is to be saved, and os._exit cannot be caught by
+    an error handler of the extraction that would carry on with the next page."""
+    os._exit(0)
 
 
 def _set_soft_limit(name: str, value: int) -> None:
@@ -395,28 +508,33 @@ class _Forward(logging.Handler):
             text = record.getMessage()
             if self.left == 0:
                 text += " (weitere Meldungen zu dieser Datei unterdrückt)"
-            _send(self.conn, {"kind": "log", "level": record.levelno, "name": record.name, "text": text})
+            message = {"kind": "log", "level": record.levelno, "name": record.name, "text": text}
         except Exception:  # noqa: BLE001 – logging must never break the extraction
             self.handleError(record)
+            return
+        _send(self.conn, message)  # ends the worker if the app has gone
 
 
 class _Reporting:
     """The vision model in the worker: tells the app after every answer that the work goes on (the
-    wall-clock backstop starts again) and keeps the last error for the app's status page."""
+    wall-clock backstop starts again) and keeps the last error for the app's status page. Calls the model
+    only while the app (process ``parent``) is there: an orphaned worker ends instead (a failed call
+    would only be counted as a model failure and the next page read)."""
 
-    def __init__(self, llm, conn):
-        self._llm, self._conn = llm, conn
+    def __init__(self, llm, conn, parent: int):
+        self._llm, self._conn, self._parent = llm, conn, parent
         self.vision, self.model = llm.vision, llm.model
         self.error: str | None = None
 
     def describe_image(self, image: bytes, mime: str, prompt: str):
+        _check_app(self._parent)
         try:
             return self._llm.describe_image(image, mime, prompt)
         except Exception as exc:
             self.error = str(exc)
             raise
         finally:
-            _send(self._conn, {"kind": "progress"})
+            _send(self._conn, {"kind": "progress"})  # ends the worker if the app has gone
 
 
 # -- the worker of the app --------------------------------------------------------------------------------
@@ -451,6 +569,8 @@ def isolation(settings):
             worker = _worker
     if old is not None:
         old.close()
+    if worker is not None:
+        worker.new_pass()
     with _lock:
         previous, _active = _active, worker
     try:
@@ -465,14 +585,26 @@ def current() -> ExtractWorker | None:
     return _active
 
 
+def _takes(worker: ExtractWorker | None, filename: str, llm) -> bool:
+    """Does the worker read this file? PDF, Word, mail – formats whose structure is parsed – with a model
+    it can rebuild."""
+    return worker is not None and Path(filename).suffix.lower() in STRUCTURED_EXT and portable(llm)
+
+
 def extract_file(filename: str, data: bytes, llm, extract):
-    """Extract one file: in the worker of the running pass if there is one and it can take the file
-    (PDF, Word, mail – formats whose structure is parsed – and a model it can rebuild), else in this
-    process with ``extract`` (the caller's, so tests can replace it)."""
+    """Extract one file: in the worker of the running pass if there is one and it takes the file (see
+    _takes), else in this process with ``extract`` (the caller's, so tests can replace it)."""
     worker = _active
-    if worker is not None and Path(filename).suffix.lower() in STRUCTURED_EXT and portable(llm):
+    if _takes(worker, filename, llm):
         return worker.extract(filename, data, llm)
     return extract(Path(filename), data, llm=llm)
+
+
+def limits_for(filename: str, llm) -> Limits | None:
+    """The operating-system limits the file is read under in the running pass: the worker's if it takes
+    the file, None if it is read in this process, without such limits."""
+    worker = _active
+    return worker.limits if _takes(worker, filename, llm) else None
 
 
 def shutdown() -> None:
