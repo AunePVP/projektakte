@@ -15,17 +15,39 @@ everything inside it is read, whatever its subfolders are called. This module
   (``python -m projektakte.structure --uebernehmen``).
 * is the command line tool ``python -m projektakte.structure`` (German output).
 
-Detection in short: the leading token of every folder name (``BS-2024-0137``, ``2024-017``,
-``P12345``, ``2024_017``) is split into a letter prefix and digit groups; names with the same
-prefix and number of groups form a candidate scheme (digit counts and separators merged, e.g.
-``2024-017`` + ``2024-1234`` → ``\\d{4}-\\d{3,4}``). Every candidate is tried with the app's scan
-rules on the listed folder tree; schemes that are too vague (a bare short number, year folders) or
-match too few folders, mostly duplicates or only a small share of their level are dropped. Of two
-schemes where one sits inside the other's folders, the inner one wins if it makes up most of the
-outer folders' contents (customer or year containers), otherwise the outer one (numbered folders
-inside projects). Valid schemes on different folders (current projects and an archive in an older
-numbering) are joined into one alternation. The listing goes breadth-first, enters only a sample of
-the project folders found so far and stops at :data:`MAX_FOLDERS`.
+Detection follows explicit rules (each one can be named in the report):
+
+1. *Per level.* Only folders at the same depth below PROJECTS_DIR are compared with each other. The
+   leading token of a name (``BS-2024-0137``, ``2024-017``, ``P12345``, ``2024_017``) is split into a
+   letter prefix and digit groups; a candidate is (level, prefix, number of groups).
+2. *Dates are no project numbers.* A bare year (1900–2099), a year range (2017-2018), year and month
+   (2024-05, 05.2024), a full date (2024-05-21, 21.05.2024, 20240521) and short numbers without
+   letters (00_Allgemein, 01 Schriftverkehr, 3 Pläne) are never candidates – they may be container
+   names or exceptions.
+3. *Internal numbering.* A folder whose number is its parent folder's number plus a sub-number of at
+   most two digits (2024-017_01 below 2024-017 …, BS-2024-0137-01 below BS-2024-0137 …) is internal
+   structure of that project, never a project. (A longer continuation, 1020 Stadt/1020-001 …, is a
+   numbering of its own and decided by rule 4.)
+4. *Containers.* A candidate whose folders consist mostly of folders of a deeper candidate (directly
+   or through year folders) is a container level (customer numbers, …); the projects are the deepest
+   such level whose folders are no containers. Folders with numbered internal subfolders are projects.
+5. *Outliers do not widen a scheme.* A digit count or separator variant is accepted only when at
+   least :data:`VARIANT_MIN_COUNT` folders and :data:`VARIANT_MIN_SHARE` of the candidate use it;
+   others stay exceptions and are listed. Numbers without letters need at least 4 digits, or a
+   running number of at least 3 digits after a first group (2024-017, 24-017). Numbers must be unique.
+   A scheme of bare digits that could also match a year (or year range, or date) excludes those with
+   a guard (``(?!(?:19|20)\\d\\d(?!\\d))\\d{4}``), so year folders never become projects.
+6. *One scheme.* Different schemes are never joined automatically. Schemes below an archive folder
+   (Archiv, Alt …) or an office folder (Angebote, Rechnungen, Verwaltung, Akquise, Vorlagen, Normen)
+   yield to a scheme elsewhere; the report names them as a hint with the alternation to set by hand.
+7. *Confidence.* A scheme is proposed (and stored in auto mode) only with at least
+   :data:`MIN_PROJECTS` folders (below :data:`GOOD_PROJECTS` without any doubt), unique numbers (at
+   most one or :data:`MAX_DUPLICATE_SHARE` duplicates; numbers that restart are no scheme at all), a
+   real share of the folders next to them, and at least :data:`DOMINANCE` times as many folders as
+   any competing scheme. Decisions use shares, not absolute sizes, so they do not change when the
+   office grows; the inside of project folders is read from an evenly spread sample only.
+8. *Links* are followed inside the share like the app's scan does, but every real folder is listed
+   once (links to ancestors, loops and second paths to a folder are skipped).
 """
 from __future__ import annotations
 
@@ -58,14 +80,23 @@ log = logging.getLogger("projektakte.structure")
 
 MAX_DEPTH = PROJECT_FOLDER_DEPTH_MAX  # levels below PROJECTS_DIR that the analysis looks at
 MAX_FOLDERS = 30_000  # folders listed by one analysis (names only)
-MIN_PROJECTS = 3  # a scheme needs at least this many project folders
-MIN_SHARE = 0.3  # … and at least this share of the folders next to them
-MAX_DUPLICATE_SHARE = 0.2  # numbers must be (nearly) unique: a shortened scheme ("BS-2024") repeats
-SAMPLE_PROJECTS = 30  # project folders entered to see what lies inside (container or project?)
-MAX_CANDIDATES = 12  # candidate schemes tried per round
+MIN_PROJECTS = 3  # a scheme needs at least this many project folders …
+GOOD_PROJECTS = 5  # … and below this many it must be beyond doubt (no outliers, duplicates, rivals)
+MIN_SHARE = 0.3  # project folders: at least this share of the folders next to them …
+MIN_SHARE_FEW = 0.5  # … and this share with fewer than GOOD_PROJECTS
+MAX_DUPLICATE_SHARE = 0.1  # numbers must be unique: at most one duplicate or this share …
+REPEAT_SHARE = 0.25  # … a candidate whose numbers repeat more often restarts its numbering (per year …)
+VARIANT_MIN_COUNT = 3  # a digit count or separator variant needs this many folders …
+VARIANT_MIN_SHARE = 0.1  # … and this share of its candidate, otherwise its folders stay exceptions
+MAX_DIGIT_SPREAD = 2  # 3–5 digits at most in one digit group
+DOMINANCE = 2.0  # the chosen scheme has at least this many times the folders of any rival scheme
+YEAR_LOSS_SHARE = 0.05  # bare-digit numbers that look like years: tolerated as exceptions up to this share
+SAMPLE_MEMBERS = 40  # folders of one candidate whose subfolders are listed (container or project?)
+MAX_OPEN_PER_LEVEL = 500  # other folders opened per level (evenly spread sample beyond that)
 MAX_GROUPS = 4  # digit groups of a leading token
 DEPTH_MIN_SHARE = 0.1  # a level with single stray matches does not raise the proposed depth …
 DEPTH_MIN_COUNT = 2  # … unless it holds at least this many projects
+MAX_HINTS = 3  # further schemes named in the report
 MAX_FILES = 200_000  # files counted by the file statistics (all projects together)
 MAX_LISTED = 15  # rows of the text report per list
 CHARS_PER_TOKEN = 3.5  # German text, typical tokenizer of current models
@@ -74,14 +105,17 @@ CONTEXT_RESERVE = 4_000  # tokens kept free for instructions, the question and t
 # a pattern that never matches: the shape of project numbers for search pages while none is known
 NO_MATCH = r"(?!)"
 # PROJECT_NUMBER_PATTERN=auto: a stored detection is checked again at most this often (and at every
-# pass while a different detection is pending) – only to report a difference, never to switch
+# pass while a different detection is pending) – only to report a difference, never to switch; while
+# nothing is stored, a detection that found no clear scheme is repeated at most this often as well
 RECHECK_INTERVAL = timedelta(hours=1)
 
 STORED_KEY = "project_layout_auto"  # meta: JSON of the accepted detection
 DIFFERS_KEY = "project_layout_auto_differs"  # meta: JSON of a later detection that differs
 CHECKED_KEY = "project_layout_auto_checked"  # meta: time of the last detection (UTC, ISO)
+NONE_KEY = "project_layout_auto_none"  # meta: JSON of the last detection without a clear scheme
 
 ACCEPT_HINT = "python -m projektakte.structure --uebernehmen"
+EXIT_SCHEME, EXIT_NO_SCHEME, EXIT_UNREADABLE, EXIT_USAGE = 0, 1, 2, 3
 
 try:
     from zoneinfo import ZoneInfo
@@ -95,6 +129,11 @@ except Exception:  # noqa: BLE001 – no tz database: show UTC
 def de_int(n: float | None) -> str:
     """1.234.567 (German thousands separator)."""
     return "–" if n is None else f"{round(n):,}".replace(",", ".")
+
+
+def de_count(n: float, singular: str, plural: str) -> str:
+    """'1 passender Ordner', '3 passende Ordner'."""
+    return f"{de_int(n)} {singular if round(n) == 1 else plural}"
 
 
 def de_size(n: int | None) -> str:
@@ -138,119 +177,7 @@ def _iso(when: datetime) -> str:
     return when.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
-# ------------------------------------------------------------------------------------- folder tree
-@dataclass(eq=False)
-class _Node:
-    """A folder of the listed tree (identity semantics: usable in sets)."""
-    name: str
-    rel: str  # path below the root, "/"-separated
-    depth: int  # 1 = directly below the root
-    parent: _Node | None = None
-    children: list[_Node] | None = None  # None: not listed
-    unreadable: bool = False
-
-    def ancestors(self) -> Iterable[_Node]:
-        node = self.parent
-        while node is not None:
-            yield node
-            node = node.parent
-
-
-@dataclass
-class _Tree:
-    root: _Node
-    nodes: list[_Node] = field(default_factory=list)  # all folders except the root, in listing order
-    truncated: bool = False
-    unreadable: list[str] = field(default_factory=list)
-
-    @property
-    def listed(self) -> int:
-        return len(self.nodes)
-
-
-def _subfolders(path: Path, boundary: Path, limit: int) -> tuple[list[str], bool]:
-    """Sorted names of the subfolders ``scan_projects`` considers: hidden ones and links whose target
-    is missing or outside ``boundary`` are skipped. True if the folder had more than ``limit``
-    entries (the rest is not read). Raises OSError if the folder cannot be listed."""
-    names: list[str] = []
-    cut = False
-    with os.scandir(path) as entries:
-        for n, entry in enumerate(entries):
-            if n >= limit:
-                cut = True
-                break
-            if entry.name.startswith("."):
-                continue
-            try:
-                if entry.is_symlink() and link_problem(Path(entry.path), boundary):
-                    continue
-                if entry.is_dir():
-                    names.append(entry.name)
-            except OSError:
-                continue
-    return sorted(names), cut
-
-
-def _explore(root_path: Path, max_depth: int, max_folders: int,
-             progress: Callable[[str], None] | None) -> _Tree:
-    """List the folder tree breadth-first – folder names only. Folders inside a project folder of the
-    currently best scheme are not entered; of the project folders themselves only a sample, to see
-    whether they are projects or containers of projects. Raises OSError if the root is unreadable."""
-    boundary = root_path.resolve()
-    tree = _Tree(_Node("", "", 0))
-
-    def expand(node: _Node) -> None:
-        path = root_path / node.rel if node.rel else root_path
-        try:
-            names, cut = _subfolders(path, boundary, max_folders)
-        except OSError:
-            if node is tree.root:
-                raise
-            node.unreadable, node.children = True, []
-            tree.unreadable.append(node.rel)
-            return
-        room = max_folders - tree.listed
-        if len(names) > room:
-            names, cut = names[:room], True
-        tree.truncated |= cut
-        node.children = [_Node(n, f"{node.rel}/{n}" if node.rel else n, node.depth + 1, node) for n in names]
-        tree.nodes.extend(node.children)
-
-    expand(tree.root)
-    last_report = time.monotonic()
-    while True:
-        best = _choose(tree, max_depth).best
-        todo = [n for n in tree.nodes if n.children is None and n.depth < max_depth and _worth_listing(n, best)]
-        if not todo:
-            break
-        if tree.listed >= max_folders:
-            tree.truncated = True
-            break
-        level = min(n.depth for n in todo)
-        for node in todo:
-            if node.depth != level:
-                continue
-            if tree.listed >= max_folders:
-                tree.truncated = True
-                break
-            expand(node)
-            if progress and time.monotonic() - last_report >= 1.0:
-                last_report = time.monotonic()
-                progress(f"{de_int(tree.listed)} Ordner gelesen (Ebene {level + 1})")
-    return tree
-
-
-def _worth_listing(node: _Node, best: _Candidate | None) -> bool:
-    if best is None:
-        return True
-    if any(a in best.matched for a in node.ancestors()):
-        return False  # inside a project folder: its subfolders are its own business
-    if node in best.matched:
-        return node in best.sample
-    return True
-
-
-# ------------------------------------------------------------------------------------- schemes
+# ------------------------------------------------------------------------------------- leading numbers
 _PREFIX = re.compile(r"([A-Za-z]{1,5})([-_ .]?)(?=[0-9])")
 _DIGIT_RUN = re.compile(r"[0-9]+")
 _SEPARATORS = "-_ ."
@@ -258,6 +185,17 @@ _SEP_ORDER = "-_. "
 _SEP_ALONE = {"-": "-", "_": "_", ".": r"\.", " ": r"\s"}
 _SEP_IN_CLASS = {"-": "-", "_": "_", ".": ".", " ": r"\s"}
 _SEP_NAMES = {"-": "Bindestrich", "_": "Unterstrich", ".": "Punkt", " ": "Leerzeichen"}
+# folders whose contents are no current projects: older numberings (rule 6) …
+_ARCHIVE_NAME = re.compile(r"(?:archiv|alt(?:e|akten|projekte|bestand)?\b|old\b)", re.IGNORECASE)
+# … and the office's own records with numberings of their own (offers, invoices, templates, norms)
+_SIDE_NAME = re.compile(r"(?:angebot|rechnung|verwaltung|buchhaltung|akquise|vorlage|normen)", re.IGNORECASE)
+_NAME_START = re.compile(r"^[\W\d_]+")
+# German plural of the kinds of numbers that are no project numbers (rule 2)
+_KIND_TEXT = {"Jahr": "Jahreszahlen", "Jahresbereich": "Jahresbereiche", "Monat": "Monatsangaben",
+              "Datum": "Datumsangaben", "kurz": "kurze Gliederungsnummern"}
+# guards against the date-like numbers a bare-digit scheme could match (rule 5)
+_YEAR_GUARD = r"(?!(?:19|20)\d\d(?!\d))"
+_DATE_GUARD = r"(?!(?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d))"
 
 
 @dataclass(frozen=True)
@@ -268,6 +206,13 @@ class _Token:
     groups: tuple[str, ...]
     seps: tuple[str, ...]  # separators between the groups
     glued: bool  # a letter follows the last group directly (no number boundary there)
+
+    def number(self, k: int) -> str:
+        """The number made of the first ``k`` groups, as the scan reports it (upper case)."""
+        out = self.prefix + self.psep + self.groups[0]
+        for i in range(1, k):
+            out += self.seps[i - 1] + self.groups[i]
+        return out.upper()
 
 
 def _token(name: str) -> _Token | None:
@@ -291,25 +236,339 @@ def _token(name: str) -> _Token | None:
     return _Token(prefix, psep, tuple(groups), tuple(seps), glued)
 
 
+def _year(g: str) -> bool:
+    return len(g) == 4 and 1900 <= int(g) <= 2099
+
+
+def _is_date(groups: tuple[str, ...]) -> bool:
+    """YYYY-MM-DD, DD.MM.YYYY (also 1.5.2024), YY-MM-DD or DD.MM.YY (any separator)."""
+    a, b, c = (int(g) for g in groups)
+    la, lb, lc = (len(g) for g in groups)
+    if (la, lb, lc) == (4, 2, 2):
+        return 1900 <= a <= 2099 and 1 <= b <= 12 and 1 <= c <= 31
+    if la <= 2 and lb <= 2 and lc == 4:
+        return 1 <= a <= 31 and 1 <= b <= 12 and 1900 <= c <= 2099
+    if (la, lb, lc) == (2, 2, 2):
+        return 1 <= b <= 12 and (1 <= c <= 31 or 1 <= a <= 31)
+    return False
+
+
+def _number_kind(prefix: str, groups: tuple[str, ...]) -> str | None:
+    """Why a leading number is no project number (rule 2) – 'Jahr', 'Jahresbereich', 'Monat',
+    'Datum', 'kurz' – or None. A letter prefix makes any number a code (BS-2024, P12345)."""
+    if prefix:
+        return None
+    n = len(groups)
+    lens = [len(g) for g in groups]
+    if n == 3 and _is_date(groups):
+        return "Datum"
+    if n == 2:
+        a, b = groups
+        if _year(a) and _year(b) and int(b) >= int(a):
+            return "Jahresbereich"  # 2017-2018, 2005-2015
+        if _year(a) and lens[1] == 2:
+            return "Monat" if 1 <= int(b) <= 12 else "Jahresbereich" if int(b) == (int(a) + 1) % 100 else None
+        if lens[0] <= 2 and 1 <= int(a) <= 12 and _year(b):
+            return "Monat"  # 05.2024
+    if n == 1:
+        if _year(groups[0]):
+            return "Jahr"
+        g = groups[0]
+        if len(g) == 8 and _is_date((g[:4], g[4:6], g[6:])):
+            return "Datum"
+    if max(lens) <= 2:
+        return "kurz"  # 00_Allgemein, 01 Schriftverkehr, 3 Pläne, 1.2 Unterlagen
+    return None
+
+
+def _token_kind(tok: _Token | None) -> str | None:
+    """The kind of a whole leading number that is no project number (for the explanation)."""
+    if tok is None:
+        return None
+    return _number_kind(tok.prefix, tok.groups)
+
+
+def _year_like(node: _Node) -> bool:
+    """A year or year-range folder (2024, 2017-2018 …): a typical container, never a project."""
+    tok = node.token
+    return tok is not None and not tok.prefix and _number_kind("", tok.groups) in ("Jahr", "Jahresbereich")
+
+
+def _sep_regex(chars: Iterable[str]) -> str:
+    chars = set(chars)
+    real = [c for c in _SEP_ORDER if c in chars]
+    if not real:
+        return ""
+    body = _SEP_ALONE[real[0]] if len(real) == 1 else "[" + "".join(_SEP_IN_CLASS[c] for c in real) + "]"
+    return body + ("?" if "" in chars else "")
+
+
+def _sep_text(chars: Iterable[str]) -> str:
+    chars = set(chars)
+    real = [_SEP_NAMES[c] for c in _SEP_ORDER if c in chars]
+    text = " oder ".join(real)
+    return f"{text} (oder ohne)" if real and "" in chars else text
+
+
+def _digits_regex(lo: int, hi: int) -> str:
+    return rf"\d{{{lo}}}" if lo == hi else rf"\d{{{lo},{hi}}}"
+
+
+def _digits_text(lo: int, hi: int) -> str:
+    return "1 Ziffer" if lo == hi == 1 else f"{lo} Ziffern" if lo == hi else f"{lo}–{hi} Ziffern"
+
+
+# ------------------------------------------------------------------------------------- folder tree
+_UNSET = object()
+
+
 @dataclass(eq=False)
-class _Family:
-    """Leading tokens with the same prefix and number of digit groups (the first ``k`` groups)."""
+class _Node:
+    """A folder of the listed tree (identity semantics: usable in sets)."""
+    name: str
+    rel: str  # path below the root, "/"-separated
+    depth: int  # 1 = directly below the root
+    parent: _Node | None = None
+    real: str = ""  # resolved path (links followed)
+    via_link: bool = False  # reached through a link
+    weight: float = 1.0  # folders it stands for: the inverse of the sampling on its path
+    children: list[_Node] | None = None  # None: not listed
+    unreadable: bool = False
+    dropped: bool = False  # a second path to a folder listed already (link)
+    _tok: object = field(default=_UNSET, repr=False)
+    _branch: str | None = field(default=None, repr=False)
+
+    @property
+    def token(self) -> _Token | None:
+        if self._tok is _UNSET:
+            self._tok = _token(self.name) if self.depth else None
+        return self._tok  # type: ignore[return-value]
+
+    def ancestors(self) -> Iterable[_Node]:
+        node = self.parent
+        while node is not None:
+            yield node
+            node = node.parent
+
+    @property
+    def alive(self) -> bool:
+        return not self.dropped and not any(a.dropped for a in self.ancestors())
+
+    @property
+    def branch(self) -> str:
+        """'archive' or 'side' below an archive or office folder (the topmost one decides), else 'main'."""
+        if self._branch is None:
+            parent = self.parent
+            if parent is None or parent.depth == 0:
+                self._branch = "main"
+            elif parent.branch != "main":
+                self._branch = parent.branch
+            else:
+                name = _NAME_START.sub("", parent.name)
+                self._branch = ("archive" if _ARCHIVE_NAME.match(name) else "side" if _SIDE_NAME.match(name)
+                                else "main")
+        return self._branch
+
+
+@dataclass
+class _Tree:
+    root: _Node
+    by_level: dict[int, list[_Node]] = field(default_factory=dict)  # listed folders per depth
+    by_real: dict[str, _Node] = field(default_factory=dict)
+    cands: dict[int, tuple[list, list]] = field(default_factory=dict)  # level → (valid, invalid)
+    listed: int = 0
+    listings: int = 0
+    truncated: bool = False
+    any_dropped: bool = False
+    unreadable: list[str] = field(default_factory=list)
+
+    def level(self, depth: int) -> list[_Node]:
+        nodes = self.by_level.get(depth, [])
+        return [n for n in nodes if n.alive] if self.any_dropped else list(nodes)
+
+    @property
+    def nodes(self) -> list[_Node]:
+        return [n for d in sorted(self.by_level) for n in self.level(d)]
+
+
+def _drop(tree: _Tree, node: _Node) -> None:
+    node.dropped = True
+    tree.any_dropped = True
+    if node.parent is not None and node.parent.children is not None:
+        node.parent.children = [c for c in node.parent.children if c is not node]
+
+
+def _list(tree: _Tree, node: _Node, root_path: Path, boundary: Path, max_folders: int, factor: float) -> None:
+    """List the subfolders ``scan_projects`` considers – hidden ones and links whose target is
+    missing, a loop or outside ``boundary`` are skipped – sorted by name. Every real folder is listed
+    once: a link to an ancestor or to a folder listed already is skipped, and a folder reached
+    through a link gives way when it is found on its real path (rule 8). Raises OSError for the root."""
+    path = root_path / node.rel if node.rel else root_path
+    entries: list[tuple[str, bool, str]] = []
+    cut = False
+    tree.listings += 1
+    try:
+        with os.scandir(path) as it:
+            for n, entry in enumerate(it):
+                if n >= max_folders:
+                    cut = True
+                    break
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    link = entry.is_symlink()
+                    if link and link_problem(Path(entry.path), boundary):
+                        continue
+                    if entry.is_dir():
+                        entries.append((entry.name, link, entry.path))
+                except OSError:
+                    continue
+    except OSError:
+        if node is tree.root:
+            raise
+        node.unreadable, node.children = True, []
+        tree.unreadable.append(node.rel)
+        return
+    entries.sort()
+    room = max(0, max_folders - tree.listed)
+    if len(entries) > room:
+        entries, cut = entries[:room], True
+    tree.truncated |= cut
+    children: list[_Node] = []
+    for name, link, entry_path in entries:
+        if link:
+            real = os.path.realpath(entry_path)
+            if real == node.real or node.real.startswith(real.rstrip(os.sep) + os.sep):
+                continue  # a link to this folder or one of its ancestors: a loop
+        else:
+            real = node.real.rstrip(os.sep) + os.sep + name
+        via = node.via_link or link
+        seen = tree.by_real.get(real)
+        if seen is not None and seen.alive:
+            if seen.via_link and not via:
+                _drop(tree, seen)  # the folder on its real path wins over a link to it
+            else:
+                continue  # the same folder again, through a link
+        child = _Node(name, f"{node.rel}/{name}" if node.rel else name, node.depth + 1, node, real=real,
+                      via_link=via, weight=node.weight * factor)
+        tree.by_real[real] = child
+        children.append(child)
+    node.children = children
+    tree.by_level.setdefault(node.depth + 1, []).extend(children)
+    tree.listed += len(children)
+
+
+def _sample(items: list, n: int) -> list:
+    """At most ``n`` of ``items``, evenly spread (deterministic)."""
+    if len(items) <= n:
+        return list(items)
+    return [items[(i * len(items)) // n] for i in range(n)]
+
+
+def _member_ancestor(node: _Node, owner: dict) -> _Node | None:
+    for a in node.ancestors():
+        if a in owner:
+            return a
+    return None
+
+
+def _explore(root_path: Path, max_depth: int, max_folders: int,
+             progress: Callable[[str], None] | None) -> _Tree:
+    """List the folder tree level by level – folder names only. Per level the candidate schemes are
+    determined (rule 1); of the folders of a candidate only an evenly spread sample is opened (are
+    they projects or containers of projects?), and inside them only year folders (customer/year/
+    project); everything else is opened up to :data:`MAX_OPEN_PER_LEVEL` per level. So the reading
+    stays about as cheap as the app's own scan, and the shares the decisions rest on do not depend
+    on the size of the share. Raises OSError if the root is unreadable."""
+    boundary = root_path.resolve()
+    tree = _Tree(_Node("", "", 0, real=str(boundary)))
+    _list(tree, tree.root, root_path, boundary, max_folders, 1.0)
+    owner: dict[_Node, _Cand] = {}
+    last_report = time.monotonic()
+    for level in range(1, max_depth + 1):
+        nodes = tree.level(level)
+        valid, invalid = _level_candidates(nodes)
+        tree.cands[level] = (valid, invalid)
+        for cand in valid:
+            owner.update((m, cand) for m in cand.members)
+        if level == max_depth or not nodes or tree.truncated:
+            continue
+        todo: list[tuple[_Node, float]] = []
+        for cand in valid:
+            sample = _sample(cand.members, SAMPLE_MEMBERS)
+            todo += [(m, len(cand.members) / len(sample)) for m in sample]
+        free: list[_Node] = []
+        for node in nodes:
+            if node in owner:
+                continue
+            anc = _member_ancestor(node, owner)
+            if anc is None:
+                free.append(node)
+            elif node.parent is anc and _year_like(node):
+                todo.append((node, 1.0))  # customer 1020/2024/2024-001 …: look one level further
+        sample = _sample(free, MAX_OPEN_PER_LEVEL)
+        todo += [(n, len(free) / len(sample)) for n in sample]
+        todo.sort(key=lambda t: t[0].rel)
+        for node, factor in todo:
+            if tree.listed >= max_folders:
+                tree.truncated = True
+                break
+            _list(tree, node, root_path, boundary, max_folders, factor)
+            if progress and time.monotonic() - last_report >= 1.0:
+                last_report = time.monotonic()
+                progress(f"{de_int(tree.listed)} Ordner gelesen (Ebene {level + 1})")
+    if tree.any_dropped:  # a link listed before its target: decide on the folders that remain
+        tree.cands = {level: _level_candidates(tree.level(level)) for level in tree.cands}
+    return tree
+
+
+# ------------------------------------------------------------------------------------- candidates per level
+@dataclass(eq=False)
+class _Cand:
+    """Folders of one level whose leading numbers have the same prefix and number of groups."""
+    level: int
     prefix: str
     k: int
-    pseps: set[str] = field(default_factory=set)
-    seps: list[set[str]] = field(default_factory=list)
-    lengths: list[set[int]] = field(default_factory=list)
-    years: bool = True  # every first group looks like a year (1900–2099)
-    dates: bool = True  # every token is a date (2023-05-12, 12.05.2023) – folders of a day, not projects
-    count: int = 0
-    longer: int = 0  # members whose number goes on with more digit groups (this scheme would cut it short)
-    names: list[str] = field(default_factory=list)
+    items: list[_Node]  # all folders of the group (members and outliers)
+    members: list[_Node]
+    numbers: list[str]  # of the members, as the scan reports them
+    outliers: list[_Node]  # a digit count or separator variant without real backing (rule 5)
+    pseps: frozenset[str]
+    seps: tuple[frozenset[str], ...]
+    lengths: tuple[tuple[int, int], ...]
+    problem: str | None = None
+    outer: _Cand | None = None  # the candidate whose folders most of these lie in
+    contains: list[_Cand] = field(default_factory=list)  # deeper candidates it is a container of
+
+    @property
+    def est(self) -> float:
+        """Estimated number of folders (sampling on the way down taken into account)."""
+        return sum(m.weight for m in self.members)
+
+    def guards(self) -> list[tuple[str, str]]:
+        """(regex, German note) for the date-like numbers this scheme could match (rule 5)."""
+        if self.prefix:
+            return []
+        out = []
+        if self.k == 1:
+            lo, hi = self.lengths[0]
+            if lo <= 4 <= hi:
+                out.append((_YEAR_GUARD, "keine Jahreszahl 1900–2099"))
+            if lo <= 8 <= hi:
+                out.append((_DATE_GUARD, "kein Datum"))
+        elif self.k == 2:
+            (lo0, hi0), (lo1, hi1) = self.lengths
+            if lo0 <= 4 <= hi0 and lo1 <= 4 <= hi1:
+                out.append((rf"(?!(?:19|20)\d\d{_sep_regex(self.seps[0])}(?:19|20)\d\d(?!\d))",
+                            "kein Jahresbereich"))
+        return out
 
     @property
     def pattern(self) -> str:
-        out = self.prefix + (_sep_regex(self.pseps) if self.prefix else "")
-        for i, lengths in enumerate(self.lengths):
-            out += (_sep_regex(self.seps[i - 1]) if i else "") + _digits_regex(lengths)
+        out = "".join(g for g, _ in self.guards())
+        out += self.prefix + (_sep_regex(self.pseps) if self.prefix else "")
+        for i, (lo, hi) in enumerate(self.lengths):
+            out += (_sep_regex(self.seps[i - 1]) if i else "") + _digits_regex(lo, hi)
         return out
 
     @property
@@ -319,132 +578,316 @@ class _Family:
             parts.append(f"„{self.prefix}“")
             if sep := _sep_text(self.pseps):
                 parts.append(sep)
-        for i, lengths in enumerate(self.lengths):
+        for i, (lo, hi) in enumerate(self.lengths):
             if i:
                 parts.append(_sep_text(self.seps[i - 1]))
-            lo, hi = min(lengths), max(lengths)
-            parts.append(f"{lo} Ziffer" if lo == hi == 1 else f"{lo} Ziffern" if lo == hi else f"{lo}–{hi} Ziffern")
-        return ", ".join(parts)
+            parts.append(_digits_text(lo, hi))
+        notes = [note for _, note in self.guards()]
+        return ", ".join(parts) + (f" ({', '.join(notes)})" if notes else "")
 
     @property
     def specificity(self) -> int:
         return (10 if self.prefix else 0) + self.k
 
-    def vague(self) -> str | None:
-        """Why this scheme is too vague to tell projects from other folders – or None."""
-        lows = [min(x) for x in self.lengths]
-        widths = [max(x) - min(x) for x in self.lengths]
-        if any(w > 2 for w in widths):
-            return "Ziffernzahl zu uneinheitlich"
-        if self.k == 3 and self.dates:
-            return "Datumsangaben (Ordner für einen Tag, keine Projektnummern)"
-        if self.longer * 2 > self.count:
-            return "schneidet längere Nummern ab"
-        if not self.prefix and self.k == 1:
-            if self.years and self.lengths[0] == {4}:
-                return "nur Jahreszahlen (Jahresordner)"
-            if lows[0] < 3 or widths[0] > 1 or (widths[0] and lows[0] < 4):
-                return "zu unspezifisch (eine kurze oder wechselnd lange Zahl)"
-        elif sum(lows) < (3 if 0 < len(self.prefix) < 4 else 4):  # a long prefix is rather a word ("Haus 12")
-            return "zu unspezifisch (zu wenige Ziffern)"
-        return None
 
-
-def _sep_regex(chars: set[str]) -> str:
-    real = [c for c in _SEP_ORDER if c in chars]
-    if not real:
-        return ""
-    body = _SEP_ALONE[real[0]] if len(real) == 1 else "[" + "".join(_SEP_IN_CLASS[c] for c in real) + "]"
-    return body + ("?" if "" in chars else "")
-
-
-def _sep_text(chars: set[str]) -> str:
-    real = [_SEP_NAMES[c] for c in _SEP_ORDER if c in chars]
-    text = " oder ".join(real)
-    return f"{text} (oder ohne)" if real and "" in chars else text
-
-
-def _digits_regex(lengths: set[int]) -> str:
-    lo, hi = min(lengths), max(lengths)
-    return rf"\d{{{lo}}}" if lo == hi else rf"\d{{{lo},{hi}}}"
-
-
-def _is_date(groups: tuple[str, ...]) -> bool:
-    """YYYY-MM-DD or DD-MM-YYYY (any separator)."""
-    lens = tuple(len(g) for g in groups)
-    if lens == (4, 2, 2):
-        year, month, day = groups
-    elif lens == (2, 2, 4):
-        day, month, year = groups
-    else:
+def _internal(node: _Node) -> bool:
+    """Rule 3: the folder's number is its parent folder's number plus sub-numbers of at most two
+    digits (2024-017_01 below 2024-017 …, or the same number again) – internal structure."""
+    parent = node.parent
+    if parent is None or parent.depth == 0:
         return False
-    return 1900 <= int(year) <= 2099 and 1 <= int(month) <= 12 and 1 <= int(day) <= 31
-
-
-def _families(nodes: Iterable[_Node]) -> dict[tuple[str, int], _Family]:
-    out: dict[tuple[str, int], _Family] = {}
-    for node in nodes:
-        tok = _token(node.name)
-        if tok is None:
+    pt, t = parent.token, node.token
+    if pt is None or t is None or pt.prefix != t.prefix:
+        return False
+    for j in range(min(len(pt.groups), len(t.groups)), 0, -1):
+        if t.groups[:j] != pt.groups[:j] or _number_kind(pt.prefix, pt.groups[:j]):
             continue
-        year = len(tok.groups[0]) == 4 and 1900 <= int(tok.groups[0]) <= 2099
-        date = len(tok.groups) >= 3 and _is_date(tok.groups[:3])
+        if all(len(g) <= 2 for g in t.groups[j:]):
+            return True
+    return False
+
+
+def _accepted(values: list, need: int) -> set:
+    """The values with real backing (rule 5); the most frequent one always."""
+    counts = Counter(values)
+    main = counts.most_common(1)[0][0]
+    return {v for v, c in counts.items() if c >= need} | {main}
+
+
+def _digits_problem(prefix: str, k: int, lengths: tuple[tuple[int, int], ...]) -> str | None:
+    lows = [lo for lo, _ in lengths]
+    if any(hi - lo > MAX_DIGIT_SPREAD for lo, hi in lengths):
+        return "Ziffernzahl zu uneinheitlich"
+    if prefix:
+        if sum(lows) < (3 if len(prefix) <= 3 else 4):  # a long prefix is rather a word ("Haus 12")
+            return "zu wenige Ziffern nach den Buchstaben"
+        return None
+    if k == 1:
+        return "zu kurz (eine Zahl ohne Buchstaben braucht mindestens 4 Ziffern)" if lows[0] < 4 else None
+    if lows[-1] < 3 or sum(lows) < 5:
+        return "zu kurz (laufende Nummer mit weniger als 3 Ziffern)"
+    if k == 3:
+        (lo0, hi0), (lo1, hi1), (lo2, hi2) = lengths
+        if lo0 <= 2 <= hi0 and lo1 <= 2 <= hi1 and lo2 <= 4 <= hi2:
+            return "hat die Form eines Datums (TT.MM.JJJJ)"
+    return None
+
+
+def _build(level: int, prefix: str, k: int, items: list[tuple[_Node, _Token]]) -> _Cand:
+    need = max(VARIANT_MIN_COUNT, math.ceil(VARIANT_MIN_SHARE * len(items)))
+    pseps = _accepted([t.psep for _, t in items], need) if prefix else {""}
+    seps = [_accepted([t.seps[i] for _, t in items], need) for i in range(k - 1)]
+    lengths = []
+    for i in range(k):
+        ok = _accepted([len(t.groups[i]) for _, t in items], need)
+        lengths.append((min(ok), max(ok)))
+    members, numbers, outliers = [], [], []
+    for node, t in items:
+        fits = (t.psep in pseps and all(t.seps[i] in seps[i] for i in range(k - 1))
+                and all(lo <= len(t.groups[i]) <= hi for i, (lo, hi) in enumerate(lengths)))
+        if fits:
+            members.append(node)
+            numbers.append(t.number(k))
+        else:
+            outliers.append(node)
+    cand = _Cand(level, prefix, k, [n for n, _ in items], members, numbers, outliers, frozenset(pseps),
+                 tuple(frozenset(s) for s in seps), tuple(lengths))
+    dups = len(numbers) - len(set(numbers))
+    if problem := _digits_problem(prefix, k, cand.lengths):
+        cand.problem = problem
+    elif prefix and k == 1 and all(_year(node.token.groups[0]) for node in members):
+        cand.problem = "ein Wort mit Jahreszahl, keine Projektnummer"
+    elif len(members) < MIN_PROJECTS:
+        cand.problem = f"nur {de_count(len(members), 'passender Ordner', 'passende Ordner')}"
+    elif dups > max(1, REPEAT_SHARE * len(members)):
+        cand.problem = f"Nummern wiederholen sich ({dups} von {len(members)} doppelt)"
+    return cand
+
+
+def _level_candidates(nodes: list[_Node]) -> tuple[list[_Cand], list[_Cand]]:
+    """Valid and invalid candidate schemes among folders of one level (rules 1–3, 5). Folders below
+    an archive or office folder form candidates of their own (an older numbering is no variant of
+    the current one, rule 6). Of several readings of the same folders (BS-2024 or BS-2024-0137) the
+    valid one with most folders wins, with equal numbers the shorter one."""
+    groups: dict[tuple[str, int, str], list[tuple[_Node, _Token]]] = {}
+    for node in nodes:
+        tok = node.token
+        if tok is None or _internal(node):
+            continue
         for k in range(1, len(tok.groups) + 1):
             if k == len(tok.groups) and tok.glued:
                 break  # "2024-017a": no number boundary after the last group
-            fam = out.get((tok.prefix, k))
-            if fam is None:
-                fam = out[(tok.prefix, k)] = _Family(tok.prefix, k, seps=[set() for _ in range(k - 1)],
-                                                     lengths=[set() for _ in range(k)])
-            fam.count += 1
-            fam.longer += k < len(tok.groups)
-            fam.pseps.add(tok.psep)
-            for i in range(k):
-                fam.lengths[i].add(len(tok.groups[i]))
-            for i in range(k - 1):
-                fam.seps[i].add(tok.seps[i])
-            fam.years &= year
-            fam.dates &= date
-            if len(fam.names) < 5:
-                fam.names.append(node.name)
-    return out
+            if _number_kind(tok.prefix, tok.groups[:k]):
+                continue
+            groups.setdefault((tok.prefix, k, node.branch), []).append((node, tok))
+    level = nodes[0].depth if nodes else 0
+    built = sorted((_build(level, prefix, k, items) for (prefix, k, _), items in groups.items()),
+                   key=lambda c: (c.problem is not None, -len(c.members), c.k, c.prefix))
+    valid: list[_Cand] = []
+    invalid: list[_Cand] = []
+    for c in built:
+        mine = set(c.items if c.problem else c.members)
+        if any(c.prefix == v.prefix and len(mine & set(v.members)) * 2 >= len(mine) for v in valid):
+            continue  # the same folders read with more or fewer digit groups
+        (invalid if c.problem else valid).append(c)
+    return valid, invalid
+
+
+# ------------------------------------------------------------------------------------- choosing the scheme
+def _container_of(outer: _Cand, inner: _Cand) -> bool:
+    """Rule 4: are the folders of ``outer`` containers of ``inner``'s folders? Yes if most of them
+    consist mostly of such folders (directly or in year folders). Folders with numbered internal
+    subfolders are projects."""
+    inside = set(inner.members)
+    opened = [m for m in outer.members if m.children is not None and not m.unreadable]
+    if not opened:
+        return False
+    if 2 * sum(1 for m in opened if any(_internal(c) for c in m.children or ())) >= len(opened):
+        return False
+    shares = []
+    for m in opened:
+        kids = m.children or []
+        bearing = sum(1 for c in kids if c in inside or (c.children and any(g in inside for g in c.children)))
+        shares.append(bearing / len(kids) if kids else 0.0)
+    return statistics.median(shares) >= 0.5
+
+
+def _branch(nodes: list[_Node]) -> str:
+    """'archive' or 'side' if most folders lie below an archive or office folder, else 'main'."""
+    kind, n = Counter(node.branch for node in nodes).most_common(1)[0] if nodes else ("main", 0)
+    return kind if 2 * n > len(nodes) else "main"
+
+
+def _where(nodes: list[_Node]) -> str:
+    """The common parent folder of ``nodes`` ('Archiv/2005-2015') – '' at the top or if spread."""
+    paths = [n.parent.rel.split("/") if n.parent is not None and n.parent.rel else [] for n in nodes]
+    if not paths:
+        return ""
+    common = paths[0]
+    for p in paths[1:]:
+        i = 0
+        while i < min(len(common), len(p)) and common[i] == p[i]:
+            i += 1
+        common = common[:i]
+    return "/".join(common)
 
 
 @dataclass(eq=False)
-class _Candidate:
-    """A scheme tried on the listed tree with the rules of ``scan_projects``."""
-    family: _Family
+class _Scheme:
+    """Project-level candidates with the same expression (one scheme, possibly at several levels)."""
     pattern: str
-    head: re.Pattern
-    matches: list[tuple[_Node, str]]  # project folder, number (in scan order)
-    duplicates: list[tuple[str, _Node, _Node]]
-    exceptions: list[_Node]  # folders without the number next to project folders (Archiv, _Vorlagen …)
-    matched: set[_Node]
-    sample: set[_Node]
-    parts: tuple[str, ...] = ()  # schemes combined into this one (current numbers + an older numbering)
+    cands: list[_Cand]
+    branch: str = "main"
+
+    @property
+    def members(self) -> list[_Node]:
+        return [m for c in self.cands for m in c.members]
+
+    @property
+    def est(self) -> float:
+        return sum(c.est for c in self.cands)
 
     @property
     def text(self) -> str:
-        return self.family.text if not self.parts else " – oder – ".join(self.parts)
+        return self.cands[0].text
 
     @property
-    def depths(self) -> Counter:
-        return Counter(node.depth for node, _ in self.matches)
+    def outliers(self) -> list[_Node]:
+        return [o for c in self.cands for o in c.outliers]
 
-    def problem(self) -> str | None:
-        n, dups = len(self.matches), len(self.duplicates)
-        if n < MIN_PROJECTS:
-            return f"nur {n} passende(r) Ordner"
-        if dups > MAX_DUPLICATE_SHARE * (n + dups):
-            return f"viele doppelte Nummern ({dups} von {n + dups})"
-        if n < MIN_SHARE * (n + len(self.exceptions)):
-            return f"nur {round(100 * n / (n + len(self.exceptions)))} % der Ordner auf dieser Ebene"
-        return None
+    @property
+    def guarded_years(self) -> bool:
+        return any(g == _YEAR_GUARD for c in self.cands for g, _ in c.guards())
+
+    @property
+    def specificity(self) -> int:
+        return self.cands[0].specificity
 
 
-def _simulate(root: _Node, family: _Family, pattern: str, max_depth: int) -> _Candidate:
-    """What ``scan_projects(root, pattern, max_depth)`` would find in the listed tree."""
-    head = project_head(pattern)
+@dataclass
+class _Choice:
+    best: _Scheme | None
+    reason: str | None
+    schemes: list[_Scheme]  # project-level schemes, best first
+    candidates: list[dict]  # all candidates with their verdict (report)
+    others: list[_Scheme] = field(default_factory=list)  # further schemes for the hint
+
+
+def _cand_info(c: _Cand, verdict: str, reason: str | None = None) -> dict:
+    where = _where(c.members or c.items)
+    return {"pattern": c.pattern, "description": c.text, "level": c.level, "folders": len(c.members),
+            "estimated": round(c.est), "where": where,
+            "examples": [n.name for n in (c.members or c.items)[:3]], "verdict": verdict, "reason": reason}
+
+
+def _choose(tree: _Tree) -> _Choice:
+    valid = [c for level in sorted(tree.cands) for c in tree.cands[level][0]]
+    invalid = [c for level in sorted(tree.cands) for c in tree.cands[level][1]]
+    owner = {m: c for c in valid for m in c.members}
+    for c in valid:  # the nearest candidate around most of its folders
+        votes = Counter(owner[a] for m in c.members if (a := _member_ancestor(m, owner)) is not None)
+        c.outer = None
+        if votes:
+            outer, n = votes.most_common(1)[0]
+            if 2 * n >= len(c.members):
+                c.outer = outer
+    for c in valid:
+        c.contains = [x for x in valid if x.outer is c and _container_of(c, x)]
+    infos: list[dict] = []
+    level_ok: list[_Cand] = []
+    for c in valid:
+        if c.contains:
+            inner = max(c.contains, key=lambda x: len(x.members))
+            infos.append(_cand_info(c, "Sammelordner", f"enthalten die Projektordner ({inner.pattern}, Ebene "
+                                                       f"{inner.level})"))
+            continue
+        x, outer = c, c.outer
+        while outer is not None and x in outer.contains:
+            x, outer = outer, outer.outer
+        if outer is not None:
+            infos.append(_cand_info(c, "in Projektordnern", f"liegen in den Ordnern von {outer.pattern} "
+                                                            f"(Ebene {outer.level}) und sind keine Projekte"))
+            continue
+        level_ok.append(c)
+    by_pattern: dict[str, _Scheme] = {}
+    for c in level_ok:
+        by_pattern.setdefault(c.pattern, _Scheme(c.pattern, [])).cands.append(c)
+    schemes = list(by_pattern.values())
+    for s in schemes:
+        s.branch = _branch(s.members)
+    schemes.sort(key=lambda s: (-s.est, -s.specificity, s.pattern))
+    # numbered folders without a valid scheme (numbers that restart, too few digits …) outside project
+    # folders: they make a share unclear just as a second scheme does
+    unclear = [c for c in invalid if len(c.items) >= MIN_PROJECTS and not c.problem.startswith("nur ")
+               and 2 * sum(1 for n in c.items if _member_ancestor(n, owner) is None) > len(c.items)]
+    unclear_branch = {id(c): _branch(c.items) for c in unclear}
+    branch = "main" if any(s.branch == "main" for s in schemes) else "archive"
+    pool = [s for s in schemes if s.branch == branch]
+    blocking = [c for c in unclear if unclear_branch[id(c)] in ("main", branch)]
+    best, reason = (pool[0] if pool else None), None
+    if best is not None and branch == "archive" and any(unclear_branch[id(c)] == "main" for c in blocking):
+        c = max((c for c in blocking if unclear_branch[id(c)] == "main"), key=lambda c: len(c.items))
+        reason = (f"Kein Nummernschema ist eindeutig genug – {c.pattern} (Ebene {c.level}, "
+                  f"{de_count(len(c.items), 'Ordner', 'Ordner')}{_where_text(c.items)}): {c.problem}. Das Schema "
+                  f"{best.pattern}{_scheme_where(best)} gilt als ältere Nummerierung und wird nicht allein "
+                  "vorgeschlagen.")
+        best = None
+    elif best is not None:
+        rivals = [(s.est, s.pattern, s.members, None) for s in pool[1:]]
+        rivals += [(sum(n.weight for n in c.items), c.pattern, c.items, c.problem) for c in blocking]
+        est, pattern, nodes, problem = max(rivals, key=lambda r: r[0], default=(0, "", [], None))
+        if est * DOMINANCE > best.est:
+            reason = (f"Zwei Nummernschemata kommen etwa gleich oft vor: {best.pattern} "
+                      f"({_scheme_count(best)}{_scheme_where(best)}, z. B. {best.members[0].name}) und "
+                      f"{pattern} ({_count_text(est, len(nodes))}{_where_text(nodes)}, z. B. {nodes[0].name}"
+                      + (f"; {problem}" if problem else "") + ") – welches die Projekte sind, lässt sich nicht sicher "
+                      "sagen.")
+            best = None
+    elif schemes:
+        side = schemes[0]
+        reason = (f"Nummerierte Ordner gibt es nur in Nebenablagen ({side.pattern}{_scheme_where(side)}) – "
+                  "Angebote, Rechnungen und Vorlagen sind keine Projekte.")
+    others = [s for s in schemes if s is not best]
+    for s in schemes:
+        verdict = "gewählt" if s is best else "Hinweis" if best is not None else "Kandidat"
+        why = None
+        if s is not best and best is not None:
+            why = {"archive": "unter einem Archivordner – ältere Nummerierung?",
+                   "side": "in einer Nebenablage (Angebote, Rechnungen …)"}.get(
+                s.branch, f"seltener als {best.pattern}")
+        infos += [_cand_info(c, verdict, why) for c in s.cands]
+    infos += [_cand_info(c, "abgelehnt", c.problem) for c in invalid if len(c.items) > 1]
+    order = {"gewählt": 0, "Kandidat": 1, "Hinweis": 2, "Sammelordner": 3, "in Projektordnern": 4, "abgelehnt": 5}
+    infos.sort(key=lambda i: (order[i["verdict"]], -i["estimated"], i["level"]))
+    return _Choice(best, reason, schemes, infos, others)
+
+
+def _count_text(est: float, listed: int) -> str:
+    return de_count(est, "Ordner", "Ordner") if round(est) == listed else f"etwa {de_int(est)} Ordner"
+
+
+def _where_text(nodes: list[_Node]) -> str:
+    where = _where(nodes)
+    return f" in {where}" if where else ""
+
+
+def _scheme_count(s: _Scheme) -> str:
+    return _count_text(s.est, len(s.members))
+
+
+def _scheme_where(s: _Scheme) -> str:
+    return _where_text(s.members)
+
+
+@dataclass
+class _Scan:
+    """What ``scan_projects`` would find in the listed tree."""
+    matches: list[tuple[_Node, str]]
+    duplicates: list[tuple[str, _Node, _Node]]
+    exceptions: list[_Node]  # folders without the number next to project folders (Archiv, _Vorlagen …)
+
+
+def _simulate(root: _Node, head: re.Pattern, max_depth: int) -> _Scan:
     found: dict[str, _Node] = {}
     matches: list[tuple[_Node, str]] = []
     duplicates: list[tuple[str, _Node, _Node]] = []
@@ -468,102 +911,7 @@ def _simulate(root: _Node, family: _Family, pattern: str, max_depth: int) -> _Ca
     walk(root, 1)
     bearing = {a for node, _ in matches for a in node.ancestors()}  # folders containing projects
     exceptions = [n for n in others if n not in bearing and n.parent in bearing]
-    nodes = [node for node, _ in matches]
-    step = max(1, math.ceil(len(nodes) / SAMPLE_PROJECTS))
-    return _Candidate(family, pattern, head, matches, duplicates, exceptions, set(nodes), set(nodes[::step]))
-
-
-def _tighten(root: _Node, cand: _Candidate, max_depth: int) -> _Candidate:
-    """The scheme rebuilt from the folders it matched only: names elsewhere (dates inside the sampled
-    project folders, "2024-05" next to "2024-017") must not widen it (\\d{2,4} instead of \\d{3,4})."""
-    fam = _families(node for node, _ in cand.matches).get((cand.family.prefix, cand.family.k))
-    if fam is None or fam.pattern == cand.pattern or fam.vague() or pattern_problem(fam.pattern):
-        return cand
-    tight = _simulate(root, fam, fam.pattern, max_depth)
-    return tight if len(tight.matches) >= len(cand.matches) and not tight.problem() else cand
-
-
-def _nested(inner: _Candidate, outer: _Candidate) -> bool:
-    """Do most project folders of ``inner`` lie inside project folders of ``outer``?"""
-    inside = sum(1 for node, _ in inner.matches if any(a in outer.matched for a in node.ancestors()))
-    return inside * 2 >= len(inner.matches) > 0
-
-
-def _container(outer: _Candidate, inner: _Candidate) -> bool:
-    """Are the folders of ``outer`` containers of ``inner`` (customer folders with a number, …)?
-    Yes if most of their (listed) subfolders are folders of ``inner``; numbered folders inside a
-    project (dates, '2023-05 Ortstermin') are only a part of its contents."""
-    shares = [sum(1 for c in node.children if inner.head.match(c.name)) / len(node.children)
-              for node in outer.matched if node.children]
-    return bool(shares) and statistics.median(shares) >= 0.5
-
-
-@dataclass
-class _Choice:
-    best: _Candidate | None
-    others: list[_Candidate]
-    rejected: list[tuple[str, str]]  # (pattern, reason)
-
-
-def _choose(tree: _Tree, max_depth: int) -> _Choice:
-    families = _families(tree.nodes)
-    rejected: list[tuple[str, str]] = []
-    pool: list[_Family] = []
-    for fam in sorted(families.values(), key=lambda f: (-f.count, -f.specificity, f.prefix)):
-        if fam.count < MIN_PROJECTS:
-            continue
-        if why := fam.vague():
-            rejected.append((fam.pattern, why))
-            continue
-        pool.append(fam)
-        if len(pool) >= MAX_CANDIDATES:
-            break
-    valid: list[_Candidate] = []
-    for fam in pool:
-        pattern = fam.pattern
-        if pattern_problem(pattern):  # cannot happen with the generated expressions – be safe
-            continue
-        cand = _simulate(tree.root, fam, pattern, max_depth)
-        if why := cand.problem():
-            rejected.append((pattern, why))
-        else:
-            valid.append(_tighten(tree.root, cand, max_depth))
-    alive = list(valid)
-    for outer in valid:
-        for inner in valid:
-            if outer is inner or outer not in alive or inner not in alive or not _nested(inner, outer):
-                continue
-            if _container(outer, inner):
-                alive.remove(outer)
-                rejected.append((outer.pattern, "Sammelordner, in denen die Projektordner liegen"))
-            else:
-                alive.remove(inner)
-                rejected.append((inner.pattern, "Unterordner innerhalb der Projektordner"))
-    alive.sort(key=lambda c: (-len(c.matches), -c.family.specificity, max(c.depths)))
-    if not alive:
-        return _Choice(None, [], rejected)
-    best = _combined(tree.root, alive, max_depth)
-    return _Choice(best, [c for c in alive if c.pattern not in best.parts and c is not best], rejected)
-
-
-def _combined(root: _Node, alive: list[_Candidate], max_depth: int) -> _Candidate:
-    """The best scheme, joined with further valid schemes on other folders – current projects in the
-    root and an archive in an older numbering are both projects; choosing one of them would leave the
-    other out. Schemes that sit in each other's folders were sorted out before."""
-    parts = [alive[0]]
-    for other in alive[1:]:
-        if len(parts) == 3:
-            break
-        if not any(other.matched & p.matched for p in parts):
-            parts.append(other)
-    if len(parts) == 1:
-        return alive[0]
-    pattern = "(?:" + "|".join(p.pattern for p in parts) + ")"
-    combo = _simulate(root, alive[0].family, pattern, max_depth)
-    combo.parts = tuple(p.family.text for p in parts)
-    if combo.problem() or pattern_problem(pattern) or len(combo.matches) < sum(len(p.matches) for p in parts):
-        return alive[0]
-    return combo
+    return _Scan(matches, duplicates, exceptions)
 
 
 def _proposed_depth(depths: Counter) -> int:
@@ -573,6 +921,19 @@ def _proposed_depth(depths: Counter) -> int:
     total = sum(depths.values())
     levels = [d for d, n in depths.items() if n >= DEPTH_MIN_COUNT or n >= DEPTH_MIN_SHARE * total]
     return max(levels or depths)
+
+
+def _depth_for(root: _Node, head: re.Pattern, max_depth: int) -> tuple[int, _Scan]:
+    everything = _simulate(root, head, max_depth)
+    if not everything.matches:
+        return min(max_depth, DEFAULT_PROJECT_FOLDER_DEPTH), everything
+    depth = _proposed_depth(Counter(n.depth for n, _ in everything.matches))
+    if depth < DEFAULT_PROJECT_FOLDER_DEPTH <= max_depth:
+        # the default finds the very same folders today and also projects put into a year folder later
+        at_default = _simulate(root, head, DEFAULT_PROJECT_FOLDER_DEPTH)
+        if {n for _, n in at_default.matches} == {n for _, n in _simulate(root, head, depth).matches}:
+            depth = DEFAULT_PROJECT_FOLDER_DEPTH
+    return depth, everything
 
 
 # ------------------------------------------------------------------------------------- analysis
@@ -589,8 +950,10 @@ class Proposal:
     exceptions_total: int
     duplicates: list[dict]  # number, path, duplicate
     deeper: list[str]  # matches below the proposed depth (not found with it)
-    second_scheme: dict | None  # exceptions that carry a number scheme of their own
+    second_scheme: dict | None  # the first of ``hints``
     unreadable: list[str]
+    outliers: list[str] = field(default_factory=list)  # same kind of number, variant without backing
+    hints: list[dict] = field(default_factory=list)  # further schemes (archive, offers …) with alternation
 
 
 @dataclass
@@ -604,14 +967,16 @@ class Analysis:
     levels: list[dict] = field(default_factory=list)
     proposal: Proposal | None = None
     reason: str | None = None  # why no scheme was proposed
-    alternatives: list[dict] = field(default_factory=list)
-    rejected: list[dict] = field(default_factory=list)
+    candidates: list[dict] = field(default_factory=list)  # every scheme considered, with its verdict
+    rejected: list[dict] = field(default_factory=list)  # pattern, reason
+    alternatives: list[dict] = field(default_factory=list)  # further schemes (same as proposal.hints)
     seconds: float = 0.0
+    listings: int = 0  # folders opened
     projects: list[ProjectFolder] = field(default_factory=list, repr=False)
 
     @property
     def exit_code(self) -> int:
-        return 2 if self.problem else 0 if self.proposal else 1
+        return EXIT_UNREADABLE if self.problem else EXIT_SCHEME if self.proposal else EXIT_NO_SCHEME
 
     def to_dict(self) -> dict:
         data = dataclasses.asdict(self)
@@ -628,34 +993,59 @@ def _rel(path: Path, root: Path) -> str:
 
 def _level_summary(tree: _Tree) -> list[dict]:
     out = []
-    for depth in sorted({n.depth for n in tree.nodes}):
-        nodes = [n for n in tree.nodes if n.depth == depth]
-        out.append({"level": depth, "folders": len(nodes),
-                    "with_number": sum(1 for n in nodes if _token(n.name)),
-                    "examples": [n.name for n in nodes[:6]]})
+    for depth in sorted(tree.by_level):
+        nodes = tree.level(depth)
+        if nodes:
+            names = list(dict.fromkeys(n.name for n in nodes))
+            numbered = [name for name in names if _token(name)]
+            out.append({"level": depth, "folders": len(nodes), "with_number": sum(1 for n in nodes if n.token),
+                        "examples": (numbered[:3] + [name for name in names if name not in numbered[:3]])[:6]})
     return out
 
 
 def _no_scheme_reason(tree: _Tree, choice: _Choice) -> str:
-    if not tree.nodes:
+    nodes = tree.nodes
+    if not nodes:
         return "Der Ordner enthält keine Unterordner – ist die Freigabe eingebunden?"
-    if not any(_token(n.name) for n in tree.nodes):
+    numbered = [n for n in nodes if n.token]
+    if not numbered:
         return "Kein Ordnername beginnt mit einer Nummer."
-    if choice.rejected:
-        reasons = "; ".join(f"{p}: {why}" for p, why in choice.rejected[:3])
-        return f"Kein Nummernschema ist eindeutig genug ({reasons})."
-    return (f"Zu wenige Ordner mit gleich aufgebauter Nummer am Anfang (mindestens {MIN_PROJECTS} nötig, "
-            "z. B. 2024-017 Kita, 2024-018 Schule …).")
+    if choice.reason:
+        return choice.reason
+    invalid = [c for level in sorted(tree.cands) for c in tree.cands[level][1]]
+    if not invalid and not choice.candidates:
+        kinds: dict[str, list[str]] = {}
+        for n in numbered:
+            if kind := _token_kind(n.token):
+                kinds.setdefault(kind, []).append(n.name)
+        if kinds:
+            parts = [f"{_KIND_TEXT[k]} ({', '.join(v[:2])}{' …' if len(v) > 2 else ''})"
+                     for k, v in sorted(kinds.items(), key=lambda kv: -len(kv[1]))]
+            return ("Die Nummern am Anfang der Ordnernamen sind keine Projektnummern: " + "; ".join(parts) + ".")
+    serious = [c for c in invalid if len(c.items) >= MIN_PROJECTS and not c.problem.startswith("nur ")]
+    if serious:
+        reasons = "; ".join(f"{c.pattern} (Ebene {c.level}): {c.problem}" for c in serious[:3])
+        return f"Kein Nummernschema ist eindeutig genug – {reasons}."
+    return (f"Zu wenige Ordner mit gleich aufgebauter Nummer am Anfang (mindestens {MIN_PROJECTS} auf einer "
+            "Ebene nötig, z. B. 2024-017 Kita, 2024-018 Schule …).")
 
 
-def _second_scheme(exceptions: list[_Node], pattern: str) -> dict | None:
-    """Exceptions that start with a number scheme of their own (projects in an older numbering?)."""
-    families = [f for f in _families(exceptions).values() if f.count >= 2 and not f.vague()]
-    if not families:
-        return None
-    fam = max(families, key=lambda f: (f.count, f.specificity))
-    return {"pattern": fam.pattern, "folders": fam.count, "examples": fam.names[:3],
-            "combined": f"(?:{pattern}|{fam.pattern})"}
+def _hint(tree: _Tree, best: _Scheme, other: _Scheme, max_depth: int) -> dict:
+    combined = f"(?:{best.pattern}|{other.pattern})"
+    depth, _ = _depth_for(tree.root, project_head(combined), max_depth)
+    return {"pattern": other.pattern, "description": other.text, "folders": round(other.est),
+            "estimated": round(other.est) != len(other.members), "where": _where(other.members),
+            "branch": other.branch, "examples": [n.name for n in other.members[:3]],
+            "combined": combined, "depth": depth}
+
+
+def _reject(result: Analysis, reason: str, started: float) -> Analysis:
+    result.reason = reason
+    for info in result.candidates:
+        if info["verdict"] == "gewählt":
+            info["verdict"], info["reason"] = "Kandidat", "zu unsicher (siehe oben)"
+    result.seconds = round(time.monotonic() - started, 2)
+    return result
 
 
 def analyse(root: Path | str, *, max_depth: int = MAX_DEPTH, max_folders: int = MAX_FOLDERS,
@@ -674,48 +1064,80 @@ def analyse(root: Path | str, *, max_depth: int = MAX_DEPTH, max_folders: int = 
     except OSError as exc:
         result.problem = f"Projektordner {root} nicht lesbar ({exc.strerror or exc})"
         return result
-    result.folders, result.truncated = tree.listed, tree.truncated
+    result.folders, result.truncated, result.listings = tree.listed, tree.truncated, tree.listings
     result.unreadable = tree.unreadable[:MAX_LISTED * 4]
     result.levels = _level_summary(tree)
-    choice = _choose(tree, max_depth)
-    result.rejected = [{"pattern": p, "reason": why} for p, why in choice.rejected[:8]]
+    choice = _choose(tree)
+    result.candidates = choice.candidates[:12]
+    result.rejected = [{"pattern": i["pattern"], "reason": i["reason"]} for i in choice.candidates
+                       if i["verdict"] in ("abgelehnt", "Sammelordner", "in Projektordnern")][:8]
     best = choice.best
     if best is None:
-        result.reason = _no_scheme_reason(tree, choice)
-        result.seconds = round(time.monotonic() - started, 2)
-        return result
-    depth = _proposed_depth(best.depths)
-    description = best.text
-    if depth < DEFAULT_PROJECT_FOLDER_DEPTH and max_depth >= DEFAULT_PROJECT_FOLDER_DEPTH:
-        # the default finds the very same folders today and also projects put into a year folder later
-        wider = _simulate(tree.root, best.family, best.pattern, DEFAULT_PROJECT_FOLDER_DEPTH)
-        if {n for _, n in wider.matches} == {n for _, n in _simulate(tree.root, best.family, best.pattern,
-                                                                         depth).matches}:
-            depth = DEFAULT_PROJECT_FOLDER_DEPTH
-    final = _simulate(tree.root, best.family, best.pattern, depth)
+        return _reject(result, _no_scheme_reason(tree, choice), started)
+    head = project_head(best.pattern)
+    depth, everything = _depth_for(tree.root, head, max_depth)
+    members = set(best.members)
+    holding = {a for m in members for a in m.ancestors()}
+    if clash := [n for n, _ in everything.matches if n in holding]:
+        return _reject(result, f"Das Schema {best.pattern} passt auch auf die Ordner, in denen die Projektordner "
+                               f"liegen ({', '.join(n.rel for n in clash[:3])}) – diese würden selbst als Projekte "
+                               "gelesen.", started)
+    final = _simulate(tree.root, head, depth)
+    if best.guarded_years:
+        # folders at the projects' level whose number is a year (1999 Projekt): next to projects or in
+        # a year folder of their own (2024/1901 …, 2024/1902 …) – the guard keeps them out
+        levels = {c.level for c in best.cands}
+        lost = [n for level in sorted(levels) for n in tree.level(level)
+                if _token_kind(n.token) == "Jahr" and n not in holding and n.parent is not None
+                and (n.parent in holding or _year_like(n.parent))]
+        if len(lost) > max(2, YEAR_LOSS_SHARE * len(best.members)):
+            return _reject(result, f"Projektnummern und Jahreszahlen sind nicht zu unterscheiden: "
+                                   f"{de_count(len(lost), 'Ordner beginnt', 'Ordner beginnen')} mit einer Zahl "
+                                   f"zwischen 1900 und 2099 (z. B. {', '.join(n.rel for n in lost[:3])}), die nach "
+                                   f"dem Schema {best.pattern} als Jahreszahl gilt und nicht gelesen würde.", started)
+    n, ex = len(final.matches), len(final.exceptions)
+    need = MIN_SHARE_FEW if n < GOOD_PROJECTS else MIN_SHARE
+    if n + ex and n < need * (n + ex):
+        return _reject(result, f"Nur {round(100 * n / (n + ex))} % der Ordner neben den Projektordnern passen zum "
+                               f"Schema {best.pattern} ({de_count(n, 'passender', 'passende')}, "
+                               f"{de_count(ex, 'anderer', 'andere')}) – zu wenig für ein sicheres Schema.", started)
     unreadable: list[Path] = []
     duplicates: list[tuple[str, Path, Path]] = []
     found = scan_projects(root, best.pattern, depth, unreadable=unreadable, duplicates=duplicates)
+    # the same folder reached through a link is no second project (the scan skips it as well)
+    duplicates = [d for d in duplicates if os.path.realpath(d[1]) != os.path.realpath(d[2])]
     if len(found) < MIN_PROJECTS:  # the share changed while it was read
-        result.reason = (f"Das Schema {best.pattern} fand beim Gegenprüfen nur {len(found)} Projektordner – "
-                         "Freigabe vollständig eingebunden?")
-        result.seconds = round(time.monotonic() - started, 2)
-        return result
+        return _reject(result, f"Das Schema {best.pattern} fand beim Gegenprüfen nur "
+                               f"{de_count(len(found), 'Projektordner', 'Projektordner')} – Freigabe vollständig "
+                               "eingebunden?", started)
+    if len(duplicates) > max(1, MAX_DUPLICATE_SHARE * len(found)):
+        examples = "; ".join(f"{_rel(a, root)} und {_rel(b, root)}" for _, a, b in duplicates[:2])
+        return _reject(result, f"Viele doppelte Nummern mit dem Schema {best.pattern} ({len(duplicates)} bei "
+                               f"{de_count(len(found), 'Projektordner', 'Projektordnern')}, z. B. {examples}) – "
+                               "gelesen würde jeweils nur der erste Ordner. Nummern eindeutig machen oder "
+                               "PROJECT_NUMBER_PATTERN von Hand einstellen.", started)
+    doubts = [text for text, present in (("doppelte Nummern", duplicates), ("abweichende Nummern", best.outliers),
+                                         ("ein weiteres Nummernschema", choice.others)) if present]
+    if len(found) < GOOD_PROJECTS and doubts:
+        return _reject(result, f"Nur {de_count(len(found), 'Projektordner', 'Projektordner')} mit dem Schema "
+                               f"{best.pattern}, und daneben gibt es {' und '.join(doubts)} – zu wenig für ein "
+                               "sicheres Schema.", started)
     parents = Counter(_rel(p.path.parent, root) for p in found if p.path.parent != root)
+    hints = [_hint(tree, best, other, max_depth) for other in choice.others[:MAX_HINTS]]
     result.projects = found
+    result.alternatives = hints
     result.proposal = Proposal(
-        pattern=best.pattern, depth=depth, description=description, projects=len(found),
+        pattern=best.pattern, depth=depth, description=best.text, projects=len(found),
         examples=[{"number": p.number, "name": p.name, "path": _rel(p.path, root)} for p in found[:MAX_LISTED]],
         levels=dict(sorted(Counter(len(_rel(p.path, root).split("/")) for p in found).items())),
         parents=[[k, v] for k, v in parents.most_common(8)],
         exceptions=[n.rel for n in final.exceptions[:MAX_LISTED * 2]], exceptions_total=len(final.exceptions),
-        duplicates=[{"number": n, "path": _rel(a, root), "duplicate": _rel(b, root)}
-                    for n, a, b in duplicates[:MAX_LISTED]],
-        deeper=[node.rel for node, _ in best.matches if node.depth > depth][:MAX_LISTED],
-        second_scheme=_second_scheme(final.exceptions, best.pattern),
-        unreadable=[_rel(p, root) for p in unreadable[:MAX_LISTED]])
-    result.alternatives = [{"pattern": c.pattern, "description": c.text, "projects": len(c.matches),
-                            "examples": [n.name for n, _ in c.matches[:3]]} for c in choice.others[:3]]
+        duplicates=[{"number": num, "path": _rel(a, root), "duplicate": _rel(b, root)}
+                    for num, a, b in duplicates[:MAX_LISTED]],
+        deeper=[node.rel for node, _ in everything.matches if node.depth > depth][:MAX_LISTED],
+        second_scheme=hints[0] if hints else None,
+        unreadable=[_rel(p, root) for p in unreadable[:MAX_LISTED]],
+        outliers=[o.rel for o in best.outliers[:MAX_LISTED]], hints=hints)
     result.seconds = round(time.monotonic() - started, 2)
     return result
 
@@ -906,6 +1328,7 @@ class Layout:
     projects: int | None = None  # project folders found when it was detected
     problem: str | None = None  # German: why there is no usable scheme
     differs: dict | None = None  # a later detection that differs (the stored one stays in use)
+    next_check: str | None = None  # auto mode without a clear scheme: the next detection (UTC, ISO)
 
     @property
     def source(self) -> str:
@@ -932,8 +1355,11 @@ class Layout:
     def summary(self) -> str:
         """One German line for the start-up log."""
         if self.pattern is None:
-            return ("automatisch – noch nicht erkannt (beim nächsten Indexierungslauf)" if self.auto
-                    else "unbrauchbar – Projekte werden nicht abgeglichen")
+            if not self.auto:
+                return "unbrauchbar – Projekte werden nicht abgeglichen"
+            when = (f"nächste Prüfung frühestens {local_time_text(self.next_check)}" if self.next_check
+                    else "beim nächsten Indexierungslauf")
+            return f"automatisch – noch nicht erkannt ({when})"
         depth = f"Tiefe {self.depth}" + (" (automatisch)" if self.auto and self.depth_auto else "")
         return f"{self.pattern} ({self.source}), {depth}"
 
@@ -941,7 +1367,7 @@ class Layout:
         return {"pattern": self.pattern, "depth": self.depth, "auto": self.auto, "depth_auto": self.depth_auto,
                 "source": self.source, "depth_text": depth_text(self.depth), "detected_at": self.detected_at,
                 "examples": list(self.examples), "projects_at_detection": self.projects,
-                "problem": self.problem, "warning": self.warning,
+                "problem": self.problem, "warning": self.warning, "next_check": self.next_check,
                 "differs": {k: v for k, v in self.differs.items() if k != "root"} if self.differs else None}
 
 
@@ -978,10 +1404,41 @@ def stored_detection(conn: sqlite3.Connection | None, projects_dir: Path | str) 
     return rec
 
 
+def _failed_detection(conn: sqlite3.Connection | None, projects_dir: Path | str) -> dict | None:
+    """The last detection without a clear scheme for this PROJECTS_DIR (reason, time) – or None."""
+    rec = _load(conn, NONE_KEY)
+    if rec is None or rec.get("root") != root_key(projects_dir) or not isinstance(rec.get("reason"), str):
+        return None
+    return rec
+
+
+def _next_check(rec: dict) -> str | None:
+    when = _parse_time(rec.get("checked_at"))
+    return _iso(when + RECHECK_INTERVAL) if when else None
+
+
+def _failed_problem(rec: dict) -> str:
+    return (f"Kein eindeutiges Projektnummern-Schema in {rec.get('root')} erkannt (PROJECT_NUMBER_PATTERN=auto, "
+            f"Prüfung {local_time_text(rec.get('checked_at'))}, das Schema ist also noch nicht erkannt): "
+            f"{rec['reason']} Nächste Prüfung frühestens {local_time_text(_next_check(rec))}. Bitte "
+            "PROJECT_NUMBER_PATTERN einstellen (Vorschlag und Ordnerübersicht: python -m projektakte.structure) "
+            f"oder, sobald die Ordner stimmen, das Schema sofort übernehmen: {ACCEPT_HINT}")
+
+
+def _printable(text: str) -> str:
+    """A folder name for display and storage: bytes that are no UTF-8 (surrogate escapes) as �."""
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+def _dump(rec: dict) -> str:
+    # ASCII escapes: a path that is no valid UTF-8 survives the round trip through the database
+    return json.dumps(rec, ensure_ascii=True)
+
+
 def _record(proposal: Proposal, root: Path | str, when: datetime) -> dict:
     return {"pattern": proposal.pattern, "depth": proposal.depth, "detected_at": _iso(when),
             "projects": proposal.projects,
-            "examples": [f"{e['number']} {e['name']}".strip() for e in proposal.examples[:3]],
+            "examples": [_printable(f"{e['number']} {e['name']}".strip()) for e in proposal.examples[:3]],
             "root": root_key(root)}
 
 
@@ -991,9 +1448,9 @@ def store_detection(conn: sqlite3.Connection, proposal: Proposal, root: Path | s
     different detection is forgotten. The caller commits."""
     when = now or _now()
     rec = _record(proposal, root, when)
-    db.set_meta(conn, STORED_KEY, json.dumps(rec, ensure_ascii=False))
+    db.set_meta(conn, STORED_KEY, _dump(rec))
     db.set_meta(conn, CHECKED_KEY, _iso(when))
-    conn.execute("DELETE FROM meta WHERE key = ?", (DIFFERS_KEY,))
+    conn.execute("DELETE FROM meta WHERE key IN (?, ?)", (DIFFERS_KEY, NONE_KEY))
     return rec
 
 
@@ -1021,9 +1478,12 @@ def current_layout(settings, conn: sqlite3.Connection | None = None) -> Layout:
             return current_layout(settings, own)
     rec = stored_detection(conn, settings.projects_dir)
     if rec is None:
-        return Layout(None, clamp_depth(configured_depth), True, configured_depth is None,
-                      problem="Projektnummern-Schema noch nicht erkannt (PROJECT_NUMBER_PATTERN=auto) – "
-                              "das geschieht beim nächsten Indexierungslauf")
+        failed = _failed_detection(conn, settings.projects_dir)
+        problem = (_failed_problem(failed) if failed else
+                   "Projektnummern-Schema noch nicht erkannt (PROJECT_NUMBER_PATTERN=auto) – das geschieht beim "
+                   "nächsten Indexierungslauf")
+        return Layout(None, clamp_depth(configured_depth), True, configured_depth is None, problem=problem,
+                      next_check=_next_check(failed) if failed else None)
     differs = _load(conn, DIFFERS_KEY)
     return Layout(rec["pattern"], configured_depth or rec["depth"], True, configured_depth is None,
                   detected_at=rec.get("detected_at"), examples=tuple(rec.get("examples") or ()),
@@ -1046,13 +1506,82 @@ def _parse_time(value: str | None) -> datetime | None:
     return when
 
 
+def alternatives(pattern: str) -> frozenset[str]:
+    """The top-level alternatives of an expression: '(?:A|B)' and 'B|A' → {A, B}; one scheme → {it}."""
+    def split(p: str) -> list[str]:
+        parts, depth, start, i, in_class = [], 0, 0, 0, False
+        while i < len(p):
+            c = p[i]
+            if c == "\\":
+                i += 2
+                continue
+            if in_class:
+                in_class = c != "]"
+            elif c == "[":
+                in_class = True
+                if p[i + 1:i + 2] == "]":
+                    i += 1
+            elif c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            elif c == "|" and depth == 0:
+                parts.append(p[start:i])
+                start = i + 1
+            i += 1
+        return parts + [p[start:]]
+
+    p = pattern.strip()
+    while p.startswith("(?:") and p.endswith(")") and _wraps(p):
+        p = p[3:-1]
+    return frozenset(a.strip() for a in split(p))
+
+
+def _wraps(p: str) -> bool:
+    """Is ``p`` one group '(?:…)' from the first to the last character?"""
+    depth, i, in_class = 0, 0, False
+    while i < len(p):
+        c = p[i]
+        if c == "\\":
+            i += 2
+            continue
+        if in_class:
+            in_class = c != "]"
+        elif c == "[":
+            in_class = True
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0 and i != len(p) - 1:
+                return False
+        i += 1
+    return True
+
+
+def _same_detection(rec: dict, proposal: Proposal, result: Analysis, root: Path,
+                    layout: Layout) -> tuple[bool, list[ProjectFolder] | None]:
+    """Is a new detection the stored one? Compared by meaning, not as text: the same set of
+    alternatives with the same depth – or exactly the same project folders found. Also returns what
+    the stored scheme finds now, if that had to be scanned."""
+    if alternatives(rec["pattern"]) == alternatives(proposal.pattern) and (
+            not layout.depth_auto or proposal.depth == rec["depth"]):
+        return True, None
+    stored = scan_projects(root, rec["pattern"], layout.depth, unreadable=[], duplicates=[])
+    new = result.projects if layout.depth_auto else scan_projects(root, proposal.pattern, layout.depth,
+                                                                     unreadable=[], duplicates=[])
+    return bool(stored) and {p.path for p in stored} == {p.path for p in new}, stored
+
+
 def layout_for_index(conn: sqlite3.Connection, settings, *, now: datetime | None = None,
                      max_folders: int = MAX_FOLDERS) -> tuple[Layout, dict]:
     """The layout for an indexing pass. With PROJECT_NUMBER_PATTERN=auto this detects the scheme
     when nothing is stored yet and stores it; a stored one is checked again now and then, and a
     different result is only reported – the stored scheme stays in use until it is accepted
-    (stability: a half-mounted share must never change which folders count as projects). Returns
-    the layout and a small summary for the run stats (no warning there – the status page reads it)."""
+    (stability: a half-mounted share must never change which folders count as projects). A
+    detection without a clear scheme is repeated at most every :data:`RECHECK_INTERVAL` (reading a
+    large share costs directory traffic). Returns the layout and a small summary for the run stats
+    (no warning there – the status page reads it)."""
     layout = current_layout(settings, conn)
     if not layout.auto:
         return layout, {}
@@ -1062,27 +1591,30 @@ def layout_for_index(conn: sqlite3.Connection, settings, *, now: datetime | None
     if problem := projects_root_problem(root):
         return (layout if layout.pattern else dataclasses.replace(layout, problem=problem)), info
     rec = stored_detection(conn, root)
-    if rec is not None and layout.differs is None:
-        checked = _parse_time(db.get_meta(conn, CHECKED_KEY))
-        if checked is not None and timedelta(0) <= now - checked < RECHECK_INTERVAL:
-            return layout, info
+    checked = _parse_time(db.get_meta(conn, CHECKED_KEY))
+    recent = checked is not None and timedelta(0) <= now - checked < RECHECK_INTERVAL
+    if rec is not None and layout.differs is None and recent:
+        return layout, info
+    if rec is None and recent and _failed_detection(conn, root) is not None:
+        return layout, {**info, "detected": False}
     try:
         result = analyse(root, max_folders=max_folders)
     except Exception as exc:  # noqa: BLE001 – a detection problem must never stop the indexing
         log.exception("Projektnummern-Schema: Erkennung fehlgeschlagen")
         if rec is not None:
             return layout, info
-        return dataclasses.replace(layout, problem=f"Erkennung des Projektnummern-Schemas fehlgeschlagen "
-                                                   f"({type(exc).__name__}: {exc})"), info
+        reason = f"Erkennung des Projektnummern-Schemas fehlgeschlagen ({type(exc).__name__}: {exc})."
+        result = Analysis(root=str(root), max_depth=MAX_DEPTH, reason=reason)
     db.set_meta(conn, CHECKED_KEY, _iso(now))
     proposal = result.proposal
     if rec is None:
         if proposal is None:
+            failed = {"root": root_key(root), "reason": _printable(result.reason or result.problem or ""),
+                      "checked_at": _iso(now)}
+            db.set_meta(conn, NONE_KEY, _dump(failed))
             conn.commit()
-            problem = (f"Kein eindeutiges Projektnummern-Schema in {root} erkannt: {result.reason or result.problem} "
-                       "Bitte PROJECT_NUMBER_PATTERN einstellen (Vorschlag und Ordnerübersicht: "
-                       "python -m projektakte.structure)")
-            return dataclasses.replace(layout, problem=problem), {**info, "detected": False}
+            log.warning("Projektnummern-Schema: %s", _failed_problem(failed))
+            return current_layout(settings, conn), {**info, "detected": False}
         store_detection(conn, proposal, root, now)
         conn.commit()
         log.info("Projektnummern-Schema automatisch erkannt und gespeichert: %s, Tiefe %d (%d Projektordner, "
@@ -1091,25 +1623,25 @@ def layout_for_index(conn: sqlite3.Connection, settings, *, now: datetime | None
         layout = current_layout(settings, conn)
         return layout, {"pattern": layout.pattern, "depth": layout.depth, "source": layout.source,
                         "detected": True}
-    same = proposal is not None and proposal.pattern == rec["pattern"] and (
-        not layout.depth_auto or proposal.depth == rec["depth"])
-    if proposal is None:
-        pass  # nothing clear (share half mounted, emptied?) – keep everything as it is
-    elif same:
-        if layout.differs is not None:
-            conn.execute("DELETE FROM meta WHERE key = ?", (DIFFERS_KEY,))
-            log.info("Projektnummern-Schema: die neue Erkennung stimmt wieder mit dem gespeicherten %s überein",
-                     rec["pattern"])
-    else:
-        stored_found = len(scan_projects(root, rec["pattern"], layout.depth, unreadable=[], duplicates=[]))
-        new = {**_record(proposal, root, now), "stored_projects": stored_found}
-        old = layout.differs or {}
-        if (old.get("pattern"), old.get("depth")) != (new["pattern"], new["depth"]):
-            log.warning("Projektnummern-Schema: eine neue Erkennung ergibt %s, Tiefe %d (%d Projektordner) – "
-                        "weiter verwendet wird das gespeicherte %s, Tiefe %d (%d Projektordner). Übernehmen mit: %s",
-                        new["pattern"], new["depth"], new["projects"], rec["pattern"], layout.depth,
-                        stored_found, ACCEPT_HINT)
-        db.set_meta(conn, DIFFERS_KEY, json.dumps(new, ensure_ascii=False))
+    if proposal is not None:
+        same, stored = _same_detection(rec, proposal, result, root, layout)
+        if same:
+            if layout.differs is not None:
+                conn.execute("DELETE FROM meta WHERE key = ?", (DIFFERS_KEY,))
+                log.info("Projektnummern-Schema: die neue Erkennung stimmt wieder mit dem gespeicherten %s überein",
+                         rec["pattern"])
+        else:
+            new = {**_record(proposal, root, now), "stored_projects": len(stored)}
+            old = layout.differs or {}
+            if (alternatives(old.get("pattern") or ""), old.get("depth")) != (alternatives(new["pattern"]),
+                                                                                new["depth"]):
+                log.warning("Projektnummern-Schema: eine neue Erkennung ergibt %s, Tiefe %d (%d Projektordner) – "
+                            "weiter verwendet wird das gespeicherte %s, Tiefe %d (%d Projektordner). "
+                            "Übernehmen mit: %s",
+                            new["pattern"], new["depth"], new["projects"], rec["pattern"], layout.depth,
+                            len(stored), ACCEPT_HINT)
+            db.set_meta(conn, DIFFERS_KEY, _dump(new))
+    # no clear scheme now (share half mounted, emptied?): keep everything as it is
     conn.commit()
     layout = current_layout(settings, conn)
     if layout.differs:
@@ -1146,6 +1678,28 @@ def _table(rows: list[list[str]], right: Iterable[int] = ()) -> list[str]:
                              for i, c in enumerate(r)).rstrip() for r in rows]
 
 
+def _hint_lines(h: dict, depth: int) -> list[str]:
+    where = f" in {h['where']}" if h["where"] else ""
+    count = ("etwa " if h["estimated"] else "") + de_count(h["folders"], "Ordner", "Ordner")
+    line = (f"Weiteres Schema{where}: {h['pattern']}, {count} (z. B. {', '.join(h['examples'])})"
+            + {"archive": " – unter einem Archivordner, ältere Nummerierung?",
+               "side": " – Nebenablage (Angebote, Rechnungen …), meist keine Projekte"}.get(h["branch"], ""))
+    setting = f"PROJECT_NUMBER_PATTERN={h['combined']}"
+    if h["depth"] != depth:
+        setting += f" und PROJECT_FOLDER_DEPTH={h['depth']}"
+    return [line, f"  wenn das auch Projekte sind: {setting}"]
+
+
+def _candidate_lines(candidates: list[dict]) -> list[str]:
+    rows = []
+    for c in candidates[:6]:
+        where = f" in {c['where']}" if c["where"] else ""
+        count = de_count(c["folders"], "Ordner", "Ordner")
+        rows.append(f"  {c['pattern']} – Ebene {c['level']}{where}, {count} (z. B. {', '.join(c['examples'][:2])})"
+                    + (f": {c['reason']}" if c.get("reason") else ""))
+    return rows
+
+
 def format_report(analysis: Analysis, current: dict | None = None, files: dict | None = None,
                   context: dict | None = None) -> str:
     """The German text report of ``python -m projektakte.structure``."""
@@ -1153,19 +1707,24 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
     out = [f"Projektordner: {a.root}"]
     if a.problem:
         return "\n".join(out + [f"FEHLER: {a.problem}"])
-    out.append(f"Gelesen: {de_int(a.folders)} Ordner (nur Namen, bis Ebene {a.max_depth}) in "
-               f"{str(a.seconds).replace('.', ',')} s" + (" – Liste gekürzt" if a.truncated else ""))
+    out.append(f"Gelesen: {de_count(a.folders, 'Ordner', 'Ordner')} (nur Namen, bis Ebene {a.max_depth}) in "
+               f"{a.seconds:.2f} s".replace(".", ",") + (" – Liste gekürzt" if a.truncated else ""))
     if a.unreadable:
         out.append(f"Nicht lesbar: {', '.join(a.unreadable[:5])}" + (" …" if len(a.unreadable) > 5 else ""))
     out.append("")
     if p is None:
         out.append("Kein eindeutiges Projektnummern-Schema gefunden.")
         out.append(f"  {a.reason}")
-        out.append("")
-        out.append("Ordner je Ebene:")
-        for lv in a.levels[:4]:
-            out.append(f"  Ebene {lv['level']}: {de_int(lv['folders'])} Ordner, {de_int(lv['with_number'])} mit Nummer "
-                       f"am Anfang (z. B. {', '.join(lv['examples'][:4])})")
+        if a.candidates:
+            out.append("")
+            out.append("Nächste Kandidaten:")
+            out.extend(_candidate_lines(a.candidates))
+        if a.levels:
+            out.append("")
+            out.append("Ordner je Ebene:")
+            for lv in a.levels[:4]:
+                out.append(f"  Ebene {lv['level']}: {de_count(lv['folders'], 'Ordner', 'Ordner')}, "
+                           f"{de_int(lv['with_number'])} mit Nummer am Anfang (z. B. {', '.join(lv['examples'][:4])})")
         out.append("")
         out.append("PROJECT_NUMBER_PATTERN bitte von Hand einstellen (regulärer Ausdruck für die Nummer am Anfang "
                    "der Projektordner, z. B. \\d{4}-\\d{3} für „2024-017 Kita“) und mit diesem Befehl prüfen.")
@@ -1191,11 +1750,9 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
             out.append("  " + " · ".join(p.exceptions[:MAX_LISTED]) + more)
         else:
             out.append("Ausnahmen: keine – alle Ordner neben den Projektordnern haben eine passende Nummer.")
-        if p.second_scheme:
-            s = p.second_scheme
-            out.append(f"  Davon beginnen {s['folders']} selbst mit einer Nummer ({s['pattern']}, z. B. "
-                       f"{', '.join(s['examples'])}). Falls das auch Projekte sind: "
-                       f"PROJECT_NUMBER_PATTERN={s['combined']}")
+        if p.outliers:
+            out.append(f"Abweichende Nummern ({de_int(len(p.outliers))}) – zu selten für das Schema, werden nicht "
+                       "gelesen: " + " · ".join(p.outliers[:8]) + (" …" if len(p.outliers) > 8 else ""))
         if p.duplicates:
             out.append(f"Doppelte Nummern ({len(p.duplicates)}) – gelesen wird nur der erste Ordner:")
             out.extend(f"  {d['number']}: {d['path']}  und  {d['duplicate']}" for d in p.duplicates[:MAX_LISTED])
@@ -1204,9 +1761,8 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
                        + " · ".join(p.deeper[:5]))
         if p.unreadable:
             out.append("Nicht lesbare Ordner beim Scan: " + ", ".join(p.unreadable[:5]))
-        for alt in a.alternatives:
-            out.append(f"Weiteres mögliches Schema: {alt['pattern']} ({de_int(alt['projects'])} Ordner, z. B. "
-                       f"{', '.join(alt['examples'])})")
+        for hint in p.hints:
+            out.extend(_hint_lines(hint, p.depth))
     if current is not None:
         out.append("")
         depth = current["depth_setting"]
@@ -1219,8 +1775,8 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
             n = current["projects"]
             verdict = ("wie der Vorschlag" if p and n == p.projects and current["pattern"] == p.pattern
                        else f"Vorschlag: {de_int(p.projects)}" if p else "")
-            out.append(f"  findet {de_int(n)} Projektordner" + (f" ({verdict})" if verdict else "")
-                       + (" – passt nicht zu diesem Ordner" if n == 0 else ""))
+            out.append(f"  findet {de_count(n, 'Projektordner', 'Projektordner')}"
+                       + (f" ({verdict})" if verdict else "") + (" – passt nicht zu diesem Ordner" if n == 0 else ""))
     if files is not None:
         out.append("")
         out.extend(_format_files(files))
@@ -1237,8 +1793,9 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
 
 
 def _format_files(f: dict) -> list[str]:
-    out = [f"Dateien in {de_int(f['projects'])} Projektordnern: {de_int(f['files'])} ({de_size(f['bytes'])})"
-           + (f" – nach {de_int(f['max_files'])} Dateien abgebrochen" if f["truncated"] else "")]
+    out = [f"Dateien in {de_count(f['projects'], 'Projektordner', 'Projektordnern')}: "
+           f"{de_int(f['files'])} ({de_size(f['bytes'])})"
+           + (f" – nach {de_count(f['max_files'], 'Datei', 'Dateien')} abgebrochen" if f["truncated"] else "")]
     read = [e for e in f["extensions"] if e["read"]]
     out.append(f"  liest Projektakte:       {de_int(f['readable'])}"
                + (" – " + ", ".join(f"{e['ext']} {de_int(e['files'])}" for e in read[:8]) if read else ""))
@@ -1275,14 +1832,14 @@ def _format_context(c: dict) -> list[str]:
                      *("ja" if p["fits"][label] else "–" for label in labels)])
     out.extend(_table(rows, right=range(1, 5 + len(labels))))
     if len(c["projects"]) > MAX_LISTED:
-        out.append(f"  … und {de_int(len(c['projects']) - MAX_LISTED)} kleinere Projekte")
+        out.append(f"  … und {de_count(len(c['projects']) - MAX_LISTED, 'kleineres Projekt', 'kleinere Projekte')}")
     out.append("  passen ganz hinein: " + ", ".join(f"{label}: {de_int(s['fit'][label])} von {de_int(s['projects'])}"
                                                   for label in labels))
     if s["mean_document_tokens"]:
         per = s["documents_per_window"]
         out.append(f"  ein Dokument hat im Mittel {de_int(s['mean_document_tokens'])} Token (Median "
                    f"{de_int(s['median_document_tokens'])}) – es passen also etwa "
-                   + ", ".join(f"{de_int(per[label])} Dokumente in {label}" for label in labels))
+                   + ", ".join(f"{de_count(per[label], 'Dokument', 'Dokumente')} in {label}" for label in labels))
     if s["mean_mail_tokens"]:
         out.append(f"  eine Mail (mit Anhängen) hat im Mittel {de_int(s['mean_mail_tokens'])} Token")
     out.append("  Für Antworten schickt Projektakte nie ein ganzes Projekt, sondern nur die passendsten Abschnitte "
@@ -1312,35 +1869,81 @@ def _end_progress(enabled: bool) -> None:
         sys.stderr.flush()
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(
-        prog="python -m projektakte.structure",
+# argparse speaks English; its few messages that can reach the user are translated here
+_ARGPARSE_DE = (
+    (re.compile(r"^unrecognized arguments: "), "unbekannte Angaben: "),
+    (re.compile(r"^the following arguments are required: "), "es fehlt: "),
+    (re.compile(r"^argument (\S+): "), r"Option \1: "),
+    (re.compile(r"expected one argument"), "erwartet einen Wert"),
+    (re.compile(r"ignored explicit argument (.*)"), r"erwartet keinen Wert (\1)"),
+    (re.compile(r"invalid (\w+) value: (.*)"), r"ungültiger Wert \2"),
+    (re.compile(r"ambiguous option: (\S+) could match (.*)"), r"mehrdeutige Option \1 (passt zu \2)"),
+)
+
+
+class _HelpFormatter(argparse.HelpFormatter):
+    def add_usage(self, usage, actions, groups, prefix=None):
+        return super().add_usage(usage, actions, groups, "Aufruf: " if prefix is None else prefix)
+
+
+class _Parser(argparse.ArgumentParser):
+    """German usage and error messages; a wrong call exits with :data:`EXIT_USAGE`."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        for rx, repl in _ARGPARSE_DE:
+            message = rx.sub(repl, message)
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_USAGE, f"{self.prog}: Fehler: {message}\n")
+
+
+def _number_between(lo: int, hi: int | None = None):
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"„{text}“ ist keine ganze Zahl") from None
+        if value < lo or (hi is not None and value > hi):
+            raise argparse.ArgumentTypeError(f"{value} liegt nicht zwischen {lo} und {hi}" if hi is not None
+                                             else f"{value} ist kleiner als {lo}")
+        return value
+    return parse
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = _Parser(
+        prog="python -m projektakte.structure", add_help=False, formatter_class=_HelpFormatter,
         description="Ordnerstruktur des Projektordners prüfen: erkennt, wie Projektnummern aufgebaut sind und auf "
                     "welcher Ebene die Projektordner liegen, und schlägt PROJECT_NUMBER_PATTERN und "
                     "PROJECT_FOLDER_DEPTH vor. Liest nur Ordner- und Dateinamen, nie Inhalte, und schreibt nichts "
                     "(außer mit --uebernehmen).",
-        epilog="Exit-Code: 0 = Schema erkannt, 1 = kein eindeutiges Schema, 2 = Ordner nicht lesbar. "
+        epilog=f"Exit-Code: {EXIT_SCHEME} = Schema erkannt, {EXIT_NO_SCHEME} = kein eindeutiges Schema, "
+               f"{EXIT_UNREADABLE} = Ordner nicht lesbar, {EXIT_USAGE} = falscher Aufruf. "
                "Mit PROJECT_NUMBER_PATTERN=auto merkt sich Projektakte das beim ersten Lauf erkannte Schema und "
                "wechselt danach nie von selbst; meldet die Statusseite eine abweichende Erkennung, übernimmt "
                "--uebernehmen das jetzt erkannte Schema (ab dem nächsten Indexierungslauf).")
-    ap.add_argument("pfad", nargs="?", metavar="PFAD", help="Projektordner (Standard: PROJECTS_DIR)")
-    ap.add_argument("--tiefe", type=int, default=MAX_DEPTH, metavar="N",
-                    help=f"höchstens N Ebenen unter PFAD durchsuchen (1–{MAX_DEPTH}, Standard {MAX_DEPTH})")
-    ap.add_argument("--json", action="store_true", help="Ergebnis als JSON ausgeben")
-    ap.add_argument("--data-dir", metavar="DIR",
-                    help="Datenverzeichnis mit der Datenbank (Standard: DATA_DIR) – zeigt die Textmenge je Projekt")
-    ap.add_argument("--ohne-dateien", action="store_true",
-                    help="keine Dateistatistik (für sehr große Freigaben)")
-    ap.add_argument("--max-dateien", type=int, default=MAX_FILES, metavar="N",
-                    help=f"Dateistatistik nach N Dateien abbrechen (Standard {de_int(MAX_FILES)})")
-    ap.add_argument("--max-ordner", type=int, default=MAX_FOLDERS, metavar="N",
-                    help=f"höchstens N Ordner lesen (Standard {de_int(MAX_FOLDERS)})")
-    ap.add_argument("--uebernehmen", action="store_true",
-                    help="das jetzt erkannte Schema für PROJECT_NUMBER_PATTERN=auto speichern (ersetzt eine "
-                         "frühere Erkennung)")
+    args = ap.add_argument_group("Argumente")
+    args.add_argument("pfad", nargs="?", metavar="PFAD", help="Projektordner (Standard: PROJECTS_DIR)")
+    opts = ap.add_argument_group("Optionen")
+    opts.add_argument("-h", "--hilfe", "--help", action="help", help="diese Hilfe anzeigen")
+    opts.add_argument("--tiefe", type=_number_between(1, MAX_DEPTH), default=MAX_DEPTH, metavar="N",
+                      help=f"höchstens N Ebenen unter PFAD durchsuchen (1–{MAX_DEPTH}, Standard {MAX_DEPTH})")
+    opts.add_argument("--json", action="store_true", help="Ergebnis als JSON ausgeben")
+    opts.add_argument("--data-dir", metavar="DIR",
+                      help="Datenverzeichnis mit der Datenbank (Standard: DATA_DIR) – zeigt die Textmenge je Projekt")
+    opts.add_argument("--ohne-dateien", action="store_true", help="keine Dateistatistik (für sehr große Freigaben)")
+    opts.add_argument("--max-dateien", type=_number_between(1), default=MAX_FILES, metavar="N",
+                      help=f"Dateistatistik nach N Dateien abbrechen (Standard {de_int(MAX_FILES)})")
+    opts.add_argument("--max-ordner", type=_number_between(1), default=MAX_FOLDERS, metavar="N",
+                      help=f"höchstens N Ordner lesen (Standard {de_int(MAX_FOLDERS)})")
+    opts.add_argument("--uebernehmen", action="store_true",
+                      help="das jetzt erkannte Schema für PROJECT_NUMBER_PATTERN=auto speichern (ersetzt eine "
+                           "frühere Erkennung)")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = build_parser()
     args = ap.parse_args(argv)
-    if not 1 <= args.tiefe <= MAX_DEPTH:
-        ap.error(f"--tiefe muss zwischen 1 und {MAX_DEPTH} liegen")
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     settings = load_settings()
     if args.data_dir:
@@ -1349,12 +1952,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.uebernehmen and root_key(root) != root_key(settings.projects_dir):
         ap.error(f"--uebernehmen gilt nur für PROJECTS_DIR ({settings.projects_dir}) – PFAD weglassen")
     progress = _progress_printer(True)
-    analysis = analyse(root, max_depth=args.tiefe, max_folders=max(1, args.max_ordner), progress=progress)
+    analysis = analyse(root, max_depth=args.tiefe, max_folders=args.max_ordner, progress=progress)
     files = context = current = None
     if not analysis.problem:
         current = current_check(root, settings)
         if analysis.proposal and not args.ohne_dateien:
-            files = file_statistics(analysis.projects, root, max_files=max(1, args.max_dateien), progress=progress)
+            files = file_statistics(analysis.projects, root, max_files=args.max_dateien, progress=progress)
         context = context_statistics(settings.db_path) or {"missing": str(settings.db_path)}
     _end_progress(True)
     accepted = None

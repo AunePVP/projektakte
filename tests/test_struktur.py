@@ -1,13 +1,17 @@
 """Folder layout of PROJECTS_DIR (structure.py): detection of the project number scheme and depth on
-synthetic layouts, PROJECT_FOLDER_DEPTH, the automatic mode (detect once, store, never switch on its
-own), an unusable PROJECT_NUMBER_PATTERN, the effective scheme in assignment, search and status page,
-and the command line tool."""
+synthetic layouts (one test per rule and per case of the adversarial review: years with pure-digit
+numbers, year ranges, internal numbering, offers and invoices, outliers, links, archives …),
+PROJECT_FOLDER_DEPTH, the automatic mode (detect once, store, never switch on its own, retry at most
+hourly), an unusable PROJECT_NUMBER_PATTERN, the effective scheme in assignment, search and status
+page, and the command line tool."""
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -20,13 +24,15 @@ from projektakte.ai.services import AIServices
 from projektakte.config import DEFAULT_PROJECT_NUMBER_PATTERN, load_settings, pattern_problem
 from projektakte.indexer import run_index
 from projektakte.main import create_app
-from projektakte.registry import scan_projects, sync_from_folder
+from projektakte.registry import number_regex, scan_projects, sync_from_folder
 from projektakte.startup import log_startup
 from projektakte.structure import analyse, context_statistics, file_statistics, layout_for_index, main
 
 from .conftest import fake_settings
 
 BS = r"BS-\d{4}-\d{4}"
+YEAR_NUM = r"\d{4}-\d{3}"
+FOUR = r"(?!(?:19|20)\d\d(?!\d))\d{4}"  # four digits, but never a year (rule 5)
 
 
 def mk(root: Path, *paths: str) -> Path:
@@ -50,6 +56,10 @@ def settings_for(tmp_path: Path, root: Path, **extra):
     return load_settings(env)
 
 
+def found(p) -> tuple:
+    return p.pattern, p.depth, p.projects
+
+
 class NoAuth:
     disabled, users, cookie_secure = True, {}, False
 
@@ -70,7 +80,7 @@ def test_year_folders(tmp_path):
     for year in (2022, 2023, 2024):
         bs_projects(tmp_path / str(year), n=4, year=year)
     a = analyse(tmp_path)
-    assert (a.proposal.pattern, a.proposal.depth, a.proposal.projects) == (BS, 2, 12)
+    assert found(a.proposal) == (BS, 2, 12)
     assert a.proposal.levels == {2: 12}
     assert sorted(name for name, _ in a.proposal.parents) == ["2022", "2023", "2024"]
 
@@ -83,17 +93,9 @@ def test_customer_year_project_depth_three(tmp_path):
                 n += 1
                 mk(tmp_path, f"{customer}/{year}/P{10000 + n * 37}_Schule {n}/Pläne")
     a = analyse(tmp_path)
-    assert (a.proposal.pattern, a.proposal.depth, a.proposal.projects) == (r"P\d{5}", 3, 12)
+    assert found(a.proposal) == (r"P\d{5}", 3, 12)
     assert scan_projects(tmp_path, r"P\d{5}", 3)[0].name.startswith("Schule")
     assert scan_projects(tmp_path, r"P\d{5}", 2) == []  # the default depth would not find them
-
-
-def test_mixed_lengths_are_merged(tmp_path):
-    mk(tmp_path, "2024-017 Kita Regenbogen", "2024-018 Schule", "2024-1234 Rathaus", "2023-099 Halle",
-       "2023-1000 Turnhalle")
-    a = analyse(tmp_path)
-    assert a.proposal.pattern == r"\d{4}-\d{3,4}" and a.proposal.projects == 5
-    assert a.proposal.description == "4 Ziffern, Bindestrich, 3–4 Ziffern"
 
 
 def test_prefix_without_separator(tmp_path):
@@ -109,13 +111,46 @@ def test_numbers_with_underscore_space_or_dot(tmp_path, sep, regex):
     mk(tmp_path, *(f"2024{sep}{i:03d} Name {i}" for i in range(1, 6)))
     a = analyse(tmp_path)
     assert a.proposal.pattern == regex
-    found = scan_projects(tmp_path, regex, a.proposal.depth)
-    assert [p.number for p in found][:2] == [f"2024{sep}001", f"2024{sep}002"] and found[0].name == "Name 1"
+    projects = scan_projects(tmp_path, regex, a.proposal.depth)
+    assert [p.number for p in projects][:2] == [f"2024{sep}001", f"2024{sep}002"] and projects[0].name == "Name 1"
 
 
-def test_mixed_separators_become_a_class(tmp_path):
-    mk(tmp_path, "2024-001 A", "2024-002 B", "2024_003 C", "2024 004 D")
+@pytest.mark.parametrize("sep, regex", [(".", r"\d{4}\.\d{3}"), (" ", r"\d{4}\s\d{3}")])
+def test_separators_in_year_folders(tmp_path, sep, regex):
+    """Review case M: 2023/2023.001 Projekt, 2023/2023 001 Projekt."""
+    mk(tmp_path, *(f"{y}/{y}{sep}{i:03d} Projekt" for y in (2023, 2024) for i in range(1, 15)))
+    assert found(analyse(tmp_path).proposal) == (regex, 2, 28)
+
+
+def test_mixed_lengths_backed_by_many_folders_are_merged(tmp_path):
+    """Rule 5: a digit count variant with real backing widens the scheme."""
+    mk(tmp_path, *(f"2023-{i:03d} Alt {i}" for i in range(1, 21)), *(f"2024-{i:04d} Neu {i}" for i in range(1, 11)))
+    a = analyse(tmp_path)
+    # \d{4}-\d{4} could also be a year range (2017-2018): those are kept out by a guard
+    guard = r"(?!(?:19|20)\d\d-(?:19|20)\d\d(?!\d))"
+    assert found(a.proposal) == (guard + r"\d{4}-\d{3,4}", 2, 30) and a.proposal.outliers == []
+    assert a.proposal.description == "4 Ziffern, Bindestrich, 3–4 Ziffern (kein Jahresbereich)"
+    mk(tmp_path, "2017-2018 Altakten")
+    assert analyse(tmp_path).proposal.projects == 30
+
+
+def test_mixed_separators_backed_by_many_folders_become_a_class(tmp_path):
+    mk(tmp_path, *(f"2024-{i:03d} A" for i in range(1, 11)), *(f"2024_{i:03d} B" for i in range(11, 15)),
+       *(f"2024 {i:03d} C" for i in range(15, 19)))
     assert analyse(tmp_path).proposal.pattern == r"\d{4}[-_\s]\d{3}"
+
+
+def test_single_outliers_do_not_widen_the_scheme(tmp_path):
+    """Review cases D and Q: '2015-2018 Altakten', '2024-05 Teamsitzung' and a single longer number
+    next to 40 projects stay exceptions – the scheme is not widened to \\d{4}-\\d{2,4}."""
+    mk(tmp_path, *(f"2024-{i:03d} Projekt {i}/Pläne" for i in range(1, 41)), "2015-2018 Altakten/irgendwas",
+       "2024-05 Teamsitzung", "2024-11 Weihnachtsfeier", "2024-1234 Sonderfall", "_Vorlagen")
+    p = analyse(tmp_path).proposal
+    assert found(p) == (YEAR_NUM, 2, 40)
+    assert p.outliers == ["2024-1234 Sonderfall"]
+    assert {"2015-2018 Altakten", "2024-05 Teamsitzung", "2024-11 Weihnachtsfeier", "2024-1234 Sonderfall"} <= set(
+        p.exceptions)
+    assert all(not e["path"].startswith(("2015-2018", "2024-05 ", "2024-11 ")) for e in p.examples)
 
 
 def test_exceptions_are_listed(tmp_path):
@@ -123,26 +158,16 @@ def test_exceptions_are_listed(tmp_path):
     mk(tmp_path, "Archiv/alt/irgendwas", "_Vorlagen", "00_Allgemein", "2024/00_Allgemein")
     a = analyse(tmp_path)
     p = a.proposal
-    assert (p.pattern, p.depth, p.projects) == (BS, 2, 5)
+    assert found(p) == (BS, 2, 5)
     assert sorted(p.exceptions) == ["00_Allgemein", "2024/00_Allgemein", "Archiv", "_Vorlagen"]
     assert "Archiv/alt" not in p.exceptions  # inside an exception: not listed separately
-
-
-def test_exceptions_with_an_older_numbering_get_a_hint(tmp_path):
-    bs_projects(tmp_path, n=8)
-    mk(tmp_path, "2019-001 Altprojekt", "2019-002 Altprojekt", "Archiv")
-    a = analyse(tmp_path)
-    assert a.proposal.pattern == BS
-    hint = a.proposal.second_scheme
-    assert hint["pattern"] == r"\d{4}-\d{3}" and hint["combined"] == rf"(?:{BS}|\d{{4}}-\d{{3}})"
-    assert len(scan_projects(tmp_path, hint["combined"], 1)) == 10
 
 
 def test_random_names_give_no_scheme(tmp_path):
     mk(tmp_path, "Verwaltung", "Akquise", "Fotos", "Muster", "Allgemein", "Kunden", "3D-Modelle", "Haus 3")
     a = analyse(tmp_path)
     assert a.proposal is None and a.exit_code == 1
-    assert "Kein Ordnername" in a.reason or "Zu wenige" in a.reason
+    assert "Zu wenige Ordner" in a.reason
 
 
 def test_bare_years_only_give_no_scheme(tmp_path):
@@ -161,7 +186,14 @@ def test_never_a_bare_number(tmp_path):
 
 def test_short_numbered_subfolders_are_no_projects(tmp_path):
     mk(tmp_path, "00_Allgemein", "01_Vorlagen", "02_Schriftverkehr", "03_Pläne", "04_Fotos")
-    assert analyse(tmp_path).proposal is None
+    a = analyse(tmp_path)
+    assert a.proposal is None and "kurze Gliederungsnummern" in a.reason
+
+
+def test_three_digit_numbers_without_letters_are_too_short(tmp_path):
+    mk(tmp_path, *(f"{100 + i} Projekt {i}" for i in range(20)))
+    a = analyse(tmp_path)
+    assert a.proposal is None and "mindestens 4 Ziffern" in a.reason
 
 
 def test_duplicates_are_reported(tmp_path):
@@ -170,6 +202,64 @@ def test_duplicates_are_reported(tmp_path):
     p = analyse(tmp_path).proposal
     assert p.projects == 5 and p.duplicates == [{"number": "BS-2024-0003", "path": "BS-2024-0003 Projekt 3",
                                                   "duplicate": "BS-2024-0003 Projekt 3 (Kopie)"}]
+
+
+@pytest.mark.parametrize("dups, proposed", [(1, True), (6, False)])
+def test_duplicates_in_the_main_scheme_never_hand_over_to_the_archive(tmp_path, dups, proposed):
+    """Review case L with colliding numbers: a few duplicates are listed, many make the result unsure
+    (exit 1, examples named) – but the archive's older numbering is never proposed instead."""
+    mk(tmp_path, *(f"Kunden/{c}/2024/2024-{k * 20 + i:03d} Projekt" for k, c in enumerate(("Stadt", "Kreis"))
+                   for i in range(1, 21)))
+    mk(tmp_path, *(f"Kunden/Gemeinde/2024/2024-{i:03d} Kopie" for i in range(1, dups + 1)))
+    mk(tmp_path, *(f"Archiv/2010/10-{i:03d} Alt" for i in range(1, 15)))
+    a = analyse(tmp_path)
+    if proposed:
+        assert found(a.proposal) == (YEAR_NUM, 4, 40) and len(a.proposal.duplicates) == 1
+    else:
+        assert a.proposal is None and "Viele doppelte Nummern" in a.reason
+        assert "Kunden/Gemeinde/2024/2024-001 Kopie" in a.reason
+
+
+def test_unclear_main_numbering_never_hands_over_to_the_archive(tmp_path):
+    """Numbers that restart for every customer are no scheme – the archive's numbering is not
+    proposed instead of them."""
+    mk(tmp_path, *(f"Kunden/{c}/2024-{i:03d} Projekt" for c in ("Stadt", "Kreis", "Gemeinde") for i in range(1, 21)))
+    mk(tmp_path, *(f"Archiv/2010/10-{i:03d} Alt" for i in range(1, 15)))
+    a = analyse(tmp_path)
+    assert a.proposal is None and "wiederholen sich" in a.reason and "ältere Nummerierung" in a.reason
+
+
+def test_archive_at_the_same_level_is_no_variant(tmp_path):
+    """Kunden/Stadt/2024-017 … and Archiv/2010/10-001 … lie at the same depth: the archive's numbers
+    are a scheme of their own, never a 'variant' that widens the current one to \\d{2,4}-\\d{3}."""
+    mk(tmp_path, *(f"Kunden/{c}/2024-{k * 20 + i:03d} Projekt" for k, c in enumerate(("Stadt", "Kreis", "Gemeinde"))
+                   for i in range(1, 21)))
+    mk(tmp_path, *(f"Archiv/2010/10-{i:03d} Alt" for i in range(1, 15)))
+    p = analyse(tmp_path).proposal
+    assert found(p) == (YEAR_NUM, 3, 60) and p.second_scheme["pattern"] == r"\d{2}-\d{3}"
+
+
+def test_numbering_widened_in_a_later_year_is_one_scheme(tmp_path):
+    """2023/2023-017 … and 2024/2024-1234 …: sibling year folders of one numbering are compared as one
+    level, so the longer numbers are a backed variant (rule 5)."""
+    mk(tmp_path, *(f"2023/2023-{i:03d} P" for i in range(1, 21)), *(f"2024/2024-{i:04d} P" for i in range(1, 21)))
+    p = analyse(tmp_path).proposal
+    assert p.pattern.endswith(r"\d{4}-\d{3,4}") and p.projects == 40
+
+
+def test_a_large_unclear_numbering_is_a_rival(tmp_path):
+    """300 folders with three-digit numbers (too short for a scheme) and 10 BS folders: the 10 are
+    not proposed as the projects of this share."""
+    mk(tmp_path, *(f"{100 + i} Projekt {i}" for i in range(300)), *(f"BS-2024-{i:04d} X" for i in range(1, 11)))
+    a = analyse(tmp_path)
+    assert a.proposal is None and "etwa gleich oft" in a.reason and "mindestens 4 Ziffern" in a.reason
+
+
+def test_numbers_restarting_in_every_year_are_no_scheme(tmp_path):
+    """Rule 5: numbers must be unique – 2023/0001 and 2024/0001 cannot both be project 0001."""
+    mk(tmp_path, *(f"{y}/{i:04d} Projekt" for y in (2022, 2023, 2024) for i in range(1, 11)))
+    a = analyse(tmp_path)
+    assert a.proposal is None and "wiederholen sich" in a.reason
 
 
 def test_unicode_names(tmp_path):
@@ -191,8 +281,29 @@ def test_symlinks_inside_count_outside_are_skipped(tmp_path):
     a = analyse(root)
     p = a.proposal
     assert p.projects == 4
-    assert [d["duplicate"] for d in p.duplicates] == ["BS-2024-0001 Verknüpfung"]
+    assert p.duplicates == []  # the same folder through a link is no second project
     assert "Verknüpfung nach draußen" not in p.exceptions and "BS-2024-0099" not in json.dumps(a.to_dict())
+
+
+def test_link_to_an_ancestor_and_loops_are_listed_once(tmp_path):
+    """Review s7b/s7c: 'Aktuell' → 2024 inside the share, a loop to the root and one to its own
+    parent: every real folder is read once (rule 8), the scheme is found as the app's scan finds it."""
+    root = mk(tmp_path / "p", *(f"{y}/{y}-{i:03d} Projekt" for y in (2022, 2023, 2024) for i in range(1, 21)))
+    os.symlink("2024", root / "Aktuell")
+    os.symlink(root, root / "2024" / "Schleife")
+    os.symlink(root / "2023", root / "2023" / "loop2")
+    a = analyse(root)
+    assert found(a.proposal) == (YEAR_NUM, 2, 60) and a.proposal.duplicates == []
+    assert a.folders == 3 + 60  # nothing listed twice
+    assert len(scan_projects(root, YEAR_NUM, 2, duplicates=[])) == 60
+
+
+def test_link_listed_before_its_target_gives_way(tmp_path):
+    """'0_Aktuell' sorts before '2024': the folder on its real path is kept, the link dropped."""
+    root = mk(tmp_path / "p", *(f"{y}/{y}-{i:03d} Projekt" for y in (2023, 2024) for i in range(1, 11)))
+    os.symlink(root / "2024", root / "0_Aktuell")
+    p = analyse(root).proposal
+    assert found(p) == (YEAR_NUM, 2, 20) and p.duplicates == []
 
 
 def test_unreadable_folder_is_reported(tmp_path, monkeypatch):
@@ -231,7 +342,26 @@ def test_only_a_sample_of_project_folders_is_entered(tmp_path):
         mk(tmp_path, *(f"BS-2024-{i:04d} P/{sub}" for sub in ("01 Pläne", "02 Post", "2023-05-12 Termin")))
     a = analyse(tmp_path)
     assert a.proposal.pattern == BS and a.proposal.depth == 2 and a.proposal.levels == {1: 200}
-    assert a.folders < 200 + 3 * 40  # 200 projects, subfolders of a sample only
+    assert a.folders == 200 + 3 * structure.SAMPLE_MEMBERS  # 200 projects, subfolders of a sample only
+    assert a.listings == 1 + structure.SAMPLE_MEMBERS
+
+
+def test_share_without_numbers_is_read_bounded(tmp_path):
+    """No scheme at all: every level opens at most MAX_OPEN_PER_LEVEL folders (evenly spread)."""
+    for i in range(1500):
+        mk(tmp_path, f"Projekt {chr(65 + i % 26)}{chr(65 + i // 26 % 26)}{chr(65 + i // 676)}/Pläne/Grundrisse")
+    a = analyse(tmp_path)
+    assert a.proposal is None and a.reason == "Kein Ordnername beginnt mit einer Nummer."
+    assert a.listings == 1 + 3 * structure.MAX_OPEN_PER_LEVEL  # instead of 1 + 3 × 1500
+
+
+def test_many_projects_are_fast(tmp_path):
+    mk(tmp_path, *(f"Kunde {c}/{y}/P{10000 + c * 1000 + (y - 2020) * 100 + i} Projekt/01 Pläne"
+                   for c in range(5) for y in range(2020, 2025) for i in range(60)))
+    started = time.monotonic()
+    a = analyse(tmp_path)
+    assert found(a.proposal) == (r"P\d{5}", 3, 1500)
+    assert time.monotonic() - started < 10 and a.listings < 100
 
 
 def test_dated_folders_inside_projects_do_not_win(tmp_path):
@@ -239,14 +369,50 @@ def test_dated_folders_inside_projects_do_not_win(tmp_path):
         mk(tmp_path, *(f"BS-2024-{i:04d} P/{d} Ortstermin" for d in ("2023-05-12", "2023-06-01", "2023-07-15")),
            f"BS-2024-{i:04d} P/Pläne", f"BS-2024-{i:04d} P/Schriftverkehr", f"BS-2024-{i:04d} P/Fotos")
     p = analyse(tmp_path).proposal
-    assert (p.pattern, p.depth, p.projects) == (BS, 2, 5) and p.levels == {1: 5}
+    assert found(p) == (BS, 2, 5) and p.levels == {1: 5}
+
+
+def test_dated_folders_are_no_project_scheme(tmp_path):
+    mk(tmp_path, "2023-05-12 Ortstermin", "2023-06-01 Abnahme", "2023-07-15 Begehung", "12.08.2023 Termin",
+       "2024-01-09 Besprechung", "20240521 Termin", "20240604 Termin", "20240611 Termin")
+    a = analyse(tmp_path)
+    assert a.proposal is None and "Datumsangaben" in a.reason
+
+
+def test_word_prefix_needs_more_digits(tmp_path):
+    mk(tmp_path, "Haus 12", "Haus 13", "Haus 14", "Haus 15")
+    assert analyse(tmp_path).proposal is None
+    mk(tmp_path / "b", "PRJ 2024-001 A", "PRJ 2024-002 B", "PRJ 2024-003 C")
+    assert analyse(tmp_path / "b").proposal.pattern == r"PRJ\s\d{4}-\d{3}"
 
 
 def test_numbered_customer_folders_are_containers(tmp_path):
     for k in range(1, 4):
         bs_projects(tmp_path / f"K{k:03d} Kunde {k}", n=3, year=2020 + k)
     p = analyse(tmp_path).proposal
-    assert (p.pattern, p.depth, p.projects) == (BS, 2, 9)
+    assert found(p) == (BS, 2, 9)
+
+
+def test_five_digit_customers_contain_the_projects(tmp_path):
+    """Review case K: 10020 Kunde 0/2024-000 Projekt …"""
+    mk(tmp_path, *(f"{10020 + c} Kunde {c}/2024-{c * 10 + i:03d} Projekt/Pläne" for c in range(10) for i in range(6)))
+    a = analyse(tmp_path)
+    assert found(a.proposal) == (YEAR_NUM, 2, 60)
+    assert any(r["pattern"] == r"\d{5}" and "enthalten die Projektordner" in r["reason"] for r in a.rejected)
+
+
+def test_customer_number_as_prefix_of_the_project_number(tmp_path):
+    """Review case R: 1020 Stadt/1020-001 Projekt – a three-digit continuation is a numbering of its
+    own (rule 3 covers only sub-numbers of up to two digits), so the customers are containers."""
+    mk(tmp_path, *(f"{1020 + c} Stadt {c}/{1020 + c}-{i:03d} Projekt" for c in range(8) for i in range(1, 6)))
+    assert found(analyse(tmp_path).proposal) == (YEAR_NUM, 2, 40)
+
+
+def test_numbered_customers_with_year_folders(tmp_path):
+    """K001 Kunde/2024/BS-…: the year folders between customer and project are looked into."""
+    mk(tmp_path, *(f"K{c:03d} Kunde {c}/{y}/BS-{y}-{c * 10 + i:04d} Projekt/Pläne"
+                   for c in range(1, 7) for y in (2023, 2024) for i in range(3)))
+    assert found(analyse(tmp_path).proposal) == (BS, 3, 36)
 
 
 def test_single_stray_match_deeper_does_not_raise_the_depth(tmp_path):
@@ -279,6 +445,250 @@ def test_analysis_is_read_only(tmp_path):
     a = analyse(tmp_path)
     file_statistics(a.projects, tmp_path)
     assert sorted((str(p), p.stat().st_mtime_ns) for p in tmp_path.rglob("*")) == before
+
+
+# ============================================================================ review cases: years and short numbers
+def test_year_folders_with_pure_digit_numbers(tmp_path):
+    """Review blocker J2: 2022/1001 Projekt … – the year folders must not become the projects. The
+    scheme excludes years, so the scan of the app passes through 2022, 2023, 2024."""
+    n = 1000
+    for y in (2022, 2023, 2024):
+        for i in range(1, 25):
+            n += 1
+            mk(tmp_path, f"{y}/{n} Projekt {i}/Pläne")
+    mk(tmp_path, "_Vorlagen", "Archiv")
+    a = analyse(tmp_path)
+    assert found(a.proposal) == (FOUR, 2, 72)
+    assert "keine Jahreszahl" in a.proposal.description
+    assert {e["number"] for e in a.proposal.examples} <= {str(x) for x in range(1001, 1073)}
+    projects = scan_projects(tmp_path, FOUR, 2)
+    assert len(projects) == 72 and not any(p.number in ("2022", "2023", "2024") for p in projects)
+    rx = number_regex(FOUR)  # in mails: a year is no project number, the number is
+    assert [m.group(0) for m in rx.finditer("Projekt 1017 vom 12.05.2024, Termin 2025")] == ["1017"]
+
+
+def test_running_numbers_that_reach_the_years_are_refused(tmp_path):
+    """Review s16: running numbers 1801–2000 in year folders – 1900 … 2000 look like years. No
+    scheme can tell them apart, so nothing is proposed (instead of silently dropping them)."""
+    mk(tmp_path, *(f"{y}/{1800 + (y - 2020) * 40 + i} Projekt {i}" for y in range(2020, 2025) for i in range(1, 41)))
+    a = analyse(tmp_path)
+    assert a.proposal is None and a.exit_code == 1
+    assert "Jahreszahlen" in a.reason and "101 Ordner beginnen" in a.reason and "2022/1900 Projekt" in a.reason
+
+
+def test_year_folders_with_two_digit_year_numbers(tmp_path):
+    """Review case J: 2022/22001 Projekt …"""
+    mk(tmp_path, *(f"{y}/{y % 100}{i:03d} Projekt {i}/Pläne" for y in (2022, 2023, 2024) for i in range(1, 25)),
+       "_Vorlagen", "Archiv", "00_Allgemein")
+    assert found(analyse(tmp_path).proposal) == (r"\d{5}", 2, 72)
+
+
+def test_year_range_containers(tmp_path):
+    """Review case B: 2017-2018/2017-001 … – the year ranges are containers, not projects."""
+    mk(tmp_path, *(f"{r}/{r[:4]}-{i:03d} Projekt {i}/Pläne" for r in ("2017-2018", "2019-2020", "2021-2022")
+                   for i in range(1, 21)))
+    p = analyse(tmp_path).proposal
+    assert found(p) == (YEAR_NUM, 2, 60) and p.levels == {2: 60}
+
+
+def test_year_range_guard_for_four_by_four_numbers(tmp_path):
+    """\\d{4}-\\d{4} numbers inside year-range folders: the range folders are excluded by a guard."""
+    mk(tmp_path, *(f"{r}/{r[:4]}-{i:04d} Projekt" for r in ("2017-2018", "2019-2020") for i in range(1, 11)))
+    p = analyse(tmp_path).proposal
+    assert p.depth == 2 and p.projects == 20 and "kein Jahresbereich" in p.description
+    assert scan_projects(tmp_path, p.pattern, 2)[0].number == "2017-0001"
+
+
+@pytest.mark.parametrize("extra", [[], ["00_Allgemein"], ["_Vorlagen", "Archiv", "00_Allgemein"]])
+def test_allgemein_and_five_digit_numbers(tmp_path, extra):
+    """Review s17 and case A: '00_Allgemein' and numbered folders inside the projects ('01
+    Schriftverkehr') must not prevent the detection of 21001 … (rule 2)."""
+    mk(tmp_path, *(f"{21000 + i} Projekt {i}/{sub}" for i in range(1, 41)
+                   for sub in ("01 Schriftverkehr", "02 Pläne", "03 Berechnungen")), *extra)
+    p = analyse(tmp_path).proposal
+    assert found(p) == (r"\d{5}", 2, 40) and sorted(p.exceptions) == sorted(extra)
+
+
+def test_flat_numbers_with_underscored_internal_folders(tmp_path):
+    """Review case J3: 24001_Projekt_1/01_Schriftverkehr …"""
+    mk(tmp_path, *(f"{24000 + i}_Projekt_{i}/{sub}" for i in range(1, 30)
+                   for sub in ("01_Schriftverkehr", "02_Planunterlagen", "03_Brandschutzkonzept")))
+    assert found(analyse(tmp_path).proposal) == (r"\d{5}", 2, 29)
+
+
+@pytest.mark.parametrize("per_year", [10, 30, 60, 150])
+def test_numbered_internal_subfolders_at_any_size(tmp_path, per_year):
+    """Review case N: 2023/2023-001 Projekt/2023-001_01 Schriftverkehr … is internal numbering
+    (rule 3) – the same result with 10 or 150 projects per year (rule 7: no size threshold)."""
+    mk(tmp_path, *(f"{y}/{y}-{i:03d} Projekt {i}/{y}-{i:03d}_{j:02d} {sub}"
+                   for y in (2022, 2023, 2024) for i in range(1, per_year + 1)
+                   for j, sub in enumerate(("Schriftverkehr", "Pläne", "Brandschutzkonzept"), 1)),
+       "2024/00_Allgemein", "_Vorlagen")
+    p = analyse(tmp_path).proposal
+    assert found(p) == (YEAR_NUM, 2, 3 * per_year) and p.levels == {2: 3 * per_year}
+
+
+@pytest.mark.parametrize("n", [40, 90, 300])
+def test_bs_parts_are_internal(tmp_path, n):
+    """Review case C: BS-2024-0137 Schule/BS-2024-0137-01 Teil … at any size."""
+    mk(tmp_path, *(f"BS-2024-{i + 100:04d} Schule {i}/BS-2024-{i + 100:04d}-{j:02d} Teil {j}"
+                   for i in range(n) for j in range(1, 4)))
+    assert found(analyse(tmp_path).proposal) == (BS, 2, n)
+
+
+def test_names_starting_with_a_digit(tmp_path):
+    """Review case G: '2024-001 2 WE Musterstraße' – the digit after the number is part of the name."""
+    mk(tmp_path, *(f"2024-{i:03d} {f'{i % 9 + 1} WE Musterstraße' if i % 2 else f'Kita {i}'}/Pläne"
+                   for i in range(1, 41)))
+    p = analyse(tmp_path).proposal
+    assert found(p) == (YEAR_NUM, 2, 40)
+    assert any(e["name"].endswith("WE Musterstraße") for e in p.examples)
+
+
+def test_two_digit_year_numbers_with_dated_subfolders(tmp_path):
+    """Review case H: 24-017 Projekt/24-05-12 Ortstermin – the dated subfolders are dates (rule 2)."""
+    mk(tmp_path, *(f"24-{i:03d} Projekt {i}/24-05-{i % 28 + 1:02d} Ortstermin" for i in range(1, 40)))
+    assert found(analyse(tmp_path).proposal) == (r"\d{2}-\d{3}", 2, 39)
+
+
+# ============================================================================ review cases: other numberings
+def test_offers_with_their_own_numbering_stay_out(tmp_path):
+    """Review case E: Angebote/AN-2024-001 … are no projects; the report names them as a hint."""
+    mk(tmp_path, *(f"{y}/{y}-{i:03d} Projekt {i}/Pläne" for y in (2023, 2024) for i in range(1, 40)),
+       *(f"Angebote/AN-2024-{i:03d} Anfrage Stadt {i}" for i in range(1, 25)), "_Vorlagen", "00_Allgemein")
+    p = analyse(tmp_path).proposal
+    assert found(p) == (YEAR_NUM, 2, 78)
+    assert p.hints == [p.second_scheme] and p.second_scheme["pattern"] == r"AN-\d{4}-\d{3}"
+    assert p.second_scheme["where"] == "Angebote" and p.second_scheme["folders"] == 24
+    assert p.second_scheme["combined"] == r"(?:\d{4}-\d{3}|AN-\d{4}-\d{3})" and p.second_scheme["depth"] == 2
+
+
+def test_invoices_deeper_with_their_own_numbering_stay_out(tmp_path):
+    """Review case I: 39 projects and Verwaltung/Rechnungen/RE-2024-0001 … (29)."""
+    mk(tmp_path, *(f"2024-{i:03d} Projekt {i}/Pläne" for i in range(1, 40)),
+       *(f"Verwaltung/Rechnungen/RE-2024-{i:04d}" for i in range(1, 30)))
+    p = analyse(tmp_path).proposal
+    assert found(p) == (YEAR_NUM, 2, 39)
+    hint = p.second_scheme
+    assert (hint["pattern"], hint["where"], hint["depth"]) == (r"RE-\d{4}-\d{4}", "Verwaltung/Rechnungen", 3)
+    assert len(scan_projects(tmp_path, hint["combined"], hint["depth"])) == 39 + 29
+
+
+def test_only_offer_folders_are_no_projects(tmp_path):
+    mk(tmp_path, *(f"Angebote/AN-2024-{i:03d} Anfrage" for i in range(1, 25)), "Kita Nord", "Schule Süd")
+    a = analyse(tmp_path)
+    assert a.proposal is None and "Nebenablagen" in a.reason
+
+
+def test_norms_folder_is_only_a_hint(tmp_path):
+    """Review case F: Normen/DIN 18232 Teil … next to BS projects."""
+    mk(tmp_path, *(f"BS-2024-{i:04d} Projekt {i}/Pläne" for i in range(1, 40)),
+       *(f"Normen/DIN {n} Teil" for n in (4102, 18232, 14675, 4066, 18017, 14096, 18040)))
+    p = analyse(tmp_path).proposal
+    assert found(p) == (BS, 2, 39) and p.second_scheme["pattern"] == r"DIN\s\d{5}"
+
+
+@pytest.mark.parametrize("current, archive", [(29, 9), (9, 29), (10, 30)])
+def test_archive_in_an_older_numbering_is_named(tmp_path, current, archive):
+    """Review O1/O2: current BS projects and Archiv/1998-001 … – the current scheme is proposed
+    (never an automatic alternation, rule 6), the archive is named with the setting for both."""
+    bs_projects(tmp_path, n=current)
+    mk(tmp_path, *(f"Archiv/1998-{i:03d} Alt {i}" for i in range(1, archive + 1)), "_Vorlagen/KW01", "_Vorlagen/KW02")
+    p = analyse(tmp_path).proposal
+    assert found(p) == (BS, 2, current) and sorted(p.exceptions) == ["Archiv", "_Vorlagen"]
+    hint = p.second_scheme
+    assert (hint["pattern"], hint["where"], hint["folders"], hint["branch"]) == (YEAR_NUM, "Archiv", archive, "archive")
+    assert hint["combined"] == rf"(?:{BS}|\d{{4}}-\d{{3}})"
+    assert len(scan_projects(tmp_path, hint["combined"], hint["depth"])) == current + archive
+
+
+def test_two_equally_common_schemes_give_no_proposal(tmp_path):
+    """Rule 7: neither scheme clearly dominates – exit 1 with both candidates."""
+    mk(tmp_path, *(f"2024-{i:03d} Projekt {i}" for i in range(1, 31)), *(f"P{30000 + i} Neubau" for i in range(1, 21)))
+    a = analyse(tmp_path)
+    assert a.proposal is None and a.exit_code == 1 and "etwa gleich oft" in a.reason
+    assert {c["pattern"] for c in a.candidates[:2]} == {YEAR_NUM, r"P\d{5}"}
+
+
+def test_realistic_messy_share(tmp_path):
+    """Review case P: year folders, 01_ subfolders, dated subfolders, 00_Allgemein, an archive in an
+    older numbering below a year-range folder, offer folders with a year."""
+    paths = []
+    for y in range(2019, 2025):
+        for i in range(1, 21 + (y % 7) * 3):
+            p = f"{y}/{y}-{i:03d} Kita Regenbogen"
+            paths += [f"{p}/01_Schriftverkehr", f"{p}/02_Pläne", f"{p}/{y}-0{i % 9 + 1}-{10 + i % 18} Ortstermin"]
+        paths.append(f"{y}/00_Allgemein")
+    paths += [f"Archiv/2005-2015/{y % 100:02d}-{i:03d} Altprojekt" for y in range(2005, 2016) for i in range(1, 6)]
+    paths += ["_Vorlagen/Brandschutzkonzept", "00_Allgemein/Normen/DIN 4102", "Akquise/2024 Anfragen",
+              "Akquise/2025 Anfragen"]
+    mk(tmp_path, *paths)
+    p = analyse(tmp_path).proposal
+    projects = sum(20 + (y % 7) * 3 for y in range(2019, 2025))
+    assert found(p) == (YEAR_NUM, 2, projects)
+    assert (p.second_scheme["pattern"], p.second_scheme["where"], p.second_scheme["depth"]) == (
+        r"\d{2}-\d{3}", "Archiv/2005-2015", 3)
+    assert not any("2005-2015" in e["path"] for e in p.examples)
+
+
+# ============================================================================ stability
+def test_result_does_not_depend_on_the_size_of_the_share(tmp_path):
+    """Rule 7: the same layout with few or many projects gives the same scheme and depth, and
+    adding projects keeps it."""
+    def layout(root: Path, per_year: int) -> None:
+        mk(root, *(f"{y}/{y}-{i:03d} P/{sub}" for y in (2023, 2024) for i in range(1, per_year + 1)
+                   for sub in ("00_Allgemein", "01 Schriftverkehr", f"{y}-{i:03d}_02 Pläne", "2024-05-12 Termin")),
+           "Archiv/2010/10-001 Alt", "_Vorlagen")
+    results = set()
+    for n in (4, 12, 40, 120):
+        layout(tmp_path / str(n), n)
+        p = analyse(tmp_path / str(n)).proposal
+        results.add((p.pattern, p.depth))
+        assert p.projects == 2 * n
+    assert results == {(YEAR_NUM, 2)}
+
+
+def test_auto_mode_stays_stable_when_projects_are_added(tmp_path):
+    """Review s9: 29 current projects and an archive of 30 in an older numbering; three more
+    projects later – the stored scheme stays and no difference is reported."""
+    root = tmp_path / "p"
+    bs_projects(root, n=29)
+    mk(root, *(f"Archiv/1998-{i:03d} Alt" for i in range(1, 31)))
+    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
+    assert run_index(s)["structure"]["detected"] is True
+    assert json.loads(_meta(s, structure.STORED_KEY))["pattern"] == BS
+    mk(root, *(f"BS-2024-{i:04d} Neu" for i in range(30, 33)))
+    _age_check(s)
+    stats = run_index(s)
+    assert "differs" not in stats["structure"] and structure.current_layout(s).warning is None
+    assert stats["projects"]["projects"] == 32
+
+
+@pytest.mark.parametrize("a, b, same", [
+    (r"(?:BS-\d{4}-\d{4}|\d{4}-\d{3})", r"(?:\d{4}-\d{3}|BS-\d{4}-\d{4})", True),
+    (r"BS-\d{4}-\d{4}|\d{4}-\d{3}", r"(?:\d{4}-\d{3}|BS-\d{4}-\d{4})", True),
+    (r"(?:\d{4}-\d{3})", r"\d{4}-\d{3}", True),
+    (r"(?!(?:19|20)\d\d(?!\d))\d{4}", r"(?!(?:19|20)\d\d(?!\d))\d{4}", True),
+    (r"(?:A|B)C", r"(?:B|A)C", False),
+    (r"[|]x|y", r"y|[|]x", True),
+    (r"\d{4}-\d{3}", r"\d{4}-\d{3,4}", False),
+])
+def test_schemes_are_compared_by_their_alternatives(a, b, same):
+    assert (structure.alternatives(a) == structure.alternatives(b)) is same
+
+
+def test_stored_scheme_written_differently_is_no_difference(tmp_path):
+    """Rule 9: a stored scheme is compared by meaning – the same alternatives, or the same folders."""
+    root = mk(tmp_path / "p", *(f"2024-{i:03d} Projekt {i}" for i in range(1, 8)))
+    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
+    run_index(s)
+    for stored in (r"[0-9]{4}-[0-9]{3}", r"(?:\d{4}-\d{3}|AN-\d{4}-\d{3})"):
+        with db.session(s.db_path) as conn:
+            rec = json.loads(db.get_meta(conn, structure.STORED_KEY))
+            db.set_meta(conn, structure.STORED_KEY, json.dumps({**rec, "pattern": stored}))
+        _age_check(s)
+        stats = run_index(s)
+        assert "differs" not in stats["structure"] and _meta(s, structure.DIFFERS_KEY) is None
 
 
 # ============================================================================ PROJECT_FOLDER_DEPTH and pattern settings
@@ -326,7 +736,7 @@ def test_unusable_pattern_is_named(pattern):
 
 
 def test_valid_patterns_pass():
-    for pattern in (BS, r"P\d{5}", r"\d{4}[-_\s]\d{3}", r"(?:BS|BV)-\d{4}-\d{4}", DEFAULT_PROJECT_NUMBER_PATTERN):
+    for pattern in (BS, r"P\d{5}", r"\d{4}[-_\s]\d{3}", r"(?:BS|BV)-\d{4}-\d{4}", DEFAULT_PROJECT_NUMBER_PATTERN, FOUR):
         assert pattern_problem(pattern) is None
 
 
@@ -357,6 +767,10 @@ def test_sync_from_folder_refuses_an_unusable_pattern(tmp_path):
     assert "unbrauchbar" in stats["warning"] and stats["added"] == 0
 
 
+def test_pattern_setting_ignores_stray_blanks():
+    assert load_settings({"PROJECT_NUMBER_PATTERN": " P\\d{5} "}).project_number_pattern == r"P\d{5}"
+
+
 # ============================================================================ automatic mode
 def _meta(s, key):
     with db.session(s.db_path) as conn:
@@ -382,21 +796,55 @@ def test_auto_detects_once_and_stores(tmp_path, caplog):
     stats = run_index(s)
     assert stats["projects"]["added"] == 4 and stats["structure"]["detected"] is True
     stored = json.loads(_meta(s, structure.STORED_KEY))
-    assert (stored["pattern"], stored["depth"], stored["projects"]) == (r"\d{4}-\d{3}", 2, 4)
+    assert (stored["pattern"], stored["depth"], stored["projects"]) == (YEAR_NUM, 2, 4)
     assert stored["root"] == os.path.abspath(root) and stored["examples"][0] == "2024-001 Projekt 1"
     assert "automatisch erkannt und gespeichert" in caplog.text
     layout = structure.current_layout(s)
-    assert layout.pattern == r"\d{4}-\d{3}" and layout.depth == 2 and layout.source.startswith("automatisch erkannt am")
+    assert layout.pattern == YEAR_NUM and layout.depth == 2 and layout.source.startswith("automatisch erkannt am")
     # status page and start-up line show it
     client = TestClient(create_app(s, background=False))
     page = client.get("/status").text
     assert r"<code>\d{4}-\d{3}</code>" in page and "automatisch erkannt am" in page
-    assert client.get("/api/status").json()["layout"]["pattern"] == r"\d{4}-\d{3}"
+    assert client.get("/api/status").json()["layout"]["pattern"] == YEAR_NUM
     caplog.clear()
     caplog.set_level(logging.INFO, logger="projektakte.startup")
     log_startup(s, NoAuth())
     assert r"Projektnummern=\d{4}-\d{3} (automatisch erkannt am" in caplog.text
     assert "Tiefe 2 (automatisch)" in caplog.text
+
+
+def test_auto_year_folders_with_pure_digit_numbers(tmp_path):
+    """Review s4: with auto mode the 72 real projects are stored and indexed, not the year folders."""
+    root = tmp_path / "p"
+    n = 1000
+    for y in (2022, 2023, 2024):
+        for i in range(1, 25):
+            n += 1
+            (mk(root, f"{y}/{n} Projekt {i}") / f"{y}/{n} Projekt {i}" / "Bericht.txt").write_text(
+                f"Brandschutzkonzept Projekt {n}", encoding="utf-8")
+    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
+    stats = run_index(s)
+    assert stats["structure"]["pattern"] == FOUR and stats["projects"]["added"] == 72
+    assert len(_active(s)) == 72 and "2022" not in _active(s)
+    with db.session(s.db_path) as conn:
+        assert conn.execute("SELECT COUNT(DISTINCT project) FROM documents").fetchone()[0] == 72
+
+
+def test_auto_iso_dates_in_mails_are_no_project_numbers(tmp_path):
+    """Review s14: year-month folders next to the projects do not widen the scheme, so a mail with
+    an ISO date is not assigned to a fake project '2024-05'."""
+    root = tmp_path / "p"
+    for i in range(1, 41):
+        (mk(root, f"2024-{i:03d} Projekt {i}") / f"2024-{i:03d} Projekt {i}" / "Bericht.txt").write_text(
+            f"Bericht zu Projekt {i}", encoding="utf-8")
+    mk(root, "2024-05 Teamsitzung", "2024-11 Weihnachtsfeier")
+    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
+    _eml(s.mail_dir / "a.eml", "Ortstermin Kita", "Hallo, wir treffen uns am 2024-05-21 auf der Baustelle.")
+    stats = run_index(s)
+    assert stats["structure"]["pattern"] == YEAR_NUM and stats["projects"]["projects"] == 40
+    assert "2024-05" not in _active(s)
+    with db.session(s.db_path) as conn:
+        assert conn.execute("SELECT project FROM mails").fetchone()[0] is None
 
 
 def test_auto_later_different_detection_keeps_the_stored_one_and_warns(tmp_path, caplog):
@@ -405,18 +853,18 @@ def test_auto_later_different_detection_keeps_the_stored_one_and_warns(tmp_path,
     s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
     run_index(s)
     stored_before = _meta(s, structure.STORED_KEY)
-    # the share now shows a second numbering as well (new projects, or another share mounted there)
+    # the share now shows a second, more frequent numbering (new projects, or another share mounted there)
     mk(root, *(f"P{20000 + i}_Neubau {i}" for i in range(1, 9)))
     _age_check(s)
     caplog.set_level(logging.WARNING)
     stats = run_index(s)
-    new = r"(?:P\d{5}|\d{4}-\d{3})"
+    new = r"P\d{5}"  # never an automatic alternation (rule 6)
     assert _meta(s, structure.STORED_KEY) == stored_before
     assert stats["structure"]["differs"] == new and "warning" not in stats["structure"]
     assert stats["projects"]["added"] == 0 and len(_active(s)) == 4  # still the stored scheme
     assert f"eine neue Erkennung ergibt {new}" in caplog.text
     layout = structure.current_layout(s)
-    assert layout.pattern == r"\d{4}-\d{3}" and new in layout.warning and "--uebernehmen" in layout.warning
+    assert layout.pattern == YEAR_NUM and new in layout.warning and "--uebernehmen" in layout.warning
     assert "findet derzeit 4 Projektordner" in layout.warning
     page = TestClient(create_app(s, background=False)).get("/status").text
     assert "Abweichung" in page and "--uebernehmen" in page
@@ -470,18 +918,44 @@ def test_auto_without_a_clear_scheme_skips_the_sync_and_the_assignment(tmp_path)
     stats = run_index(s)
     assert "Kein eindeutiges Projektnummern-Schema" in stats["projects"]["warning"]
     assert "python -m projektakte.structure" in stats["projects"]["warning"]
+    assert "Kein Ordnername beginnt mit einer Nummer" in stats["projects"]["warning"]
     assert stats["assignment"]["note"].startswith("nicht ausgeführt")
     with db.session(s.db_path) as conn:
         assert conn.execute("SELECT assign_status FROM mails").fetchone()[0] == "pending"
     assert _meta(s, structure.STORED_KEY) is None
     page = TestClient(create_app(s, background=False)).get("/status").text
-    assert "noch nicht erkannt" in page
-    # once the folders are there, the next pass detects, syncs and assigns
+    assert "noch nicht erkannt" in page and "Nächste Prüfung frühestens" in page
+    # once the folders are there, the next detection (at most hourly) detects, syncs and assigns
     mk(root, "2024-017 Kita", "2024-018 Schule", "2024-019 Halle")
+    _age_check(s)
     stats = run_index(s)
-    assert stats["projects"]["added"] == 3
+    assert stats["projects"]["added"] == 3 and _meta(s, structure.NONE_KEY) is None
     with db.session(s.db_path) as conn:
         assert tuple(conn.execute("SELECT project, assign_status FROM mails").fetchone()) == ("2024-017", "assigned")
+
+
+def test_auto_without_a_scheme_retries_at_most_hourly(tmp_path, monkeypatch):
+    """Rule 9: no clear scheme – the share is not read again at every pass (SMB traffic)."""
+    root = mk(tmp_path / "p", *(f"Projekt {c}" for c in "ABCDEF"))
+    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
+    calls = []
+    real = structure.analyse
+    monkeypatch.setattr(structure, "analyse", lambda *a, **k: calls.append(1) or real(*a, **k))
+    now = datetime.now(timezone.utc)
+    db.init_db(s.db_path)
+    with db.session(s.db_path) as conn:
+        layout, info = layout_for_index(conn, s, now=now)
+        assert layout.pattern is None and info["detected"] is False and calls == [1]
+        layout, _ = layout_for_index(conn, s, now=now + timedelta(minutes=30))
+        assert calls == [1] and "Kein Ordnername" in layout.problem  # the reason of the last check
+        assert "--uebernehmen" in layout.problem and "nächste Prüfung frühestens" in layout.summary()
+        layout_for_index(conn, s, now=now + structure.RECHECK_INTERVAL + timedelta(minutes=1))
+        assert calls == [1, 1]
+    # another PROJECTS_DIR is detected at once
+    other = mk(tmp_path / "q", *(f"2024-{i:03d} X" for i in range(1, 6)))
+    s2 = settings_for(tmp_path, other, PROJECT_NUMBER_PATTERN="auto")
+    with db.session(s2.db_path) as conn:
+        assert layout_for_index(conn, s2, now=now + timedelta(minutes=31))[0].pattern == YEAR_NUM
 
 
 def test_accept_command_switches(tmp_path, monkeypatch, capsys):
@@ -510,7 +984,8 @@ def test_accept_refuses_another_folder(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("PROJECTS_DIR", str(tmp_path / "a"))
     with pytest.raises(SystemExit) as exc:
         main([str(tmp_path / "b"), "--uebernehmen"])
-    assert exc.value.code == 2 and "PFAD weglassen" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert exc.value.code == structure.EXIT_USAGE == 3 and "PFAD weglassen" in err and "Fehler:" in err
 
 
 def test_detection_for_another_projects_dir_is_not_used(tmp_path):
@@ -544,6 +1019,37 @@ def test_recheck_waits_for_the_interval(tmp_path, monkeypatch):
         assert calls == []
         layout_for_index(conn, s, now=datetime.now(timezone.utc) + structure.RECHECK_INTERVAL * 2)
         assert calls == [1]
+
+
+def test_detection_failure_never_stops_the_indexing(tmp_path, monkeypatch):
+    root = mk(tmp_path / "p", *(f"2024-{i:03d} X" for i in range(1, 4)))
+    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
+    run_index(s)
+
+    def broken(*a, **k):
+        raise RuntimeError("kaputt")
+
+    monkeypatch.setattr(structure, "analyse", broken)
+    _age_check(s)
+    stats = run_index(s)
+    assert stats["projects"]["projects"] == 3 and "warning" not in stats["projects"]
+    assert structure.current_layout(s).pattern == YEAR_NUM
+    s2 = settings_for(tmp_path / "neu", root, PROJECT_NUMBER_PATTERN="auto")
+    assert "fehlgeschlagen" in run_index(s2)["projects"]["warning"]
+
+
+def test_folder_names_that_are_no_utf8_are_stored(tmp_path):
+    """A name that is not valid UTF-8 (old SMB share) must not break storing the detection."""
+    root = tmp_path / "p"
+    root.mkdir()
+    for i in range(1, 6):
+        os.makedirs(os.fsencode(root) + b"/2024-%03d B\xfcro" % i)
+    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
+    db.init_db(s.db_path)
+    with db.session(s.db_path) as conn:
+        layout, info = layout_for_index(conn, s)
+    assert layout.pattern == YEAR_NUM and info["detected"] is True
+    assert structure.current_layout(s).examples[0] == "2024-001 B�ro"
 
 
 # ============================================================================ effective scheme everywhere
@@ -585,6 +1091,11 @@ def test_ui_pattern_before_anything_is_detected(tmp_path):
     client = TestClient(create_app(s, background=False))
     assert client.get("/suche", params={"q": "BS 2024 0137"}).status_code == 200
     assert web.join_spaced_codes("BS 2024 0137", structure.NO_MATCH) == "BS 2024 0137"
+
+
+def test_year_guard_works_in_the_search_helpers():
+    assert web.join_spaced_codes("Akte 1017 2024", FOUR) == "Akte 1017 2024"
+    assert re.fullmatch(f"(?:{FOUR})", "1017") and not re.fullmatch(f"(?:{FOUR})", "2024")
 
 
 def test_code_pattern_of_is_looked_up_once_per_request(tmp_path, monkeypatch):
@@ -688,6 +1199,18 @@ def test_cli_text_output_and_exit_code(tmp_path, monkeypatch, capsys):
     assert "Ausnahmen" in out and "_Vorlagen" in out
     assert "Aktuelle Einstellung: PROJECT_NUMBER_PATTERN=BS-\\d{4}-\\d{4}, PROJECT_FOLDER_DEPTH=2" in out
     assert "findet 0 Projektordner" in out and ".xlsx" in out and "keine Datenbank" in out
+    assert "Dateien in 8 Projektordnern" in out
+
+
+def test_cli_names_a_second_scheme_with_the_setting(tmp_path, capsys):
+    root = tmp_path / "p"
+    bs_projects(root, n=12)
+    mk(root, *(f"Archiv/2005-2015/{i:02d}-{i:03d} Alt" for i in range(1, 8)))
+    assert main([str(root), "--ohne-dateien"]) == 0
+    out = capsys.readouterr().out
+    assert (r"Weiteres Schema in Archiv/2005-2015: \d{2}-\d{3}, 7 Ordner" in out
+            and r"wenn das auch Projekte sind: PROJECT_NUMBER_PATTERN=(?:BS-\d{4}-\d{4}|\d{2}-\d{3}) und "
+                r"PROJECT_FOLDER_DEPTH=3" in out)
 
 
 def test_cli_no_scheme_and_unreadable(tmp_path, capsys):
@@ -696,6 +1219,22 @@ def test_cli_no_scheme_and_unreadable(tmp_path, capsys):
     assert "Kein eindeutiges Projektnummern-Schema" in capsys.readouterr().out
     assert main([str(tmp_path / "fehlt")]) == 2
     assert "FEHLER" in capsys.readouterr().out
+
+
+def test_cli_lists_the_closest_candidates(tmp_path, capsys):
+    mk(tmp_path / "p", *(f"2024-{i:03d} Projekt {i}" for i in range(1, 31)),
+       *(f"P{30000 + i} Neubau" for i in range(1, 21)))
+    assert main([str(tmp_path / "p")]) == 1
+    out = capsys.readouterr().out
+    assert "Nächste Kandidaten:" in out and r"\d{4}-\d{3} – Ebene 1, 30 Ordner" in out and r"P\d{5} – Ebene 1" in out
+
+
+def test_cli_empty_folder_has_no_empty_headers(tmp_path, capsys):
+    (tmp_path / "leer").mkdir()
+    assert main([str(tmp_path / "leer")]) == 1
+    out = capsys.readouterr().out
+    assert "keine Unterordner" in out and "Ordner je Ebene" not in out and "Nächste Kandidaten" not in out
+    assert "Gelesen: 0 Ordner" in out
 
 
 def test_cli_json_with_database(tmp_path, monkeypatch, capsys):
@@ -712,7 +1251,7 @@ def test_cli_json_with_database(tmp_path, monkeypatch, capsys):
     assert data["env"] == [r"PROJECT_NUMBER_PATTERN=P\d{5}", "PROJECT_FOLDER_DEPTH=2"]
     assert data["current"]["projects"] == 3 and data["files"]["files"] == 3
     assert data["context"]["summary"]["projects"] == 3 and data["context"]["projects"][0]["tokens"] > 100
-    assert data["accepted"] is None
+    assert data["accepted"] is None and data["candidates"][0]["verdict"] == "gewählt"
 
 
 def test_cli_text_shows_the_context_table(tmp_path, capsys):
@@ -727,10 +1266,43 @@ def test_cli_text_shows_the_context_table(tmp_path, capsys):
     assert "passen ganz hinein: 32k: 3 von 3" in out and "Dateien in" not in out
 
 
-def test_cli_rejects_a_bad_depth(capsys):
+@pytest.mark.parametrize("argv, message", [
+    (["--tiefe", "9"], "Option --tiefe: 9 liegt nicht zwischen 1 und 6"),
+    (["--tiefe", "x"], "Option --tiefe: „x“ ist keine ganze Zahl"),
+    (["--max-ordner", "0"], "Option --max-ordner: 0 ist kleiner als 1"),
+    (["--gibtsnicht"], "unbekannte Angaben: --gibtsnicht"),
+    (["--data-dir"], "Option --data-dir: erwartet einen Wert"),
+])
+def test_cli_usage_errors_are_german_and_exit_3(capsys, argv, message):
     with pytest.raises(SystemExit) as exc:
-        main(["--tiefe", "9"])
-    assert exc.value.code == 2
+        main(argv)
+    err = capsys.readouterr().err
+    assert exc.value.code == 3 and message in err and err.startswith("Aufruf: python -m projektakte.structure")
+    assert "usage:" not in err and "error:" not in err and "argument" not in err
+
+
+def test_cli_help_is_german(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--hilfe"])
+    out = capsys.readouterr().out
+    assert exc.value.code == 0 and out.startswith("Aufruf: ") and "Optionen:" in out and "Argumente:" in out
+    flat = " ".join(out.split())
+    assert "3 = falscher Aufruf" in flat and "2 = Ordner nicht lesbar" in flat
+    assert "usage" not in out and "show this help" not in out and "options:" not in out
+
+
+def test_german_plurals():
+    assert structure.de_count(1, "passender Ordner", "passende Ordner") == "1 passender Ordner"
+    assert structure.de_count(2, "passender Ordner", "passende Ordner") == "2 passende Ordner"
+    assert structure.de_count(1200, "Datei", "Dateien") == "1.200 Dateien"
+
+
+def test_rejection_reasons_use_plurals(tmp_path):
+    mk(tmp_path, "2024-001 A", "2024-002 B", "P12345 X", "P12346 Y")
+    a = analyse(tmp_path)
+    reasons = {c["pattern"]: c["reason"] for c in a.candidates}
+    assert reasons == {YEAR_NUM: "nur 2 passende Ordner", r"P\d{5}": "nur 2 passende Ordner"}
+    assert "(r)" not in json.dumps(a.to_dict(), ensure_ascii=False)
 
 
 def test_database_never_written_by_the_analysis(tmp_path, monkeypatch, capsys):
@@ -746,48 +1318,3 @@ def test_database_never_written_by_the_analysis(tmp_path, monkeypatch, capsys):
     assert Path(s.db_path).stat().st_mtime_ns == before
     with sqlite3.connect(s.db_path) as conn:
         assert conn.execute("SELECT key, value FROM meta ORDER BY key").fetchall() == rows
-
-
-def test_dated_folders_are_no_project_scheme(tmp_path):
-    mk(tmp_path, "2023-05-12 Ortstermin", "2023-06-01 Abnahme", "2023-07-15 Begehung", "12.08.2023 Termin",
-       "2024-01-09 Besprechung")
-    a = analyse(tmp_path)
-    assert a.proposal is None and "Datumsangaben" in a.reason
-
-
-def test_word_prefix_needs_more_digits(tmp_path):
-    mk(tmp_path, "Haus 12", "Haus 13", "Haus 14", "Haus 15")
-    assert analyse(tmp_path).proposal is None
-    mk(tmp_path / "b", "PRJ 2024-001 A", "PRJ 2024-002 B", "PRJ 2024-003 C")
-    assert analyse(tmp_path / "b").proposal.pattern == r"PRJ\s\d{4}-\d{3}"
-
-
-def test_pattern_setting_ignores_stray_blanks():
-    assert load_settings({"PROJECT_NUMBER_PATTERN": " P\\d{5} "}).project_number_pattern == r"P\d{5}"
-
-
-def test_current_and_older_numbering_are_combined(tmp_path):
-    """Current projects in the root, an archive in an older numbering: both are projects."""
-    bs_projects(tmp_path, n=10)
-    mk(tmp_path, *(f"Archiv/1998-{i:03d} Alt {i}" for i in range(1, 31)), "_Vorlagen/KW01", "_Vorlagen/KW02",
-       "_Vorlagen/KW03")
-    p = analyse(tmp_path).proposal
-    assert p.pattern == rf"(?:\d{{4}}-\d{{3}}|{BS})" and p.depth == 2 and p.projects == 40
-    assert " – oder – " in p.description and p.exceptions == ["_Vorlagen"]
-
-
-def test_detection_failure_never_stops_the_indexing(tmp_path, monkeypatch):
-    root = mk(tmp_path / "p", *(f"2024-{i:03d} X" for i in range(1, 4)))
-    s = settings_for(tmp_path, root, PROJECT_NUMBER_PATTERN="auto")
-    run_index(s)
-
-    def broken(*a, **k):
-        raise RuntimeError("kaputt")
-
-    monkeypatch.setattr(structure, "analyse", broken)
-    _age_check(s)
-    stats = run_index(s)
-    assert stats["projects"]["projects"] == 3 and "warning" not in stats["projects"]
-    assert structure.current_layout(s).pattern == r"\d{4}-\d{3}"
-    s2 = settings_for(tmp_path / "neu", root, PROJECT_NUMBER_PATTERN="auto")
-    assert "fehlgeschlagen" in run_index(s2)["projects"]["warning"]
