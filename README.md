@@ -279,9 +279,25 @@ PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1` über das multimodale Mo
 als „übersprungen“ vermerkt. Die Bilder gescannter PDF-Seiten liest Pillow aus (JPEG/PNG unverändert,
 TIFF/CCITT, JPEG 2000 und CMYK umgewandelt, große Bilder verkleinert; Streifen- und Kachelscans
 werden zu einem Seitenbild zusammengesetzt; JBIG2 über `jbig2dec`, das im Docker-Image enthalten
-ist). Ein mehrfach gezeichnetes Bild wird nur einmal dekodiert und gesendet; vor dem Dekodieren
-gelten je Seite höchstens 200 verschiedene Bilder und 150 Megapixel laut PDF-Angabe (ein kleiner
-PDF-Anhang kann sonst Gigabytes Speicher belegen), was darüber liegt, wird mit Hinweis ausgelassen.
+ist). Ein Bild (ein PDF-Objekt, auch unter mehreren Namen oder auf mehreren Seiten) wird je Dokument
+nur einmal dekodiert und gesendet; große JPEG- und JPEG-2000-Bilder werden gleich verkleinert
+dekodiert. Vor dem Dekodieren gelten Grenzen nach der echten Bildgröße aus dem Bildkopf (nicht nur der
+Angabe im PDF): je Seite höchstens 200 verschiedene Bilder und 150 Megapixel, je Dokument höchstens 500
+Bildauswertungen und 4000 Megapixel; der Seiteninhalt wird begrenzt durchlaufen (2000 Positionen,
+1000 Formulare, 1 Mio. Operationen, 4 MB je Seite, 32 MB je Dokument). Was darüber liegt, wird mit
+Hinweis ausgelassen und nicht wiederholt. Reine Vektorseiten (CAD-Pläne mit Text als Kurven) gelten als
+Seiten ohne Text.
+
+**Eigener Leseprozess:** PDF-, Word- und Mail-Dateien (auch Mail-Anhänge) werden nicht im
+Anwendungsprozess gelesen, sondern in einem dauerhaften Leseprozess mit Grenzen je Datei:
+Speicher `EXTRACT_MEMORY_MB` (2048), Rechenzeit `EXTRACT_CPU_SECONDS` (120 s; das Warten auf das
+Sprachmodell zählt nicht) und `EXTRACT_WALL_SECONDS` (3600 s ohne Fortschritt). Eine beschädigte
+oder absichtlich aufgeblähte Datei kann so weder den Speicher der Anwendung füllen noch die
+Indexierung lange aufhalten: Sie wird als „Datei zu aufwendig zum Lesen“ bzw. „Datei zu groß zum
+Lesen“ vermerkt, der Leseprozess startet neu. Im Docker-Betrieb das Speicherlimit des Containers
+mindestens auf Anwendung + `EXTRACT_MEMORY_MB` setzen. Textdateien und Bilder liest die Anwendung
+selbst; mit `APP_ENV=test` (Testsuite) ist der Leseprozess aus, `EXTRACT_ISOLATION=0/1` schaltet ihn
+ausdrücklich.
 Ist ein Teilbild nicht lesbar, gilt die Seite als „nur teilweise gelesen“ und wird später
 erneut versucht. Jedes Dokument merkt sich sein Extraktionsprofil: Wird `LLM_VISION`
 eingeschaltet oder das Modell gewechselt, liest der nächste Lauf alle bisher übersprungenen bzw.
@@ -453,6 +469,10 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
 | `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
+| `EXTRACT_ISOLATION` | `1` (`0` bei `APP_ENV=test`) | PDF/Word/Mails in einem eigenen Leseprozess mit Grenzen lesen |
+| `EXTRACT_MEMORY_MB` | `2048` | Speichergrenze des Leseprozesses (mindestens 256) |
+| `EXTRACT_CPU_SECONDS` | `120` | Rechenzeit je Datei; Warten auf das Sprachmodell zählt nicht |
+| `EXTRACT_WALL_SECONDS` | `3600` | Abbruch einer Datei nach so langer Zeit ohne Fortschritt (neuer Versuch später) |
 | `ASK_TOP_K` / `ASK_CONTEXT_CHARS` / `ASK_MIN_RERANK` | `6` / `8000` / `0.01` | Quellen je Frage / Zeichenbudget im Prompt / Mindest-Score des Rerankers |
 | `ASK_DEADLINE` | `180` | Gesamtbudget einer Frage in Sekunden (alle Suchen + Sprachmodell); `0` = aus, mindestens 10 s. Über `LLM_TIMEOUT`, unter 300 s halten (Browser-Grenze), Proxy-Zeitlimit darüber |
 | `SEARCH_MIN_RERANK` | `0.05` | Suchseite: Treffer mit niedrigerem Reranker-Score ausblenden (nur wenn der Reranker antwortet; auf Wunsch einblendbar) |

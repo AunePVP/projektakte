@@ -504,3 +504,24 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   Matrix aus 54 realistischen Antworten (31 Absagen, 23 Teilantworten) plus 5 aus dem Review: alle
   richtig, vorher 20 bzw. 6 falsch.
 
+**Runde 6 (Lesen fremder Dateien)**
+- *Eigener Leseprozess statt weiterer Einzelgrenzen*: Jede Gegenprüfung fand eine neue Art, mit einer
+  kleinen Datei Gigabytes oder Minuten zu verbrauchen (weiche Masken, JPEG 2000, Textextraktion von
+  pypdf). Mail-Anhänge kommen von außen und werden automatisch gelesen. Deshalb liest ein eigener,
+  dauerhafter Prozess (`spawn`, erbt nicht den Speicher der Anwendung) PDF, Word und Mails mit
+  Betriebssystem-Grenzen je Datei: Adressraum und **Rechenzeit** – nicht Wanduhrzeit, weil das Warten
+  auf ein langsames Sichtmodell bei einem langen Scan legitim ist; dafür eine großzügige Grenze „ohne
+  Fortschritt“, die jede Modellantwort zurücksetzt. Kosten: etwa 0,5 ms je Datei und ein Prozess mit
+  rund 50 MB.
+- *Grenzen sind endgültig, Ausfälle nicht*: Rechenzeit- und Speichergrenze, Absturz des Leseprozesses
+  hängen an der Datei – kein erneuter Versuch (sonst liest jeder Lauf dieselbe Bombe). Die Grenze
+  „ohne Fortschritt“ kann am Modell liegen – erneuter Versuch mit wachsendem Abstand.
+- *Nur JSON aus dem Leseprozess*: Der Prozess, der fremde Dateien parst, gilt als möglicherweise
+  übernommen; die Anwendung entpickelt nichts von ihm.
+- *Abbruch beim Beenden ist kein Fehler der Datei*: Wird die Anwendung während des Lesens beendet,
+  bleibt die Datei ungelesen und wird beim nächsten Start gelesen, statt als fehlgeschlagen vermerkt
+  zu werden.
+- *Einzelgrenzen bleiben trotzdem*: Bilder je PDF-Objekt, echte Größe aus dem Bildkopf, verkleinertes
+  Dekodieren, Grenzen je Seite und Dokument – sie halten den normalen Speicherbedarf klein (A0-Plan
+  0,33 statt 1,1 GB), der Leseprozess ist die Absicherung für alles, was sie nicht vorhersehen.
+

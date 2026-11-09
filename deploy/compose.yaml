@@ -28,6 +28,9 @@ services:
       intern:
         ipv4_address: 172.31.250.20
     # no "ports:": the application is only reachable through Caddy
+    # A memory limit, if set, must hold the app (vector index ≈ sections × dimensions × 4 bytes, e.g.
+    # 100 000 × 2560 × 4 ≈ 1 GB) plus the reading process (EXTRACT_MEMORY_MB, 2 GB):
+    # mem_limit: 4g
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}   # keep the log short (it contains user names)
