@@ -13,7 +13,7 @@ im lokalen Netz mit lokalen Modellen.
 ## Stand
 
 **Phase A ist umgesetzt** (alle 14 Roadmap-Schritte): Projektregister, Text- und Mail-Indexierung
-(TXT/MD/PDF/DOCX/EML, Anhänge), Embeddings, Mail-Zuordnung mit Zuordnungs-Eingang, hybride Suche mit
+(TXT/MD/PDF/DOCX/ODT/EML, Anhänge), Embeddings, Mail-Zuordnung mit Zuordnungs-Eingang, hybride Suche mit
 Reranker, Fragen mit Quellen, Hintergrund-Indexierung, Weboberfläche, Zugangsschutz und plMail über
 JMAP. Dazu kommt die Zuordnung der Mails in plMail (docs/plmail-integration.md). Eine unabhängige
 Prüfung mit 12 Prüfern fand 67 Mängel; sie sind behoben und gegengeprüft (CHANGELOG 0.4.0). Danach
@@ -294,7 +294,14 @@ Projektseite zeigt alle Ordner. Wird ein weiterer Ordner nicht mehr gefunden, ve
 Index wie verschwundene Dateien; ein umbenannter Ordner wird verschoben, nicht neu gelesen.
 
 Unterstützte Formate: TXT,
-Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften und Tabellen), EML.
+Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften und Tabellen), EML und
+OpenDocument samt den alten OpenOffice-1.x-Formaten (`.odt`/`.ott`, `.ods`/`.ots`, `.odp`/`.otp`,
+`.sxw`/`.stw`, `.sxc`/`.stc`, `.sxi`/`.sti`; nur mit der Standardbibliothek): Überschriften, Absätze,
+Listen, Tabellen (Zeilen „A | B“), Fußnoten; Tabellenblätter unter ihrem Namen, Folien als Seiten mit
+Notizen. Kommentare, gelöschter Text der Änderungsverfolgung und Verzeichnisse werden weggelassen;
+passwortgeschützte Dateien werden nicht gelesen. Grenzen je Datei: 64 MB entpackter Inhalt (bei einer
+größeren Tabelle wird der Anfang gelesen), 10 000 Bestandteile, 100 Ebenen, 500 000 Elemente je Absatz,
+Zeile oder Folie, 32 Mio. Zeichen; Wiederholungen in Tabellen höchstens 100-mal.
 Textdateien in UTF-8, UTF-16/32 (auch Windows-„Unicode“) oder cp1252. Bilder (PNG/JPG/TIFF) und
 PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1` über das multimodale Modell gelesen, sonst
 als „übersprungen“ vermerkt. Die Bilder gescannter PDF-Seiten liest Pillow aus (JPEG/PNG unverändert,
@@ -309,7 +316,7 @@ Bildauswertungen und 4000 Megapixel; der Seiteninhalt wird begrenzt durchlaufen 
 Hinweis ausgelassen und nicht wiederholt. Reine Vektorseiten (CAD-Pläne mit Text als Kurven) gelten als
 Seiten ohne Text.
 
-**Eigener Leseprozess:** PDF-, Word- und Mail-Dateien (auch Mail-Anhänge) werden nicht im
+**Eigener Leseprozess:** PDF-, Word-, OpenDocument- und Mail-Dateien (auch Mail-Anhänge) werden nicht im
 Anwendungsprozess gelesen, sondern in einem dauerhaften Leseprozess mit Grenzen je Datei:
 Speicher `EXTRACT_MEMORY_MB` (2048), Rechenzeit `EXTRACT_CPU_SECONDS` (120 s; das Warten auf das
 Sprachmodell zählt nicht) und `EXTRACT_WALL_SECONDS` (3600 s ohne Fortschritt). Eine beschädigte
@@ -491,7 +498,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
 | `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
-| `EXTRACT_ISOLATION` | `1` (`0` bei `APP_ENV=test`) | PDF/Word/Mails in einem eigenen Leseprozess mit Grenzen lesen |
+| `EXTRACT_ISOLATION` | `1` (`0` bei `APP_ENV=test`) | PDF/Word/OpenDocument/Mails in einem eigenen Leseprozess mit Grenzen lesen |
 | `EXTRACT_MEMORY_MB` | `2048` | Speichergrenze des Leseprozesses (mindestens 256) |
 | `EXTRACT_CPU_SECONDS` | `120` | Rechenzeit je Datei; Warten auf das Sprachmodell zählt nicht |
 | `EXTRACT_WALL_SECONDS` | `3600` | Abbruch einer Datei nach so langer Zeit ohne Fortschritt (neuer Versuch später) |

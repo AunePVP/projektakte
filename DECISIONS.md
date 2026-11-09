@@ -110,7 +110,7 @@ bleibt daher unter 1.0, bis die echten Dienste geprüft sind. Nach der unabhäng
 - **Abschnitte entlang von Absätzen**: PDF-Zeilenumbrüche werden zu Absätzen zusammengefügt,
   Listenpunkte („Auflage 7 …“, „TOP 2 …“, „1.“) bleiben eigene Einheiten. Einheiten werden bis
   900 Zeichen gepackt; der nächste Abschnitt beginnt mit dem letzten Absatz des vorigen, wenn dieser
-  ≤ 250 Zeichen hat. Überschriften (Markdown `#`, DOCX-Formatvorlagen „Heading“/„Überschrift“)
+  ≤ 250 Zeichen hat. Überschriften (Markdown `#`, DOCX- und ODF-Formatvorlagen „Heading“/„Überschrift“)
   beginnen einen neuen Abschnitt und werden als Kontext gespeichert. Abschnitte überschreiten nie
   eine Seitengrenze, damit die Seitenangabe stimmt.
 - **Eigene Faltung für den Volltext** (`textutil.fold`: Kleinschreibung, Umlaute ohne Punkte, ß→ss),
@@ -576,4 +576,29 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   macht Quellenangaben mehrdeutig.
 - *Trennzeichen aus der Position im Treffer*: keine neue benannte Gruppe im regulären Ausdruck, weil ein
   eigenes `PROJECT_NUMBER_PATTERN` nur `num`/`name` reserviert.
+
+**OpenDocument mit der Standardbibliothek**
+- *zipfile und expat reichen*: keine neue Abhängigkeit; gelesen werden nur `content.xml` und für die
+  Passwortprüfung `META-INF/manifest.xml`. Wie Word-Dateien im eigenen Leseprozess.
+- *Beim Parsen lesen, je Absatz/Zeile/Folie*: Jede Einheit wird als kleiner Baum gesammelt, in Zeilen
+  umgesetzt und verworfen – eine Tabelle mit einer Million Zeilen braucht den Speicher einer Zeile. Weil
+  ein leeres Element nur vier Byte XML braucht, aber als Knoten etwa 200 Byte, hat auch eine Einheit eine
+  Grenze (500.000 Elemente), ebenso die Zahl verschiedener Namen (expat merkt sich jeden für die ganze
+  Datei).
+- *Nur gespeichert oder deflate*: Andere Kompressionen (bzip2, LZMA) entpackt zipfile unter Python 3.12
+  in einem Block beliebiger Größe – sie kommen in ODF nicht vor und werden abgelehnt; so begrenzen die
+  beim Lesen gezählten Bytes den Speicher wirklich.
+- *Große Tabellen teilweise statt gar nicht*: Über 64 MB entpacktem Inhalt wird der Anfang gelesen und
+  das Dokument als unvollständig markiert – Raumbücher, LVs und Exporte verlieren sonst ihren ganzen Text.
+- *Externe DTD erlaubt, eigene nicht*: OpenOffice 1.x schreibt immer `<!DOCTYPE … "office.dtd">`; sie wird
+  nie geladen. Interne DTD-Teile und Entity-Deklarationen werden abgelehnt (Billion Laughs, XXE).
+- *Fußnoten nach dem Absatz*: „35 m2“ aus Wert und Fußnotenzeichen würde die Volltextsuche stören.
+- *Keine automatischen Nummern aus Formatvorlagen*, kein `meta.xml` (oft Reste der Vorlage) – wie bei Word.
+- *Wiederholungen begrenzt*: Leere Zellen und Zeilen werden nie vervielfacht (LibreOffice schreibt den
+  Rest eines Blatts als eine leere Zeile mal eine Million), nicht leere höchstens 100-mal und je Datei
+  höchstens 1 Mio. Zeichen an Kopien – gleiche Kopien bringen der Suche nichts.
+- *Grenzen sind endgültig*: unvollständig, ohne erneuten Versuch (eine neue Extraktionsversion liest
+  sie wieder); DTD und Passwort ändern sich nie. `EXTRACT_VERSION` bleibt: Dateien eines bisher nicht
+  gelesenen Formats wurden nie gespeichert und werden als neue Dateien gelesen – nur Mail-Anhänge waren
+  gespeichert („Format … nicht unterstützt“) und werden einmal aus dem Cache nachgelesen.
 

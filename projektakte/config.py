@@ -237,7 +237,7 @@ class Settings:
     llm_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
     rerank_api_key: str = field(default="", repr=False)
-    # reading PDF, Word and mail files in a worker process with operating-system limits (extract_worker):
+    # reading PDF, Word, OpenDocument and mail files in a worker process with operating-system limits (extract_worker):
     # on unless APP_ENV=test; address space in MB, CPU seconds per file, and a wall-clock backstop in
     # seconds without progress (every answer of the vision model starts it again)
     extract_isolation: bool = True

@@ -22,7 +22,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
-- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.800 Tests, etwa 90 s). Docker-Probelauf:
+- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.860 Tests, etwa 80 s). Docker-Probelauf:
   `sh scripts/docker-smoke.sh`.
 
 ## 3. Stand in Zahlen
@@ -74,7 +74,7 @@ Abschnitt 9).
 
 ## 5. Wichtige Eigenschaften (Kurzfassung von DECISIONS.md)
 
-- **Eigener Leseprozess:** PDF, Word und Mails (auch Anhänge) werden in einem eigenen Prozess mit
+- **Eigener Leseprozess:** PDF, Word, OpenDocument und Mails (auch Anhänge) werden in einem eigenen Prozess mit
   Speicher- (2 GB) und Rechenzeitgrenze (120 s CPU je Datei) gelesen. Eine kaputte oder aufgeblähte
   Datei wird vermerkt, die Anwendung bleibt stabil.
 - **Zeitbudget je Frage** (`ASK_DEADLINE`), jeder KI-Aufruf nach Gesamtdauer begrenzt. Ungültige
@@ -268,7 +268,8 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
   Aufträge in einem Zwischenordner im Bauvorhaben (`…/1015_PDF_…/101500_…`), doppelt verschachtelte
   Kopien (`1071_…/1071_…/107100_…`), mehrere Ordner mit derselben Auftragsnummer, Kategorie-Ordner
   direkt im Bauvorhaben. „Ausgang“ fehlt in fast allen älteren Aufträgen (kein Standard).
-- **Gebaut seit dem ersten Lauf:** Mehrere Ordner mit derselben Auftragsnummer sind ein Projekt
+- **Gebaut seit dem ersten Lauf:** `.odt`/`.ods`/`.odp` (auch alte `.sxw`) werden gelesen – die 14.150
+  `.odt`-Dateien zählen jetzt als lesbar. Mehrere Ordner mit derselben Auftragsnummer sind ein Projekt
   (README, „Mehrere Ordner mit derselben Nummer“) – die 98 doppelten Nummern und die Kategorie-Ordner
   ohne Auftragsordner werden mitgelesen; die Ablage-Prüfung meldet sie nur noch als Hinweis. Ein Ordner
   mit der Nummer eines Auftrags in einem fremden Bauvorhaben (ein Datum) wird nicht dazugelegt. Auf einem
@@ -289,9 +290,8 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
 - **Offene Entscheidung:** Projekt = Auftrag (6-stellig, so wie die Ablage gegliedert ist) oder
   Bauvorhaben (4-stellig, alle Aufträge zusammen)? Bei 4-stellig würden Mails, die nur die 6-stellige
   Nummer nennen, nicht mehr automatisch über die Nummer zugeordnet.
-- **Dateitypen:** In `-Mail` liegen vermutlich Outlook-Dateien (`.msg`), in `-Text` evtl. `.doc`, in
-  `-Tab` Excel. Diese liest Projektakte noch nicht (siehe Abschnitt 8, Punkt 3) – mit echten Zahlen
-  zeigt das der Strukturbefehl.
+- **Dateitypen:** Nach `.odt` sind die größten nicht gelesenen Typen `.dwg` (Pläne), `.bak`, `.zip`,
+  `.dxf` und `.xlsx` (siehe Abschnitt 8, Punkt 3) – genaue Zahlen nennt die Ablage-Prüfung.
 
 ## 8. Offene Punkte, nach Wichtigkeit
 
@@ -303,9 +303,10 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
    richtig, sonst kein Vorschlag mit Begründung oder ein falscher, der an den Beispielen auffällt.
    Deshalb immer die Beispiele ansehen, bevor man „Übernehmen“ drückt. Mehrere Ordner mit derselben
    Nummer werden zusammen gelesen (Abschnitt 7a); offen ist nur noch die Bauvorhaben-Ebene.
-3. **Nicht gelesene Dateitypen:** `.doc`, `.xls`/`.xlsx`, `.msg` (Outlook), `.pptx`, `.odt`, `.dwg`.
-   Der Strukturbefehl zeigt, wie viele davon in euren Projekten liegen. `.msg` und `.xlsx` sind
-   vermutlich die wichtigsten Kandidaten zum Ergänzen.
+3. **Nicht gelesene Dateitypen:** `.doc`, `.xls`/`.xlsx`, `.msg` (Outlook), `.pptx`, `.dwg`/`.dxf`
+   (`.odt`/`.ods`/`.odp` werden seit diesem Stand gelesen). Ablage-Prüfung und Strukturbefehl zeigen, wie
+   viele davon in euren Projekten liegen; nach dem ersten Lauf ist `.xlsx` (702) der nächste Kandidat,
+   `.msg` kommt kaum vor.
 4. **plMail-Seite:** Die Änderungen an plMail beschreibt `docs/plmail-prompt.md`. Das ist der Prompt
    für die KI im plMail-Projekt.
 5. **Ideen, besprochen, nicht gebaut:**

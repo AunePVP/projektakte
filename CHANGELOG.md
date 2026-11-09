@@ -48,7 +48,19 @@ Roadmap-Schritt.
 - Ablage-Prüfung: mehrere Ordner mit einer Nummer und Teilordner ohne ihren Auftragsordner sind jetzt
   Hinweise (sie werden gelesen); „Nummer passt nicht zum Bauvorhaben“ auch tiefer und nach dem
   Bauvorhaben, nicht nach einem Jahresordner darin; neue Zeile „davon aus mehreren Ordnern“.
-- 1832 Tests (4 Integrationstests übersprungen, 1 xfail).
+- **OpenDocument lesen:** `.odt`/`.ods`/`.odp` mit Vorlagen und die alten OpenOffice-1.x-Formate
+  (`.sxw`/`.sxc`/`.sxi`) – auf der Freigabe lagen rund 14.150 `.odt`-Dateien, die bisher übersprungen
+  wurden. Ohne neue Abhängigkeit (zipfile, expat), im eigenen Leseprozess, mit Grenzen (64 MB entpackter
+  Inhalt, bei größeren Tabellen der Anfang; 10.000 Bestandteile; 100 Ebenen; 500.000 Elemente je Absatz,
+  Zeile oder Folie; 10.000 verschiedene Namen; 32 Mio. Zeichen; Wiederholungen in Tabellen höchstens
+  100-mal und zusammen höchstens 1 Mio. Zeichen). Zip-Bomben, andere Kompressionen als ODF sie kennt,
+  DTDs mit Entities und passwortgeschützte Dateien werden ohne erneuten Versuch abgelehnt.
+- Mail-Anhänge, die eine frühere Version als „Format … nicht unterstützt“ gespeichert hat, werden aus
+  dem Anhang-Cache gelesen, sobald ihr Format unterstützt wird (betrifft `.odt`-Anhänge).
+- Läuft das Lesen einer Datei in die Speichergrenze, wird sie als „zu groß“ vermerkt, statt den
+  Leseprozess beim Protokollieren ein zweites Mal an der Grenze scheitern zu lassen (vorher: Absturz
+  des Leseprozesses und endlose Wiederholung).
+- 1862 Tests (4 Integrationstests übersprungen, 1 xfail).
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

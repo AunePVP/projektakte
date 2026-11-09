@@ -1,11 +1,11 @@
 """Reading untrusted files in a worker process with operating-system limits.
 
-PDF, Word and mail files are parsed with pypdf, Pillow (libjpeg, OpenJPEG), jbig2dec, python-docx and the
-email package – also mail attachments, which arrive automatically. The bounds inside the extraction
-(extract.py) keep crafted files cheap where they are known, but a file that finds a hole in them must
-neither exhaust the memory of the app nor keep the indexer busy for hours. So while an indexing pass runs
-with isolation switched on (``EXTRACT_ISOLATION``, on unless ``APP_ENV=test``; see :func:`isolation`),
-:func:`documents.prepare_document` hands these files to one persistent worker process:
+PDF, Word, OpenDocument and mail files are parsed with pypdf, Pillow (libjpeg, OpenJPEG), jbig2dec,
+python-docx, zipfile/expat and the email package – also mail attachments, which arrive automatically. The
+bounds inside the extraction (extract.py) keep crafted files cheap where they are known, but a file that
+finds a hole in them must neither exhaust the memory of the app nor keep the indexer busy for hours. So
+while an indexing pass runs with isolation switched on (``EXTRACT_ISOLATION``, on unless ``APP_ENV=test``;
+see :func:`isolation`), :func:`documents.prepare_document` hands these files to one persistent worker process:
 
 * started with the ``spawn`` method – it inherits none of the app's memory – on first use, reused for the
   following files and started again after it ended;
@@ -27,8 +27,8 @@ with isolation switched on (``EXTRACT_ISOLATION``, on unless ``APP_ENV=test``; s
   that the app is still its parent before every page and every call of the vision model and ends when
   the app no longer reads its messages – an orphaned worker must not keep calling the model;
 * if it cannot be started (process limits of the system, too little memory for its libraries, a start
-  timeout), the error is logged once per indexing pass and the pass goes on without it: PDF, Word and
-  mail files are recorded as not read and retried with the usual back-off, everything else (text files,
+  timeout), the error is logged once per indexing pass and the pass goes on without it: PDF, Word,
+  OpenDocument and mail files are recorded as not read and retried with the usual back-off, everything else (text files,
   images, mails, embeddings, assignment) is processed. They are deliberately not read in the app process
   instead: a worker that does not start usually means the system is short of processes or memory, and
   reading untrusted files without the limits is what the isolation exists to prevent.
@@ -207,8 +207,8 @@ class ExtractWorker:
                     self._hand_over(request, data)
                 except ExtractWorkerError as exc:
                     self._failure = str(exc)
-                    log.error("%s – PDF-, Word- und Mail-Dateien werden in diesem Durchlauf nicht gelesen und "
-                              "später erneut versucht", exc)
+                    log.error("%s – PDF-, Word-, OpenDocument- und Mail-Dateien werden in diesem Durchlauf nicht "
+                              "gelesen und später erneut versucht", exc)
                 else:
                     return self._result(filename, llm)
             return failed(NOT_STARTED_TEXT, retry=True)
@@ -588,7 +588,7 @@ def current() -> ExtractWorker | None:
 
 
 def _takes(worker: ExtractWorker | None, filename: str, llm) -> bool:
-    """Does the worker read this file? PDF, Word, mail – formats whose structure is parsed – with a model
+    """Does the worker read this file? PDF, Word, OpenDocument, mail – formats whose structure is parsed – with a model
     it can rebuild."""
     return worker is not None and Path(filename).suffix.lower() in STRUCTURED_EXT and portable(llm)
 

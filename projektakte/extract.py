@@ -10,23 +10,31 @@ import io
 import logging
 import math
 import re
+import struct
+import zlib
+import zipfile
 from collections.abc import Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from email import policy
 from html.parser import HTMLParser
 from pathlib import Path
+from xml.parsers import expat
 
 log = logging.getLogger("projektakte.extract")
 
 TEXT_EXT = {".txt", ".text", ".md", ".markdown", ".csv", ".log"}
 IMAGE_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
              ".tif": "image/tiff", ".tiff": "image/tiff", ".webp": "image/webp"}
-SUPPORTED_EXT = TEXT_EXT | {".pdf", ".docx", ".eml"} | set(IMAGE_EXT)
+# OpenDocument (LibreOffice, OpenOffice) text, spreadsheet and presentation files with their templates, and
+# their predecessors in the OpenOffice.org 1.x/StarOffice XML format – the same ZIP package with content.xml
+# (see _odf). The binary StarOffice 5 formats (.sdw, .sdc, .sdd) are something else and not read.
+ODF_EXT = {".odt", ".ott", ".ods", ".ots", ".odp", ".otp", ".sxw", ".stw", ".sxc", ".stc", ".sxi", ".sti"}
+SUPPORTED_EXT = TEXT_EXT | {".pdf", ".docx", ".eml"} | ODF_EXT | set(IMAGE_EXT)
 # Formats whose structure is parsed (PDF objects and images, ZIP/XML, MIME): during an indexing pass with
 # EXTRACT_ISOLATION they are read in the extraction worker process with operating-system limits (see
 # extract_worker). Text files are only decoded, and images go to the vision model as they are.
-STRUCTURED_EXT = {".pdf", ".docx", ".eml"}
+STRUCTURED_EXT = {".pdf", ".docx", ".eml"} | ODF_EXT
 # The address-space limit of the process in MB, if it has one (set in the extraction worker): for messages,
 # and a result cut short by it names it (Extracted.limit), so a higher limit reads the file again.
 MEMORY_LIMIT_MB: int | None = None
@@ -54,6 +62,10 @@ VISION_PROMPT = (
 #    can draw no image (vector drawings, CAD plans with outlined text) count as blank instead of "Inhalt
 #    zu umfangreich"; images that are too large to decode (memory, pypdf's data limits) or have no size
 #    are told apart and not retried – incomplete documents of version 5 are read again.
+# A newly read format (OpenDocument) is no reason to bump: a bump reads incomplete documents again, and no
+# file of a format not read before is stored as incomplete (project files of such a format were not stored at
+# all, mail attachments as complete with "Format … nicht unterstützt") – it would only cost a pass over every
+# incomplete document (scans without vision, failed model calls) for nothing.
 EXTRACT_VERSION = 6
 # Images of one PDF page that are sent to the model one by one (scanners write one image per page).
 # A page with more images – scanners and PDF tools that cut a page into strips or tiles – is put
@@ -1637,6 +1649,640 @@ def _eml(data: bytes) -> Extracted:
     return Extracted([Page(None, f"{head}\n\n{text}".strip())])
 
 
+# -- OpenDocument ------------------------------------------------------------------------------------------------
+# An OpenDocument file (and an OpenOffice.org 1.x one) is a ZIP package; its text is in content.xml, read here
+# with the standard library alone (zipfile, expat). The text comes out like that of a Word file: headings as
+# Markdown headings ("#" per outline level, so chunking keeps the sections), paragraphs as lines, list items
+# with "- ", table rows as their non-empty cells joined by " | ", each spreadsheet under its name as a heading,
+# each slide as its own page. Footnotes and endnotes follow their paragraph ("Fußnote 1: …"); text deleted with
+# change tracking, comments, tables of contents and indexes (copies of the text), embedded objects and images
+# are left out. Only content.xml and – for the password check – META-INF/manifest.xml are decompressed.
+#
+# Bounds, all checked before the work they bound (a ZIP package decompresses to any size, and a few bytes of
+# spreadsheet XML declare a million rows). A file beyond one is not read, or read in part with a note; it is
+# not retried (the file will not change), but stays incomplete: a later extraction version reads it again.
+# Members are only decompressed with the methods OpenDocument allows (stored, deflate): those decompress in
+# small steps, so the bytes counted while reading bound the memory.
+MAX_ODF_MEMBERS = 10_000  # members of the package (a document with many pictures has a few hundred)
+# content.xml decompressed (a text of several hundred pages has a few MB); of a bigger one – a long list in a
+# spreadsheet – the text up to the bound is read, with a note
+MAX_ODF_XML_BYTES = 64_000_000
+MAX_ODF_MANIFEST_BYTES = 4_000_000  # META-INF/manifest.xml decompressed (one short entry per member)
+MAX_ODF_DEPTH = 100  # nesting of XML elements (LibreOffice writes 10 to 30 levels; the reading is recursive)
+MAX_ODF_TEXT_CHARS = 32_000_000  # text read from one file; beyond, the rest is left out with a note
+# Elements and pieces of text in one unit (paragraph, list item, table row, slide), which is held in memory
+# until it ends: a list item holding a long nested list has some 100,000; a few bytes of XML per element
+# (<a/>) would otherwise let a small file fill the memory. Beyond, the rest of the file is left out with a note.
+MAX_ODF_UNIT_ITEMS = 500_000
+# Different element and attribute names in content.xml (LibreOffice uses a few hundred): the XML parser keeps
+# every name it meets for the whole file, some 300 bytes each.
+MAX_ODF_NAMES = 10_000
+# A non-empty spreadsheet cell or row repeated more often (table:number-columns-/number-rows-repeated) is read
+# this many times, as long as the copies of one file stay within _ODF_REPEAT_CHARS characters – beyond, one
+# copy (identical copies add nothing to search). Empty ones are never expanded: LibreOffice writes the unused
+# rest of a sheet as one empty row repeated about a million times.
+_ODF_MAX_REPEAT = 100
+_ODF_REPEAT_CHARS = 1_000_000
+# text:s with a larger count (text:c) gives this many spaces – fewer characters than the element has in XML,
+# so the text of a paragraph never outgrows its XML; only repeated cells and rows expand (MAX_ODF_TEXT_CHARS).
+_ODF_MAX_SPACES = 10
+# Bytes of the ZIP central directory allowed per member (46 fixed, the name – LibreOffice's longest are some 70
+# bytes –, extra fields): zipfile reads the whole directory into memory, an entry for every 46 bytes, before any
+# member can be counted, so its size is checked first.
+_ZIP_ENTRY_BYTES = 256
+_ODF_CHUNK = 1 << 16  # decompressed bytes handed to the XML parser at a time
+
+ODF_ENCRYPTED_TEXT = "Datei ist mit einem Passwort geschützt (verschlüsselt) – nicht gelesen"
+ODF_DTD_TEXT = ("Datei nicht gelesen (XML mit eigener DTD bzw. Entity-Deklarationen – aus Sicherheitsgründen "
+                "nicht erlaubt)")
+
+# Both generations of the format, mapped to the same short prefixes: OpenDocument (ODF 1.0 to 1.4 keep these
+# names) and OpenOffice.org 1.x / StarOffice 6–7 (.sxw, .sxc, .sxi).
+_ODF_NAMESPACES = {
+    **{f"urn:oasis:names:tc:opendocument:xmlns:{name}:1.0": prefix for name, prefix in (
+        ("office", "office"), ("text", "text"), ("table", "table"), ("drawing", "draw"),
+        ("presentation", "presentation"), ("style", "style"), ("svg-compatible", "svg"))},
+    **{f"http://openoffice.org/2000/{name}": prefix for name, prefix in (
+        ("office", "office"), ("text", "text"), ("table", "table"), ("drawing", "draw"),
+        ("presentation", "presentation"), ("style", "style"))},
+    "http://openoffice.org/2009/office": "office",  # LibreOffice extensions, e.g. comments on slides
+    "http://www.w3.org/2000/svg": "svg",
+}
+# Left out with everything inside: text deleted with change tracking (the document shows the text after the
+# changes), comments, generated copies of the text (tables of contents, indexes) and declarations, forms and
+# scripts, embedded objects and images (with their data and alternative text), definitions of a spreadsheet
+# (validation messages, named ranges, pivot tables).
+_ODF_SKIP = frozenset({
+    "text:tracked-changes", "table:tracked-changes", "office:annotation", "office:annotation-end",
+    "text:table-of-content", "text:illustration-index", "text:table-index", "text:object-index", "text:user-index",
+    "text:alphabetical-index", "text:bibliography", "text:sequence-decls", "text:variable-decls",
+    "text:user-field-decls", "text:dde-connection-decls", "office:forms", "office:scripts",
+    "office:event-listeners", "draw:image", "draw:object", "draw:object-ole", "office:binary-data", "svg:title",
+    "svg:desc", "draw:page-thumbnail", "table:content-validations", "table:named-expressions",
+    "table:named-range", "table:database-ranges", "table:data-pilot-tables", "table:dde-links",
+    "table:label-ranges", "table:consolidation", "table:calculation-settings",
+})
+_ODF_LISTS = frozenset({"text:list", "text:ordered-list", "text:unordered-list"})  # the latter two: 1.x
+_ODF_ITEMS = frozenset({"text:list-item", "text:list-header", "text:numbered-paragraph"})
+_ODF_TABLES = frozenset({"table:table", "table:sub-table"})  # sub-table: tables in cells of 1.x files
+# Block elements: inside a paragraph (a text frame, a shape, a note) they are read as lines of their own.
+_ODF_BLOCKS = frozenset({"text:p", "text:h", "text:section", "table:table-row"}) | _ODF_LISTS | _ODF_ITEMS | _ODF_TABLES
+_ODF_NOTES = frozenset({"text:note", "text:footnote", "text:endnote"})
+_ODF_CITATIONS = frozenset({"text:note-citation", "text:footnote-citation", "text:endnote-citation"})
+_ODF_NOTE_BODIES = frozenset({"text:note-body", "text:footnote-body", "text:endnote-body"})
+# Read as a whole when they end and then dropped: paragraphs, headings, list items, table rows and slides not
+# inside another one. Only these are kept in memory while content.xml is parsed.
+_ODF_UNITS = frozenset({"text:p", "text:h", "table:table-row", "draw:page"}) | _ODF_ITEMS
+_ODF_ATTRS = frozenset({  # attributes that are kept (the rest is formatting)
+    "text:outline-level", "text:level", "text:c", "text:style-name", "text:note-class", "text:label",
+    "table:name", "table:number-columns-repeated", "table:number-rows-repeated", "presentation:class",
+    "office:class", "style:name", "style:family", "style:parent-style-name",
+    *(f"{prefix}:{name}" for prefix in ("office", "table")  # cell values; table: in 1.x files
+      for name in ("value-type", "value", "date-value", "time-value", "boolean-value", "string-value")),
+})
+_ODF_VALUES = {"float": "value", "percentage": "value", "currency": "value", "date": "date-value",
+               "time": "time-value", "boolean": "boolean-value", "string": "string-value"}
+# White space in the character data of a paragraph is collapsed (ODF 1.2, part 1, 6.1.2); explicit spaces,
+# tabs and line breaks are elements. Soft hyphens are dropped.
+_ODF_WHITESPACE = {9: " ", 10: " ", 13: " ", 0xAD: None}
+_RUNS_OF_SPACES = re.compile(" {2,}")
+_EOCD = struct.Struct("<4s4H2LH")  # ZIP end of central directory record
+_EOCD64 = struct.Struct("<4sQ2H2L4Q")  # ZIP64 end of central directory record
+
+
+class _OdfRefused(Exception):
+    """The file is not read (a bound, a password, a DTD): ``message`` says why. ``incomplete``: a later
+    extraction version may read it (a bound), else it never can."""
+
+    def __init__(self, message: str, *, incomplete: bool = True):
+        super().__init__(message)
+        self.message = message
+        self.incomplete = incomplete
+
+
+class _OdfFull(Exception):
+    """A bound reached while reading (MAX_ODF_TEXT_CHARS, MAX_ODF_UNIT_ITEMS, MAX_ODF_XML_BYTES): the text read
+    so far is kept, ``note`` says what was left out; ``reason`` is the bound, for a file without any text
+    before it."""
+
+    def __init__(self, note: str, reason: str):
+        super().__init__(note)
+        self.note = note
+        self.reason = reason
+
+
+_NO_ATTRS: dict[str, str] = {}  # (shared by all elements without kept attributes – never changed)
+
+
+class _Node:
+    """An element of a unit being read: its short tag, the attributes in _ODF_ATTRS and its children –
+    character data (str) and elements in document order."""
+    __slots__ = ("tag", "attrs", "children")
+
+    def __init__(self, tag: str, attrs: dict[str, str]):
+        self.tag = tag
+        self.attrs = attrs
+        self.children: list[_Node | str] = []
+
+    def elements(self):
+        return (c for c in self.children if isinstance(c, _Node))
+
+
+class _Bullet:
+    """The bullet of a list item ("- ", or the number the file states): shown before the item's first
+    paragraph – once, also for the items it is nested in."""
+    __slots__ = ("label", "outer")
+
+    def __init__(self, label: str | None, outer: _Bullet | None):
+        self.label = label
+        self.outer = outer
+
+    def take(self) -> str:
+        label, bullet = self.label or "", self
+        while bullet is not None:
+            bullet.label, bullet = None, bullet.outer
+        return label
+
+
+@dataclass(frozen=True)
+class _OdfContext:
+    cell: bool = False  # in a table cell or a note: plain text, no heading marks or bullets
+    title: bool = False  # in the title of a slide: paragraphs are headings
+    bullet: _Bullet | None = None  # the list item the paragraphs belong to
+
+
+_ODF_TOP = _OdfContext()
+_ODF_FLAT = _OdfContext(cell=True)
+
+
+class _OdfText:
+    """The text of one paragraph with the white space rules of ODF: runs of white space in the character data
+    – also across elements – are one space, a leading one is dropped; text:s, text:tab and text:line-break
+    are kept as they are."""
+    __slots__ = ("parts", "space")
+
+    def __init__(self):
+        self.parts: list[str] = []
+        self.space = True
+
+    def raw(self, text: str) -> None:
+        text = _RUNS_OF_SPACES.sub(" ", text.translate(_ODF_WHITESPACE))
+        if self.space and text.startswith(" "):
+            text = text[1:]
+        if text:
+            self.parts.append(text)
+            self.space = text.endswith(" ")
+
+    def literal(self, text: str) -> None:
+        self.parts.append(text)
+        self.space = False
+
+    def value(self) -> str:
+        return "".join(self.parts)
+
+
+def _node_text(node: _Node) -> str:
+    return "".join(c if isinstance(c, str) else _node_text(c) for c in node.children)
+
+
+def _flat(lines: list[str]) -> str:
+    """Lines as one line: a table cell, a note."""
+    return " ".join(" ".join(lines).split())
+
+
+def _count(value: str | None, cap: int) -> int:
+    """A count attribute (text:c, number-…-repeated): 1 if missing or invalid, at most ``cap``."""
+    try:
+        return max(0, min(int(value), cap)) if value is not None else 1
+    except ValueError:
+        return 1
+
+
+def _heading_style(name: str | None) -> bool:
+    """A paragraph style that makes a heading, as for Word files: Title, Heading, Überschrift … – ODF writes a
+    space in a style name as "_20_"."""
+    return bool(name) and name.lower().startswith(("heading", "überschrift", "title", "titel"))
+
+
+def _size_text(n: int) -> str:
+    return f"{_n(n // 1_000_000)} MB" if n >= 1_000_000 else f"{_n(n // 1000)} KB"
+
+
+class _OdfReader:
+    """Reads content.xml while it is parsed (expat): each unit (_ODF_UNITS) is collected as a small tree and
+    turned into lines when it ends, then dropped – a spreadsheet with a million rows needs the memory of
+    one row. Outside units only what the units need is kept (open elements, sheet name, heading styles), and
+    of the elements left out (_ODF_SKIP) nothing at all, wherever they are."""
+
+    def __init__(self):
+        self.lines: list[str] = []  # text outside slides
+        self.slides: list[Page] = []
+        self.full: _OdfFull | None = None  # the bound reached, if any
+        self._names: dict[str, str] = {}
+        self._depth = 0
+        self._skip = 0  # depth inside a left-out element (_ODF_SKIP): nothing of it is kept
+        self._open: list[str] = []  # open elements outside units
+        self._nodes: list[_Node] = []  # the open elements of the unit being read
+        self._spreadsheet = False
+        self._sheet: str | None = None  # name of the sheet whose rows come next, until it is written
+        self._slide = 0
+        self._heading_styles: set[str] = set()  # automatic paragraph styles derived from a heading style
+        self._spent = 0
+        self._items = 0  # elements and pieces of text of the unit being read
+        self._repeat_left = _ODF_REPEAT_CHARS  # characters left for copies of repeated cells and rows
+
+    def parser(self):
+        return _odf_parser(self._start, self._end, self._data)
+
+    def pages(self) -> list[Page]:
+        text = "\n".join(self.lines).strip()
+        return ([Page(None, text)] if text else []) + self.slides
+
+    # -- parsing ------------------------------------------------------------------------------------------------
+    def _tag(self, name: str) -> str:
+        """``uri local`` (expat) → ``prefix:local``; an unknown namespace gives ``?:local``."""
+        tag = self._names.get(name)
+        if tag is None:
+            if len(self._names) >= MAX_ODF_NAMES:
+                raise _OdfRefused(f"Datei nicht gelesen (mehr als {_n(MAX_ODF_NAMES)} verschiedene Element- und "
+                                  "Attributnamen)")
+            uri, _, local = name.rpartition(" ")
+            tag = self._names[name] = f"{_ODF_NAMESPACES.get(uri, '?')}:{local}" if uri else local
+        return tag
+
+    def _attrs(self, attrs: dict[str, str]) -> dict[str, str]:
+        kept = {tag: value for name, value in attrs.items() if (tag := self._tag(name)) in _ODF_ATTRS}
+        return kept or _NO_ATTRS
+
+    def _start(self, name: str, attrs: dict[str, str]) -> None:
+        self._depth += 1
+        if self._depth > MAX_ODF_DEPTH:
+            raise _OdfRefused(f"Datei nicht gelesen (mehr als {MAX_ODF_DEPTH} Ebenen verschachtelt)")
+        tag = self._tag(name)  # (every name counts, also in left-out elements: MAX_ODF_NAMES)
+        kept = self._attrs(attrs) if attrs else _NO_ATTRS
+        if self._skip:
+            self._skip += 1
+            return
+        if tag in _ODF_SKIP:
+            self._skip = 1
+        elif self._nodes:
+            self._grow()
+            node = _Node(tag, kept)
+            self._nodes[-1].children.append(node)
+            self._nodes.append(node)
+        elif tag in _ODF_UNITS:
+            self._items = 0
+            self._nodes.append(_Node(tag, kept))
+        else:
+            self._container(tag, kept)
+
+    def _grow(self) -> None:
+        self._items += 1
+        if self._items > MAX_ODF_UNIT_ITEMS:
+            self._nodes.clear()  # (the unit is not read: its memory goes at once)
+            bound = f"ein Absatz bzw. eine Zeile oder Folie mit über {_n(MAX_ODF_UNIT_ITEMS)} Elementen"
+            raise _OdfFull(f"Text ab einem Absatz bzw. einer Zeile oder Folie mit über {_n(MAX_ODF_UNIT_ITEMS)} "
+                           "Elementen nicht gelesen (Grenze je Abschnitt)", bound)
+
+    def _container(self, tag: str, attrs: dict[str, str]) -> None:
+        if tag == "office:spreadsheet":
+            self._spreadsheet = True
+        elif tag == "office:document-content":  # 1.x files name the kind here; the body has no own element
+            self._spreadsheet = attrs.get("office:class") == "spreadsheet"
+        elif tag in _ODF_TABLES and self._spreadsheet and not _ODF_TABLES.intersection(self._open):
+            self._sheet = " ".join(attrs.get("table:name", "").split()) or None
+        elif tag == "style:style" and attrs.get("style:family") == "paragraph" and attrs.get("style:name") \
+                and _heading_style(attrs.get("style:parent-style-name")):
+            self._heading_styles.add(attrs["style:name"])
+        self._open.append(tag)
+
+    def _end(self, name: str) -> None:
+        self._depth -= 1
+        if self._skip:
+            self._skip -= 1
+        elif self._nodes:
+            node = self._nodes.pop()
+            if not self._nodes:
+                self._unit(node)
+        elif self._open:
+            tag = self._open.pop()
+            if tag in _ODF_TABLES and not _ODF_TABLES.intersection(self._open):
+                self._sheet = None  # a sheet without rows: no heading
+
+    def _data(self, text: str) -> None:
+        if self._nodes and not self._skip:
+            self._grow()
+            self._nodes[-1].children.append(text)
+
+    def _spend(self, chars: int) -> None:
+        self._spent += chars
+        if self._spent > MAX_ODF_TEXT_CHARS:
+            raise _OdfFull(f"Text nach {_n(MAX_ODF_TEXT_CHARS)} Zeichen gekürzt (Grenze je Datei)",
+                           f"Text über {_n(MAX_ODF_TEXT_CHARS)} Zeichen")
+
+    def _copies(self, text: str, attr: str | None) -> int:
+        """How often a repeated cell or row is written: as often as the file says, at most _ODF_MAX_REPEAT
+        times, and once when the copies of the file would pass _ODF_REPEAT_CHARS."""
+        n = max(1, _count(attr, _ODF_MAX_REPEAT))
+        if n > 1:
+            extra = len(text) * (n - 1)
+            if extra > self._repeat_left:
+                return 1
+            self._repeat_left -= extra
+        return n
+
+    # -- units --------------------------------------------------------------------------------------------------
+    def _unit(self, node: _Node) -> None:
+        lines: list[str] = []
+        if node.tag == "draw:page":  # a slide (or a page of a drawing): one page with its number
+            self._slide += 1
+            notes: list[str] = []
+            for child in node.elements():
+                self._block(child, _ODF_TOP, notes if child.tag == "presentation:notes" else lines)
+            if notes:
+                lines += ["Notizen:", *notes]
+            for line in lines:
+                self._spend(len(line) + 1)
+            text = "\n".join(lines).strip()
+            if text:
+                self.slides.append(Page(self._slide, text))
+            return
+        self._block(node, _ODF_TOP, lines)
+        if lines and self._sheet:
+            lines.insert(0, f"\n# {self._sheet}")
+            self._sheet = None
+        for line in lines:
+            self._spend(len(line) + 1)
+            self.lines.append(line)
+
+    def _block(self, node: _Node, ctx: _OdfContext, lines: list[str]) -> None:
+        tag = node.tag
+        if tag in ("text:p", "text:h"):
+            self._paragraph(node, ctx, lines)
+        elif tag in _ODF_ITEMS:
+            self._item(node, ctx, lines)
+        elif tag == "table:table-row":
+            self._row(node, lines)
+        else:  # lists, tables, sections, frames, shapes: what they contain
+            if node.attrs.get("presentation:class") == "title" and not ctx.cell:
+                ctx = replace(ctx, title=True)
+            for child in node.elements():
+                self._block(child, ctx, lines)
+
+    def _item(self, node: _Node, ctx: _OdfContext, lines: list[str]) -> None:
+        label = None
+        if node.tag != "text:list-header":  # a list header has no bullet
+            number = next((c for c in node.elements() if c.tag == "text:number"), None)
+            stated = " ".join(_node_text(number).split()) if number is not None else ""
+            label = f"{stated} " if stated else "- "
+        inner = replace(ctx, bullet=_Bullet(label, ctx.bullet))
+        for child in node.elements():
+            if child.tag != "text:number":
+                self._block(child, inner, lines)
+
+    def _paragraph(self, node: _Node, ctx: _OdfContext, lines: list[str]) -> None:
+        notes: list[str] = []
+        boxes: list[str] = []  # text frames, shapes and the like inside the paragraph: lines of their own
+        out = _OdfText()
+        self._inline(node, ctx, out, notes, boxes)
+        text = out.value()
+        if ctx.cell:
+            lines += [text, *boxes, *notes]
+            return
+        level = self._heading_level(node, ctx)
+        if level:
+            text = " ".join(text.split())
+            if text:
+                if ctx.bullet:
+                    ctx.bullet.take()
+                lines.append(f"\n{'#' * level} {text}")
+        else:
+            text = text.strip()
+            if text:
+                lines.append((ctx.bullet.take() if ctx.bullet else "") + text)
+        lines += boxes + notes
+
+    def _heading_level(self, node: _Node, ctx: _OdfContext) -> int:
+        if node.tag == "text:h":  # text:level in 1.x files; 1 if missing
+            return _count(node.attrs.get("text:outline-level") or node.attrs.get("text:level"), 6) or 1
+        style = node.attrs.get("text:style-name")
+        return 1 if ctx.title or style in self._heading_styles or _heading_style(style) else 0
+
+    def _inline(self, node: _Node, ctx: _OdfContext, out: _OdfText, notes: list[str], boxes: list[str]) -> None:
+        for child in node.children:
+            if isinstance(child, str):
+                out.raw(child)
+                continue
+            tag = child.tag
+            if tag in _ODF_CITATIONS:  # outside a note: no text of its own
+                continue
+            if tag == "text:s":
+                out.literal(" " * _count(child.attrs.get("text:c"), _ODF_MAX_SPACES))
+            elif tag in ("text:tab", "text:tab-stop"):  # tab-stop: 1.x files
+                out.literal("\t")
+            elif tag == "text:line-break":
+                out.literal("\n")
+            elif tag in _ODF_NOTES:
+                note = self._note(child)
+                if note:
+                    notes.append(note)
+            elif tag == "text:number":  # the number of a heading as the file states it
+                out.raw(" ".join(_node_text(child).split()) + " ")
+            elif tag in _ODF_BLOCKS:
+                self._block(child, _ODF_FLAT if ctx.cell else _ODF_TOP, boxes)
+            else:  # spans, links, fields (their shown value), frames and shapes
+                self._inline(child, ctx, out, notes, boxes)
+
+    def _note(self, node: _Node) -> str | None:
+        """'Fußnote 1: …' / 'Endnote i: …' – kept after the paragraph, not glued to the word it marks."""
+        label, lines = "", []
+        for child in node.elements():
+            if child.tag in _ODF_CITATIONS:
+                label = " ".join(_node_text(child).split()) or child.attrs.get("text:label", "")
+            elif child.tag in _ODF_NOTE_BODIES:
+                for block in child.elements():
+                    self._block(block, _ODF_FLAT, lines)
+        text = _flat(lines)
+        if not text:
+            return None
+        endnote = node.attrs.get("text:note-class", node.tag) in ("endnote", "text:endnote")
+        kind = "Endnote" if endnote else "Fußnote"
+        return f"{kind} {label}: {text}" if label else f"{kind}: {text}"
+
+    def _row(self, node: _Node, lines: list[str]) -> None:
+        """A table row as its non-empty cells joined by " | " (as for Word files). Cells hidden under a merged
+        one are left out; repetitions of non-empty cells and rows count (:meth:`_copies`)."""
+        cells: list[str] = []
+        for cell in node.elements():
+            if cell.tag != "table:table-cell":  # covered-table-cell: hidden under a merged cell
+                continue
+            text = self._cell(cell)
+            if text:
+                cells += [text] * self._copies(text, cell.attrs.get("table:number-columns-repeated"))
+        if cells:
+            line = " | ".join(cells)
+            lines += [line] * self._copies(line, node.attrs.get("table:number-rows-repeated"))
+
+    def _cell(self, cell: _Node) -> str:
+        """The text a cell shows (for a formula its result, as stored by the program that saved the file); a
+        cell with a value but without text (files written by other programs) gives the value."""
+        lines: list[str] = []
+        for child in cell.elements():
+            self._block(child, _ODF_FLAT, lines)
+        text = _flat(lines)
+        if text:
+            return text
+        key = _ODF_VALUES.get(cell.attrs.get("office:value-type") or cell.attrs.get("table:value-type") or "")
+        return (cell.attrs.get(f"office:{key}") or cell.attrs.get(f"table:{key}") or "").strip() if key else ""
+
+
+def _odf_doctype(name, system_id, public_id, has_internal_subset) -> None:
+    # 1.x files name an external DTD (office.dtd), which is never loaded; an internal subset can declare
+    # entities (billion laughs, external files) – LibreOffice never writes one
+    if has_internal_subset:
+        raise _OdfRefused(ODF_DTD_TEXT, incomplete=False)
+
+
+def _odf_entity(*_args) -> None:
+    raise _OdfRefused(ODF_DTD_TEXT, incomplete=False)
+
+
+def _odf_parser(start, end=None, data=None):
+    """An expat parser with namespaces ("uri local" names) that refuses DTDs with an internal subset and any
+    entity declaration, and never reads external entities."""
+    parser = expat.ParserCreate(namespace_separator=" ")
+    parser.buffer_text = True
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    parser.StartDoctypeDeclHandler = _odf_doctype
+    parser.EntityDeclHandler = _odf_entity
+    parser.UnparsedEntityDeclHandler = _odf_entity
+    parser.ExternalEntityRefHandler = _odf_entity
+    parser.StartElementHandler = start
+    if end is not None:
+        parser.EndElementHandler = end
+    if data is not None:
+        parser.CharacterDataHandler = data
+    return parser
+
+
+def _check_zip_directory(data: bytes) -> None:
+    """Refuse a package with too many members before zipfile reads its central directory (into memory, a few
+    hundred bytes per member, whatever their number). The directory is located as zipfile locates it: the
+    end record at the very end, else the last one within the trailing comment, and the ZIP64 record before
+    it if there is one. Without an end record zipfile reports the file as broken."""
+    end = len(data) - _EOCD.size
+    if end < 0:
+        return
+    if not (data[end:end + 4] == b"PK\x05\x06" and data[-2:] == b"\0\0"):
+        # (zipfile looks back over the longest comment, 64 KB, and the end record)
+        end = data.rfind(b"PK\x05\x06", max(0, len(data) - _EOCD.size - (1 << 16)))
+        if end < 0 or end + _EOCD.size > len(data):
+            return
+    entries, size = _EOCD.unpack_from(data, end)[4:6]
+    if end >= 20 and data[end - 20:end - 16] == b"PK\x06\x07":
+        # a ZIP64 end record: directly before its locator, or where the locator says (Python versions differ)
+        for record in {end - 20 - _EOCD64.size, struct.unpack_from("<Q", data, end - 12)[0]}:
+            if 0 <= record <= len(data) - _EOCD64.size and data[record:record + 4] == b"PK\x06\x06":
+                zip64 = _EOCD64.unpack_from(data, record)
+                entries, size = max(entries, zip64[7]), max(size, zip64[8])
+    if entries > MAX_ODF_MEMBERS or size > MAX_ODF_MEMBERS * _ZIP_ENTRY_BYTES:
+        raise _OdfRefused(f"Datei zu groß zum Lesen (mehr als {_n(MAX_ODF_MEMBERS)} Bestandteile)")
+
+
+def _parse_member(package, info, limit: int, what: str, parser, *, partial: bool = False) -> None:
+    """Decompress one member into the parser, at most ``limit`` bytes – counted while reading (a package may
+    state a wrong size). Beyond, a member read ``partial`` ends with what was read so far (_OdfFull), any
+    other is refused – before it is decompressed, if the package states its size. Only the compression
+    methods OpenDocument allows are read: with others (bzip2, LZMA) zipfile would decompress a whole block of
+    any size at once."""
+    if getattr(info, "compress_type", zipfile.ZIP_DEFLATED) not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+        raise _OdfRefused(f"Datei nicht gelesen ({what} mit einer Kompression, die OpenDocument nicht kennt)",
+                          incomplete=False)
+    too_big = f"Datei zu groß zum Lesen ({what} entpackt über {_size_text(limit)})"
+    if info.file_size > limit and not partial:
+        raise _OdfRefused(too_big)
+    read = 0
+    with package.open(info) as stream:
+        while chunk := stream.read(_ODF_CHUNK):
+            if read + len(chunk) > limit:
+                if not partial:
+                    raise _OdfRefused(too_big)
+                parser.Parse(chunk[:limit - read], False)
+                raise _OdfFull(f"{what} entpackt über {_size_text(limit)} – nur der Anfang gelesen",
+                               f"{what} entpackt über {_size_text(limit)}")
+            read += len(chunk)
+            _check_page()
+            parser.Parse(chunk, False)
+    parser.Parse(b"", True)
+
+
+def _odf_encrypted(package, members: dict) -> bool:
+    """Is the document protected with a password? ODF encrypts the members, not the ZIP package; the manifest
+    names the encrypted ones. content.xml encrypted – or missing while others are (ODF 1.4 encrypts the whole
+    package into one member). A password only on macros does not count. A manifest that cannot be read (broken
+    XML, broken compression, too big) says nothing: content.xml decides."""
+    info = members.get("META-INF/manifest.xml")
+    if info is None:
+        return False
+    if info.flag_bits & 0x1:  # encrypted as a ZIP package (not ODF's way, but a password all the same)
+        return True
+    encrypted: set[str] = set()
+    entry: list[str | None] = [None]
+
+    def start(name: str, attrs: dict[str, str]) -> None:
+        local = name.rpartition(" ")[2]
+        if local == "file-entry":
+            entry[0] = next((v for k, v in attrs.items() if k.rpartition(" ")[2] == "full-path"), None)
+        elif local == "encryption-data" and entry[0] is not None:
+            encrypted.add(entry[0])
+
+    try:
+        _parse_member(package, info, MAX_ODF_MANIFEST_BYTES, "Verzeichnis", _odf_parser(start))
+    except _OdfRefused as refused:
+        if refused.message == ODF_DTD_TEXT:  # entity declarations: refused wherever they are
+            raise
+        return False  # too big, an unknown compression: says nothing
+    except (expat.ExpatError, zipfile.BadZipFile, zlib.error, EOFError, ValueError):
+        return False  # a damaged manifest says nothing
+    return "content.xml" in encrypted or ("content.xml" not in members and bool(encrypted))
+
+
+def _read_odf(data: bytes) -> _OdfReader:
+    _check_zip_directory(data)
+    with zipfile.ZipFile(io.BytesIO(data)) as package:
+        infos = package.infolist()
+        if len(infos) > MAX_ODF_MEMBERS:
+            raise _OdfRefused(f"Datei zu groß zum Lesen (mehr als {_n(MAX_ODF_MEMBERS)} Bestandteile)")
+        members = {i.filename: i for i in infos}  # the last of equal names, as zipfile.getinfo
+        content = members.get("content.xml")
+        if (content is not None and content.flag_bits & 0x1) or _odf_encrypted(package, members):
+            raise _OdfRefused(ODF_ENCRYPTED_TEXT, incomplete=False)
+        if content is None:
+            raise ValueError("content.xml fehlt – keine OpenDocument-Datei")
+        reader = _OdfReader()
+        try:
+            _parse_member(package, content, MAX_ODF_XML_BYTES, "Inhalt", reader.parser(), partial=True)
+        except _OdfFull as full:
+            reader.full = full
+    return reader
+
+
+def _odf(data: bytes) -> Extracted:
+    """OpenDocument and OpenOffice.org 1.x files (see above). A broken package or broken XML raises – recorded
+    like any broken file; bounds, passwords and DTDs give a result that is not retried."""
+    try:
+        reader = _read_odf(data)
+    except _OdfRefused as refused:
+        return Extracted([], status="skipped", message=refused.message, incomplete=refused.incomplete)
+    if reader.full:  # not retried (the file will not change); a later extraction version reads it again
+        pages = reader.pages()
+        if not pages:
+            return Extracted([], status="skipped", message=f"Datei zu groß zum Lesen ({reader.full.reason})",
+                             incomplete=True)
+        return Extracted(pages, incomplete=True, message=reader.full.note)
+    return Extracted(reader.pages())
+
+
 def extract(path: Path | str, data: bytes | None = None, *, llm=None) -> Extracted:
     """Extract text from a file. ``data`` may be given (mail attachments); the file is only read.
 
@@ -1666,6 +2312,8 @@ def _extract(path: Path, data: bytes | None, llm) -> Extracted:
             result = _pdf(data, llm, path.name)
         elif ext == ".docx":
             result = _docx(data)
+        elif ext in ODF_EXT:
+            result = _odf(data)
         elif ext == ".eml":
             result = _eml(data)
         else:  # images: plans, photos, scans
@@ -1676,12 +2324,14 @@ def _extract(path: Path, data: bytes | None, llm) -> Extracted:
             result = Extracted([Page(1, text)], method="vision", incomplete=not (text or "").strip())
     except MemoryError as exc:  # within the worker's memory limit (EXTRACT_MEMORY_MB): it will not fit later
         _out_of_memory(exc)
-        log.warning("Extraktion abgebrochen: %s (%s)", path.name, _memory_bound())
-        return too_big_to_read()
+        result = None  # (handled below: here the exception still holds the reading's memory)
     except Exception as exc:  # noqa: BLE001 – one broken file must not stop indexing
         log.warning("Extraktion fehlgeschlagen: %s (%s)", path.name, exc)
         return Extracted([], status="error", message=f"{type(exc).__name__}: {exc}"[:300],
                          incomplete=True, retry=True)
+    if result is None:  # out of memory – past the except block, so what the reading held is freed
+        log.warning("Extraktion abgebrochen: %s (%s)", path.name, _memory_bound())
+        return too_big_to_read()
     if result.status == "ok" and not result.text.strip():
         result.status, result.message = "empty", "kein Text gefunden"
     return result

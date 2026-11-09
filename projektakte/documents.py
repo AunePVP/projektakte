@@ -134,7 +134,7 @@ def prepare_document(*, rel_path: str, data: bytes, mtime: float | None, llm=Non
     """Extract and chunk one file. Slow (PDF parsing, vision model) and touches no database, so the
     caller should not hold a write transaction meanwhile.
 
-    During an indexing pass with isolation switched on, PDF, Word and mail files are read in the
+    During an indexing pass with isolation switched on, PDF, Word, OpenDocument and mail files are read in the
     extraction worker process with operating-system limits (see extract_worker); it raises
     ExtractionAborted when the app shuts down meanwhile – nothing is to be written for the file then."""
     filename = Path(rel_path).name
@@ -662,10 +662,28 @@ def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Pat
 
 
 # -- mail attachments --------------------------------------------------------------------------------
+def mark_newly_readable_attachments(conn: sqlite3.Connection) -> int:
+    """Mail attachments stored as "Format .x nicht unterstützt" whose format is read now (e.g. .odt since
+    OpenDocument is read): marked incomplete with an unknown profile, so :func:`reprocess_attachments`
+    reads them once from the attachment cache. (Project files of an unread format were never stored –
+    they are read as new files.) Returns how many were marked."""
+    exts = sorted(SUPPORTED_EXT)
+    n = conn.execute(
+        "UPDATE documents SET incomplete = 1, extract_profile = '', retry_after = NULL WHERE mail_id IS NOT NULL "
+        "AND incomplete = 0 AND status = 'skipped' AND message LIKE 'Format % nicht unterstützt' "
+        f"AND cache_path IS NOT NULL AND ext IN ({','.join('?' * len(exts))})", exts).rowcount
+    conn.commit()
+    if n:
+        log.info("%d Mail-Anhang/-Anhänge in einem jetzt lesbaren Format werden gelesen", n)
+    return n
+
+
 def reprocess_attachments(conn: sqlite3.Connection, llm=None) -> dict:
     """Process incomplete mail attachments again (from the attachment cache) when the extraction
     profile changed or their retry time is due – the mail itself is unchanged, so the mail import
-    would not look at them again."""
+    would not look at them again. Attachments of a format that was not read before and is now are
+    read as well (:func:`mark_newly_readable_attachments`)."""
+    mark_newly_readable_attachments(conn)
     profile = extraction_profile(llm)
     now = _sqlite_time(_utcnow())
     stats = {"reprocessed": 0, "errors": 0}
