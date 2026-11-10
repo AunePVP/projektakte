@@ -169,6 +169,32 @@ def _int(value: str | None, default: int) -> int:
         return default
 
 
+def _vision_concurrency(env: Mapping[str, str], warnings: list[str]) -> int:
+    """VISION_CONCURRENCY: model calls of the phase "Bildauswertung" at a time, a whole number from 1 (one
+    after the other); default 3, so one of the four places of the AI server stays free for questions."""
+    raw = (env.get("VISION_CONCURRENCY") or "").strip()
+    if not raw:
+        return 3
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        warnings.append(f"VISION_CONCURRENCY={raw} ist ungültig (ganze Zahl ab 1) – es gilt 3")
+        return 3
+    return value
+
+
+def _vision_pass_seconds(env: Mapping[str, str], warnings: list[str]) -> float:
+    """VISION_PASS_SECONDS: time budget of the phase "Bildauswertung" per indexing pass; 0 = no limit."""
+    raw = (env.get("VISION_PASS_SECONDS") or "").strip()
+    value = _float(raw, -1.0) if raw else 1800.0
+    if value < 0:
+        warnings.append(f"VISION_PASS_SECONDS={raw} ist ungültig (Sekunden, 0 = ohne Grenze) – es gilt 1800")
+        return 1800.0
+    return value
+
+
 # below this the extraction worker cannot even load its libraries (about 80 MB) and a scan page
 EXTRACT_MEMORY_MIN_MB = 256
 
@@ -300,6 +326,10 @@ class Settings:
     extract_memory_mb: int = 2048
     extract_cpu_seconds: float = 120.0
     extract_wall_seconds: float = 3600.0
+    # phase "Bildauswertung" (vision.py): model calls at a time, and its time budget per indexing pass in
+    # seconds (0 = until nothing is pending)
+    vision_concurrency: int = 3
+    vision_pass_seconds: float = 1800.0
     # levels below PROJECTS_DIR at which project folders are looked for (PROJECT_FOLDER_DEPTH);
     # None: the depth found by the automatic detection (PROJECT_NUMBER_PATTERN=auto, see structure.py –
     # with auto a number set here is not used, the confirmed proposal's depth is)
@@ -389,6 +419,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         # the demo with fake services reads its plans and scans by default (deterministic transcript)
         llm_vision=(_bool(e.get("LLM_VISION")) if (e.get("LLM_VISION") or "").strip()
                     else demo_mode and (e.get("AI_MODE") or "").strip().lower() == "fake"),
+        vision_concurrency=_vision_concurrency(e, warnings),
+        vision_pass_seconds=_vision_pass_seconds(e, warnings),
         vision_skip_folders=tuple(w.strip() for w in (e.get("VISION_SKIP_FOLDERS") or "").split(",") if w.strip()),
         llm_timeout=_timeout(e, "LLM_TIMEOUT", 120.0, warnings),
         llm_max_tokens=_int(e.get("LLM_MAX_TOKENS"), 800),

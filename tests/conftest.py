@@ -10,6 +10,15 @@ from projektakte.fake_ai import start_background
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: braucht die echten KI-Dienste (sonst übersprungen)")
+    # no Tesseract installed on the machine is used (also not by module-scoped fixtures, which run before
+    # the function-scoped _no_real_tesseract); tests that need one fake it
+    from projektakte import extract
+
+    extract.OCR_COMMAND = _NO_TESSERACT
+    extract._ocr_known.clear()
+
+
+_NO_TESSERACT = "tesseract-gibt-es-im-test-nicht"
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +28,16 @@ def _isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "1")
     for var in ("DEMO_MODE", "AI_MODE", "PROJECTS_DIR", "MAIL_DIR"):
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_tesseract(monkeypatch):
+    """Tests do not depend on a Tesseract installed on the machine: none is found unless a test fakes one
+    (tests/test_bildauswertung_stufen.py)."""
+    from projektakte import extract
+
+    monkeypatch.setattr(extract, "OCR_COMMAND", _NO_TESSERACT)
+    monkeypatch.setattr(extract, "_ocr_known", {})
 
 
 @pytest.fixture(scope="session")

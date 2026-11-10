@@ -1,6 +1,14 @@
-"""Text extraction: classic extraction first, the multimodal model only as a fallback for scans
-and plans (and only with LLM_VISION=1). Without vision, such files are recorded as skipped and
-marked incomplete, so they are read once vision is switched on (see documents.reprocess_due)."""
+"""Text extraction: classic extraction first, the multimodal model for scans and plans (only with
+LLM_VISION=1), Tesseract (if installed) for scanned pages without a text layer.
+
+A PDF page counts as a *scan* when it has no text layer and draws an image, or when it has a text layer
+(an OCR layer) and draws a large image covering much of the page (see _is_scan); digital pages never go
+to the model. In an indexing pass the model is not called while the file is read (``defer_vision``):
+the scan pages get their text layer or Tesseract's text at once and are listed in
+``Extracted.vision_pages``, read later by the background phase "Bildauswertung" (vision.py) with the
+page image *and* that text. Called directly (scripts, tests), the model reads them right away. Without
+vision, such files are marked incomplete, so they are read once vision is switched on (see
+documents.reprocess_due)."""
 from __future__ import annotations
 
 import codecs
@@ -10,7 +18,9 @@ import io
 import logging
 import math
 import re
+import shutil
 import struct
+import subprocess
 import zlib
 import zipfile
 from collections.abc import Callable
@@ -41,10 +51,138 @@ MEMORY_LIMIT_MB: int | None = None
 # Called before each page of a PDF is read, if set. The extraction worker ends itself there when the app
 # that started it has gone (see extract_worker._serve).
 PAGE_CHECK: Callable[[], None] | None = None
-VISION_PROMPT = (
-    "Transkribiere den gesamten lesbaren Text dieses gescannten Dokuments bzw. Plans auf Deutsch. "
-    "Beschreibe bei Plänen kurz Inhalt, Beschriftungen und Brandschutz-Symbole. Erfinde nichts."
+# Called after each page read by Tesseract and each page image prepared, if set: the extraction worker
+# tells the app that the work goes on (its wall-clock backstop starts again, see extract_worker._serve).
+PROGRESS: Callable[[], None] | None = None
+_VISION_RULES = (
+    "Füge handschriftliche Notizen, Häkchen, Kreuze und Markierungen als „[handschriftlich: …]“ und Stempel als "
+    "„[Stempel: …]“ genau an der Stelle ein, zu der sie gehören (dieselbe Zeile, Tabellenzeile oder Position). "
+    "Beschreibe bei Plänen kurz Inhalt, Beschriftungen und Brandschutz-Symbole. Unleserliches als „[unleserlich]“. "
+    "Erfinde nichts. Antworte nur mit dem Text der Seite."
 )
+VISION_PROMPT = (
+    "Transkribiere den gesamten lesbaren Text dieses gescannten Dokuments bzw. Plans auf Deutsch, vollständig "
+    "und getreu. " + _VISION_RULES
+)
+# Text already known for a page (OCR text layer or Tesseract) handed to the model with the page image, at
+# most this many characters (a dense A4 page has about 4.000).
+VISION_TEXT_CHARS = 12_000
+
+
+def vision_prompt(known: str = "") -> str:
+    """The prompt for one page image: with the text already recognised on the page (text layer or Tesseract)
+    the model is asked to give the whole page faithfully, correct recognition errors from the image and put
+    handwriting and stamps where they belong; without it, to transcribe the page (VISION_PROMPT)."""
+    known = (known or "").strip()
+    if not known:
+        return VISION_PROMPT
+    if len(known) > VISION_TEXT_CHARS:
+        known = known[:VISION_TEXT_CHARS] + " …"
+    return ("Dies ist eine gescannte Seite. Darunter steht der Text, den eine Texterkennung auf ihr gefunden hat – er "
+            "kann Fehler enthalten, und Handschrift, Häkchen und Stempel fehlen darin. Gib den vollständigen Text der "
+            "Seite getreu wieder: Übernimm den erkannten Text, berichtige Erkennungsfehler anhand des Bildes und ergänze, "
+            "was fehlt. " + _VISION_RULES + "\n\nErkannter Text:\n<<<\n" + known + "\n>>>")
+
+
+# -- Tesseract (optional): the text of scanned pages without a text layer, before the model reads them ------
+OCR_COMMAND = "tesseract"
+OCR_LANGUAGE = "deu"
+OCR_TIMEOUT = 60.0  # seconds per page image (a dense A4 page at 300 dpi takes a few seconds, a large plan more)
+# Page images are scaled down to this before Tesseract reads them: A4 at 300 dpi has 8.7 MP; larger
+# (plans) take Tesseract minutes and give little text.
+OCR_MAX_PIXELS = 9_000_000
+_ocr_known: dict[str, bool] = {}
+_OCR_WORD = re.compile(r"[^\W\d_]{3,}")
+
+
+def ocr_available() -> bool:
+    """Is Tesseract installed with the German language data? Checked once per process (installing it means
+    a new container or restart). Without it scanned pages are read as before: by the model alone."""
+    if "ok" not in _ocr_known:
+        _ocr_known["ok"] = _probe_ocr()
+    return _ocr_known["ok"]
+
+
+def _probe_ocr() -> bool:
+    exe = shutil.which(OCR_COMMAND)
+    if exe is None:
+        log.info("Texterkennung (Tesseract) nicht installiert – Scans ohne Textebene liest nur das Bildmodell")
+        return False
+    try:
+        done = subprocess.run([exe, "--list-langs"], capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("Texterkennung (Tesseract) nicht nutzbar (%s)", exc)
+        return False
+    if OCR_LANGUAGE not in (done.stdout + done.stderr).decode("utf-8", "replace").split():
+        log.warning("Texterkennung (Tesseract) ohne deutsche Sprachdaten (Paket tesseract-ocr-%s) – nicht genutzt",
+                    OCR_LANGUAGE)
+        return False
+    return True
+
+
+def ocr_image(data: bytes) -> str:
+    """The text Tesseract recognises in an image (JPEG, PNG, TIFF), "" if none or if it fails (logged). Runs
+    as a program of its own with a time limit; in the extraction worker it inherits the worker's memory
+    limit. Text with fewer than three words is dropped (photos give stray letters)."""
+    exe = shutil.which(OCR_COMMAND)
+    if exe is None:
+        return ""
+    data = _for_ocr(data)
+    try:
+        done = subprocess.run([exe, "stdin", "stdout", "-l", OCR_LANGUAGE, "--psm", "3"], input=data,
+                              capture_output=True, timeout=OCR_TIMEOUT, check=False)
+    except subprocess.TimeoutExpired:
+        log.warning("Texterkennung abgebrochen (über %d s)", OCR_TIMEOUT)
+        return ""
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("Texterkennung fehlgeschlagen (%s)", exc)
+        return ""
+    finally:
+        _progress()
+    if done.returncode != 0:
+        lines = done.stderr.decode("utf-8", "replace").strip().splitlines()
+        log.warning("Texterkennung fehlgeschlagen (%s)", (lines[-1] if lines else f"Exitcode {done.returncode}")[:200])
+        return ""
+    return clean_ocr(done.stdout.decode("utf-8", "replace"))
+
+
+def _for_ocr(data: bytes) -> bytes:
+    """The image at most OCR_MAX_PIXELS (a page image of the extraction is a JPEG or PNG of up to
+    MAX_IMAGE_PIXELS); anything that cannot be measured goes to Tesseract as it is."""
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as img:
+            size = _fit(img.size, OCR_MAX_PIXELS)
+            if size is None or size == img.size or img.format not in ("JPEG", "PNG"):
+                return data
+            small = img.convert("L").resize(size)
+        out = io.BytesIO()
+        small.save(out, "PNG")
+        return out.getvalue()
+    except MemoryError:
+        raise
+    except Exception:  # noqa: BLE001 – Tesseract reads it itself or says why not
+        return data
+
+
+def clean_ocr(text: str) -> str:
+    """Tesseract's output tidied: no form feeds, at most one empty line in a row, nothing if it holds fewer
+    than three words of three letters or more."""
+    lines = [line.rstrip() for line in text.replace("\f", "\n").splitlines()]
+    out: list[str] = []
+    for line in lines:
+        if line.strip() or (out and out[-1]):
+            out.append(line if line.strip() else "")
+    text = "\n".join(out).strip()
+    return text if len(_OCR_WORD.findall(text)) >= 3 else ""
+
+
+def _progress() -> None:
+    if PROGRESS is not None:
+        PROGRESS()
+
+
 # Bump when the extraction itself changes in a way that could read more of incomplete documents.
 # 2: images inside PDFs are decoded robustly (Pillow); pages whose images could not be decoded are
 #    retried instead of being recorded as "no text" – documents stored by version 1 are read again.
@@ -62,11 +200,16 @@ VISION_PROMPT = (
 #    can draw no image (vector drawings, CAD plans with outlined text) count as blank instead of "Inhalt
 #    zu umfangreich"; images that are too large to decode (memory, pypdf's data limits) or have no size
 #    are told apart and not retried – incomplete documents of version 5 are read again.
+# 7: scanned pages with a text layer (an OCR layer under a large page image) go to the model as well, with
+#    image and text (handwriting and stamps are only in the image); pages without a text layer are read
+#    by Tesseract first (if installed); in an indexing pass the model reads scan pages later, in the
+#    phase "Bildauswertung" – incomplete documents of version 6 are read again, and complete PDFs of
+#    earlier versions read without the model are checked for such pages there (vision.py).
 # A newly read format (OpenDocument) is no reason to bump: a bump reads incomplete documents again, and no
 # file of a format not read before is stored as incomplete (project files of such a format were not stored at
 # all, mail attachments as complete with "Format … nicht unterstützt") – it would only cost a pass over every
 # incomplete document (scans without vision, failed model calls) for nothing.
-EXTRACT_VERSION = 6
+EXTRACT_VERSION = 7
 # Images of one PDF page that are sent to the model one by one (scanners write one image per page).
 # A page with more images – scanners and PDF tools that cut a page into strips or tiles – is put
 # together into one image at the images' positions on the page and sent as that.
@@ -117,16 +260,26 @@ _JPX_FULL_DECODE_WEIGHT = 8
 # tiles cover the page about once; heavily overlapping placements are no strip or tile scan).
 _COMPOSE_WORK_FACTOR = 8
 _SENDABLE = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+# A page with a text layer counts as a scan (an OCR layer under the scanned image) when the images it draws
+# have at least this many pixels together and cover at least this share of the page. A logo, a stamp image
+# or a photo in a report is smaller; a page whose image positions cannot be followed counts by the pixels.
+SCAN_MIN_PIXELS = 1_000_000
+SCAN_MIN_COVERAGE = 0.5
+# Status of a re-check (extract(..., recheck=True)) that found no scanned page: nothing to store anew.
+UNCHANGED = "unchanged"
 
 
-def extraction_profile(llm) -> str:
-    """What the extraction can read with this model: without vision the LLM plays no part.
+def extraction_profile(llm, ocr: bool | None = None) -> str:
+    """What the extraction can read with this model: without vision the LLM plays no part; Tesseract
+    (``ocr``, default: whether it is installed) adds "+ocr".
 
     Stored per document; incomplete documents are processed again when the profile changes
-    (e.g. LLM_VISION switched on, or another multimodal model)."""
+    (e.g. LLM_VISION switched on, another multimodal model, Tesseract installed)."""
+    ocr = ocr_available() if ocr is None else ocr
+    tail = "+ocr" if ocr else ""
     if llm is not None and getattr(llm, "vision", False):
-        return f"v{EXTRACT_VERSION}:vision:{getattr(llm, 'model', '') or '?'}"
-    return f"v{EXTRACT_VERSION}:text"
+        return f"v{EXTRACT_VERSION}:vision:{getattr(llm, 'model', '') or '?'}{tail}"
+    return f"v{EXTRACT_VERSION}:text{tail}"
 
 
 @dataclass
@@ -150,6 +303,9 @@ class Extracted:
     # "cpu=<seconds>" (see extract_worker.Limits.lifts): the file is read again once that limit is raised
     # (documents.reprocess_due), although the file and the profile stay the same
     limit: str | None = None
+    # pages the model is to read later (extract(..., defer_vision=True)): scan pages, held in ``pages`` with
+    # their text layer or Tesseract's text for now; ``incomplete`` then speaks of the rest of the file only
+    vision_pages: list[int] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -253,14 +409,15 @@ def html_to_text(html: str) -> str:
 PDF_STREAM_TOKENS = 8_000_000
 
 
-def _pdf(data: bytes, llm, name: str) -> Extracted:
+def _pdf(data: bytes, llm, name: str, **kw) -> Extracted:
     from pypdf import apply_configuration
 
     with apply_configuration(stream_parsing_work_maximum_count=PDF_STREAM_TOKENS):
-        return _pdf_pages(data, llm, name)
+        return _pdf_pages(data, llm, name, **kw)
 
 
-def _pdf_pages(data: bytes, llm, name: str) -> Extracted:
+def _open_pdf(data: bytes):
+    """A pypdf reader of the file, None if it is encrypted with a password."""
     from pypdf import PdfReader
     from pypdf.errors import FileNotDecryptedError
 
@@ -272,9 +429,26 @@ def _pdf_pages(data: bytes, llm, name: str) -> Extracted:
         except FileNotDecryptedError:
             opened = 0
         if not opened:
-            return Extracted([], status="skipped", message=PDF_ENCRYPTED_TEXT)
+            return None
+    return reader
+
+
+def _pdf_pages(data: bytes, llm, name: str, *, vision: bool | None = None, defer: bool = False,
+               ocr: bool = False, recheck: bool = False) -> Extracted:
+    """The pages of a PDF. Pages with a text layer keep it; scan pages (see _is_scan) are read by the model
+    – right away, or with ``defer`` later (``Extracted.vision_pages``) – and pages without a text layer by
+    Tesseract first if ``ocr``. ``recheck``: a file read before scan pages with a text layer were told
+    apart – if no page can be one, the result is UNCHANGED (nothing needs to be stored again)."""
+    reader = _open_pdf(data)
+    if reader is None:
+        return Extracted([], status="skipped", message=PDF_ENCRYPTED_TEXT)
+    vision = (llm is not None and getattr(llm, "vision", False)) if vision is None else vision
+    doc = _DocState()
+    if recheck and not any(_may_be_scan(page, doc) for page in reader.pages):
+        return Extracted([], status=UNCHANGED)
     pages = []
     empty_pages = []
+    layer_scans = []  # pages with a text layer under a large image (an OCR layer): (number, page)
     texts: dict[tuple, str] = {}  # pages drawing the same content with the same resources: one extraction
     for i, page in enumerate(reader.pages, start=1):
         _check_page()
@@ -292,18 +466,23 @@ def _pdf_pages(data: bytes, llm, name: str) -> Extracted:
             empty_pages.append((i, page))
         else:
             pages.append(Page(i, text))
-    if not empty_pages:
+            if _is_scan(page, doc, name, i):
+                layer_scans.append((i, page))
+    if recheck and not layer_scans and not empty_pages:
+        return Extracted([], status=UNCHANGED)
+    if not empty_pages and not layer_scans:
         return Extracted(pages)
-    if llm is None or not getattr(llm, "vision", False):
-        # vision off: the pages may well be scans – a later profile with vision reads them
-        if pages:
-            return Extracted(pages, incomplete=True, message=(
-                f"{len(empty_pages)} Seite(n) ohne Textebene – Bildauswertung ausgeschaltet (LLM_VISION=0)"))
-        return Extracted([], status="skipped", incomplete=True,
-                         message="Scan ohne Textebene – Bildauswertung ausgeschaltet (LLM_VISION=0)")
-    scan = _read_scanned_pages(empty_pages, llm, name)
-    pages = sorted(pages + scan.pages, key=lambda p: p.number or 0)
-    method = "vision" if scan.pages else "text"
+    if not vision:
+        return _without_vision(pages, empty_pages, layer_scans, name, doc, ocr)
+    if defer:
+        return _vision_later(pages, empty_pages, layer_scans, name, doc, ocr)
+    bases = {p.number: p.text for p in pages} if layer_scans else {}
+    layer = {i for i, _page in layer_scans}
+    items = sorted(empty_pages + layer_scans, key=lambda item: item[0])
+    scan = _read_scanned_pages(items, llm, name, ocr=ocr, bases={i: bases[i] for i in layer}, doc=doc)
+    read = {p.number for p in scan.pages}
+    pages = sorted([p for p in pages if p.number not in read] + scan.pages, key=lambda p: p.number or 0)
+    method = "vision" if scan.vision_read else "text"
     unread = scan.unread
     if pages:
         notes = [f"{unread} Seite(n) ohne Textebene nicht gelesen ({scan.reason()})"] if unread else []
@@ -315,6 +494,126 @@ def _pdf_pages(data: bytes, llm, name: str) -> Extracted:
         return Extracted([], status="empty", message="kein Text gefunden")
     return Extracted([], status="error" if scan.retry else "skipped",
                      message=f"Scan ohne Textebene – {scan.reason()}", incomplete=True, retry=scan.retry)
+
+
+_VISION_OFF = "Bildauswertung ausgeschaltet (LLM_VISION=0)"
+
+
+def _without_vision(pages, empty_pages, layer_scans, name: str, doc: _DocState, ocr: bool) -> Extracted:
+    """LLM_VISION=0: pages without a text layer are read by Tesseract if ``ocr``; the file stays incomplete
+    (a profile with vision reads its scan pages), also for scan pages with a text layer."""
+    notes = []
+    read = 0
+    if empty_pages and ocr:
+        scan = _read_scanned_pages(empty_pages, None, name, ocr=True, doc=doc, compose=True)
+        read = len(scan.pages)
+        pages = sorted(pages + scan.pages, key=lambda p: p.number or 0)
+        if read:
+            notes.append(f"{read} Seite(n) ohne Textebene per Texterkennung gelesen")
+        if not scan.with_images:  # blank pages and vector drawings only
+            empty_pages = []
+        elif len(scan.with_images) > read:
+            notes.append(f"{len(scan.with_images) - read} Seite(n) ohne Textebene: Texterkennung ergab keinen Text")
+    elif empty_pages:
+        notes.append(f"{len(empty_pages)} Seite(n) ohne Textebene")
+    if layer_scans:
+        notes.append(f"{len(layer_scans)} gescannte Seite(n) mit Textebene")
+    if not empty_pages and not layer_scans:
+        return Extracted(pages) if pages else Extracted([], status="empty", message="kein Text gefunden")
+    if pages:
+        return Extracted(pages, incomplete=True, message=f"{'; '.join(notes)} – {_VISION_OFF}")
+    if ocr:
+        return Extracted([], status="skipped", incomplete=True,
+                         message=f"Scan ohne Textebene, Texterkennung ergab keinen Text – {_VISION_OFF}")
+    return Extracted([], status="skipped", incomplete=True, message=f"Scan ohne Textebene – {_VISION_OFF}")
+
+
+def _vision_later(pages, empty_pages, layer_scans, name: str, doc: _DocState, ocr: bool) -> Extracted:
+    """Stage 1 of an indexing pass with vision: the file is stored at once with the text it has – text
+    layers, and Tesseract's text for pages without one (if ``ocr``) – and its scan pages are listed for the
+    model (Extracted.vision_pages, read by the phase "Bildauswertung"). No model call here."""
+    scan = _read_scanned_pages(empty_pages, None, name, ocr=ocr, doc=doc, compose=True) if empty_pages else None
+    later = sorted({i for i, _page in layer_scans} | set(scan.with_images if scan else ()))
+    pages = sorted(pages + (scan.pages if scan else []), key=lambda p: p.number or 0)
+    notes = []
+    incomplete = False
+    if len(later) > MAX_DOC_VISION_CALLS:
+        notes.append(f"{len(later) - MAX_DOC_VISION_CALLS} Seite(n) nicht ausgewertet ({_doc_bounds()})")
+        later, incomplete = later[:MAX_DOC_VISION_CALLS], True
+    retry = False
+    if scan is not None and (scan.too_complex or scan.undecodable):  # pages whose content could not be read
+        notes.append(f"{scan.too_complex + scan.undecodable} Seite(n) ohne Textebene nicht gelesen ({scan.reason()})")
+        incomplete, retry = True, bool(scan.undecodable)
+    message = "; ".join(notes) or None
+    if not later:
+        if pages:
+            return Extracted(pages, message=message, incomplete=incomplete, retry=retry)
+        if incomplete:
+            return Extracted([], status="error" if retry else "skipped", message=f"Scan ohne Textebene – {message}",
+                             incomplete=True, retry=retry)
+        return Extracted([], status="empty", message="kein Text gefunden")
+    if pages:
+        return Extracted(pages, message=message, incomplete=incomplete, retry=retry, vision_pages=later)
+    return Extracted([], status="skipped", message=message, incomplete=incomplete, retry=retry, vision_pages=later)
+
+
+def _may_be_scan(page, doc: _DocState) -> bool:
+    """Could the page be a scan with a text layer? Only if the images in its resources (and those of its
+    forms) declare SCAN_MIN_PIXELS together – nothing parsed or decoded (a cheap first look, see _is_scan)."""
+    try:
+        listed = _listed(page, doc)
+    except MemoryError:
+        raise
+    except Exception:  # noqa: BLE001 – unreadable resources: the walk decides
+        return True
+    if listed.truncated:
+        return True
+    pixels = 0
+    for image in listed.images.values():
+        if image.declared:
+            pixels += image.declared[0] * image.declared[1]
+    return pixels >= SCAN_MIN_PIXELS
+
+
+def _is_scan(page, doc: _DocState, name: str, number: int) -> bool:
+    """Is a page with a text layer a scan – an OCR layer under the scanned page image? The images it draws
+    have SCAN_MIN_PIXELS together and cover SCAN_MIN_COVERAGE of the page (strips and tiles count together;
+    by the pixels alone if their positions cannot be followed). Digital pages with a logo or a photo are not:
+    they never go to the model."""
+    if not _may_be_scan(page, doc):
+        return False
+    key = _text_key(page)
+    drawn = doc.drawings.get(key) if key is not None else None
+    try:
+        if drawn is None:
+            drawn = _page_images(page, name, number, doc)
+            if key is not None:
+                doc.drawings[key] = drawn
+    except MemoryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 – broken resources: kept as a digital page
+        log.debug("%s Seite %d: Bilder nicht bestimmbar (%s)", name, number, exc)
+        return False
+    pixels, covered = 0, 0.0
+    unplaced = False
+    for image in drawn.images.values():
+        if image.declared:
+            pixels += image.declared[0] * image.declared[1]
+        if image.placements is None:
+            unplaced = True
+            continue
+        for ctm in image.placements:
+            covered += abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])
+    if pixels < SCAN_MIN_PIXELS:
+        return False
+    if unplaced:
+        return True
+    try:
+        box = page.mediabox
+        area = abs(float(box.width) * float(box.height))
+    except Exception:  # noqa: BLE001 – no usable page size: the pixels decide
+        return True
+    return area <= 0 or covered >= SCAN_MIN_COVERAGE * area
 
 
 def _text_key(page) -> tuple | None:
@@ -423,6 +722,8 @@ class _ScanResult:
     partial_unsized: int = 0
     partial_doc_limit: int = 0
     partial_truncated: int = 0
+    with_images: list = field(default_factory=list)  # numbers of the pages that draw an image
+    vision_read: int = 0  # pages the model gave text for
 
     @property
     def unread(self) -> int:
@@ -436,6 +737,10 @@ class _ScanResult:
 
     def partial_note(self) -> str:
         """German note on the pages that were read only partly."""
+        return f"{self.partial} Seite(n) nur teilweise gelesen ({self.partial_reasons()})"
+
+    def partial_reasons(self) -> str:
+        """Why pages were read only partly (German)."""
         parts = []
         if self.partial_undecodable:
             why = f": {self.decode_error}" if self.decode_error else ""
@@ -457,7 +762,7 @@ class _ScanResult:
         if self.partial_truncated:
             parts.append(f"Inhalt von {self.partial_truncated} Seite(n) nicht vollständig durchsucht "
                          f"({_page_bounds()})")
-        return f"{self.partial} Seite(n) nur teilweise gelesen ({'; '.join(parts)})"
+        return "; ".join(parts)
 
     def reason(self) -> str:
         reasons = []  # (pages, text)
@@ -1390,29 +1695,39 @@ class _PageOutcome:
         return self.left_out + self.over_limit + self.too_big + self.unsized + self.doc_limited
 
 
-def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
-    """Let the multimodal model read the images of pages without a text layer.
+def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases: dict | None = None,
+                        doc: _DocState | None = None, compose: bool = False) -> _ScanResult:
+    """Let the multimodal model (and Tesseract, if ``ocr``) read the images of scan pages – pages without
+    a text layer, and those in ``bases`` (number → their text layer), which is handed to the model with
+    the image and stands if the model gives nothing. ``llm`` None: Tesseract alone (``ocr``), or – neither –
+    only which pages draw an image (``with_images``), nothing decoded.
 
     Up to MAX_IMAGES_PER_PAGE images of a page are sent one by one; a page with more (strip or tile
-    scans) is put together into one page image at the images' positions. Pages without any image
-    (blank pages, vector drawings) count as nothing to read. A page none of whose images could be read
-    counts as undecodable or failed – the document is retried later; only a page whose images the model
-    read without finding text counts as "no text". A page of which only some images were read counts as
-    read *partly*: its text is kept and the document stays incomplete (and is retried when the cause
-    may go away). An image (or page image) already read on an earlier page is not sent again: its
-    answer is reused."""
+    scans) – with ``compose``, and for a page with a text layer, any page with more than one – is put
+    together into one page image at the images' positions. Pages without any image (blank pages, vector
+    drawings) count as nothing to read. A page none of whose images could be read counts as undecodable
+    or failed – the document is retried later; only a page whose images the model read without finding
+    text counts as "no text". A page of which only some images were read counts as read *partly*: its
+    text is kept and the document stays incomplete (and is retried when the cause may go away). An image
+    (or page image) already read on an earlier page is not sent again: its answer is reused. Without a
+    text layer, Tesseract's text goes to the model with the image (and stands if the model fails)."""
     result = _ScanResult()
-    doc = _DocState()
+    doc = doc if doc is not None else _DocState()
+    bases = bases or {}
     decoder = _Decoder()
     total = len(empty_pages)
-    log.info("Bildauswertung: %s – %d Seite(n) ohne Textebene", name, total)
+    reading = llm is not None or ocr
+    what = "Bildauswertung" if llm is not None else "Texterkennung"
+    if reading:
+        log.info("%s: %s – %d Seite(n)%s", what, name, total, "" if bases else " ohne Textebene")
     every = 1 if total <= 50 else 10  # (the worker forwards at most 200 log records per file)
     for n, (i, page) in enumerate(empty_pages, start=1):
         _check_page()
-        if n > 1 and (n % every == 0 or n == total):
-            log.info("Bildauswertung: %s – Seite %d von %d", name, n, total)
+        if reading and n > 1 and (n % every == 0 or n == total):
+            log.info("%s: %s – Seite %d von %d", what, name, n, total)
         key = _text_key(page)  # pages with the same content and resources draw the same
         drawn = doc.drawings.get(key) if key is not None else None
+        base = bases.get(i, "")
         try:
             if drawn is None:
                 # nothing the model could read on vector drawings and blank pages, however large the content
@@ -1424,33 +1739,59 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
         except Exception as exc:  # noqa: BLE001 – broken resources: the page cannot be read now
             log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, i, exc)
             result.decode_error = result.decode_error or _decode_problem(exc)
-            result.undecodable += 1
+            if base:  # the text layer stands; the page is read partly
+                result.pages.append(Page(i, base))
+                result.partial += 1
+                result.partial_undecodable += 1
+            else:
+                result.undecodable += 1
             continue
         if drawn.truncated:
             log.warning("%s Seite %d: Seiteninhalt nicht vollständig durchsucht (%s)", name, i, _page_bounds())
         if not drawn.images:
-            if drawn.truncated:  # no image found before the bound – the page is not known to be blank
+            if base:
+                result.pages.append(Page(i, base))
+            elif drawn.truncated:  # no image found before the bound – the page is not known to be blank
                 result.too_complex += 1
             continue
-        out = _page_payloads(decoder, drawn, name, i, result, doc)
+        result.with_images.append(i)
+        if not reading:
+            continue
+        if compose or base:  # one page image: the model sees the whole page next to its text
+            out = _page_payloads(decoder, drawn, name, i, result, doc, 1)
+        else:
+            out = _page_payloads(decoder, drawn, name, i, result, doc)
         if out.doc_limited and not doc.warned:
             doc.warned = True
             log.warning("%s: ab Seite %d nicht mehr alle Bilder ausgewertet (%s)", name, i, _doc_bounds())
-        texts, failed = [], 0
+        texts, kept, failed, answered = [], [], 0, False
         for job in out.jobs:
             text = job.text
             if text is None:
-                doc.vision_calls += 1
-                try:
-                    text = llm.describe_image(job.data, job.mime, VISION_PROMPT).text or ""
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("%s Seite %d: Bildauswertung fehlgeschlagen (%s)", name, i, exc)
-                    failed += 1
-                    continue
+                known = base or (ocr_image(job.data) if ocr else "")
+                if llm is None:
+                    text = known
+                else:
+                    doc.vision_calls += 1
+                    try:
+                        text = llm.describe_image(job.data, job.mime, vision_prompt(known)).text or ""
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("%s Seite %d: Bildauswertung fehlgeschlagen (%s)", name, i, exc)
+                        failed += 1
+                        if known.strip() and not base:
+                            kept.append(known)  # Tesseract's text stands for now
+                        continue
+                    answered = answered or bool(text.strip())
+                    if not text.strip() and not base:
+                        text = known
                 if job.reusable:
                     doc.transcripts[job.key] = text
             if text.strip():
                 texts.append(text)
+        texts += kept
+        if base and not texts:  # the model gave nothing: the text layer stands
+            texts = [base]
+        result.vision_read += answered
         if texts:
             result.pages.append(Page(i, "\n".join(texts)))
             if out.undecodable or failed or out.missing() or out.truncated:
@@ -1487,8 +1828,95 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
     return result
 
 
+@dataclass
+class PageImages:
+    """The image(s) of one PDF page for the model in the phase "Bildauswertung" (see page_images): usually
+    one page image (several images of a page are put together), or why there is none."""
+    number: int
+    images: list = field(default_factory=list)  # (mime, data)
+    problem: str | None = None  # why there is no image
+    retry: bool = False  # the problem may go away (a missing component installed): try again later
+    partial: str | None = None  # why some images of the page are left out (it is read only partly)
+    limit: str | None = None  # the worker's limit that cut it short (see Extracted.limit)
+
+
+def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
+    """Decode and prepare the images of the given pages of a PDF for the model, nothing else – in an
+    indexing pass in the extraction worker, under its limits (the model is called by the app, see
+    vision.py). The same bounds as when the pages are read (MAX_PAGE_*, MAX_DOC_PIXELS for the pages of
+    one call)."""
+    from pypdf import apply_configuration
+
+    with apply_configuration(stream_parsing_work_maximum_count=PDF_STREAM_TOKENS):
+        reader = _open_pdf(data)
+        if reader is None:
+            return [PageImages(n, problem=PDF_ENCRYPTED_TEXT) for n in numbers]
+        doc, decoder = _DocState(), _Decoder()
+        out_pages = []
+        count = len(reader.pages)
+        for n in numbers:
+            _check_page()
+            if not 1 <= n <= count:
+                out_pages.append(PageImages(n, problem="Seite nicht vorhanden"))
+                continue
+            shortage = _Shortage()
+            token = _SHORTAGE.set(shortage)
+            try:
+                page = _images_of(reader.pages[n - 1], n, name, doc, decoder)
+            except MemoryError as exc:
+                _out_of_memory(exc)
+                page = PageImages(n, problem=f"Bilder zu groß zum Lesen ({_memory_bound()})")
+            finally:
+                _SHORTAGE.reset(token)
+            if shortage.met and MEMORY_LIMIT_MB and (page.problem or page.partial):
+                page.limit = f"memory={MEMORY_LIMIT_MB}"  # more memory may read it
+            out_pages.append(page)
+            _progress()
+        return out_pages
+
+
+def _images_of(page, number: int, name: str, doc: _DocState, decoder) -> PageImages:
+    result = _ScanResult()
+    try:
+        drawn = _page_images(page, name, number, doc) if _can_draw_images(page, doc) else _Drawing()
+    except MemoryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 – broken resources
+        log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, number, exc)
+        return PageImages(number, problem=f"Bilder nicht lesbar: {_decode_problem(exc)}", retry=True)
+    if not drawn.images:
+        return PageImages(number, problem="kein Bild auf der Seite")
+    out = _page_payloads(decoder, drawn, name, number, result, doc, 1)
+    images = [(job.mime, job.data) for job in out.jobs if job.data is not None]
+    if images:
+        if not (out.undecodable or out.missing() or out.truncated):
+            return PageImages(number, images)
+        result.partial = 1
+        result.partial_undecodable = out.undecodable
+        result.partial_left_out = out.left_out
+        result.partial_over_limit = out.over_limit
+        result.partial_too_big = out.too_big
+        result.partial_unsized = out.unsized
+        result.partial_doc_limit = out.doc_limited
+        result.partial_truncated = int(out.truncated)
+        return PageImages(number, images, partial=result.partial_reasons(), retry=bool(out.undecodable))
+    if out.undecodable:
+        result.undecodable = 1
+    elif out.over_limit:
+        result.too_large = 1
+    elif out.too_big:
+        result.too_big = 1
+    elif out.unsized:
+        result.unsized = 1
+    elif out.doc_limited:
+        result.doc_limit = 1
+    else:
+        result.too_complex = 1
+    return PageImages(number, problem=result.reason(), retry=result.retry)
+
+
 def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _ScanResult,
-                   doc: _DocState | None = None) -> _PageOutcome:
+                   doc: _DocState | None = None, compose_over: int = MAX_IMAGES_PER_PAGE) -> _PageOutcome:
     """The images of one page for the model (as _Job), with the numbers of images that could not be
     decoded, that were left out (more than MAX_IMAGES_PER_PAGE, not put together), that were over the
     page limits, too large to decode, without size and over the document's bounds. ``images`` decodes
@@ -1498,7 +1926,8 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
     draws it – and once per document: an image read on an earlier page is not decoded again. Images
     beyond MAX_PAGE_IMAGES/MAX_PAGE_PIXELS (real sizes, measured from the headers, soft masks included)
     are left out undecoded. More than MAX_IMAGES_PER_PAGE different images are put together into one page
-    image; if that is not possible, the largest ones are sent. Every decoding is charged to the document
+    image (``compose_over``: more than that many – 1 puts any page of several images together); if that is
+    not possible, the largest ones are sent. Every decoding is charged to the document
     with the work it took (see _MIN_DECODE_CHARGE) and checked against its bounds before it starts."""
     doc = doc if doc is not None else _DocState()
     out = _PageOutcome(truncated=drawn.truncated)
@@ -1533,7 +1962,7 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
         doc.decoded_pixels += getattr(decoded, "work", 0) or _decode_charge(image)
         return decoded
 
-    if len(chosen) + broken > MAX_IMAGES_PER_PAGE and chosen:
+    if len(chosen) + broken > compose_over and chosen:
         layout = _layout(chosen)
         if layout is not None:
             key = ("page", tuple((image.ident, tuple(image.placements)) for image in chosen))
@@ -2310,15 +2739,44 @@ def _odf(data: bytes) -> Extracted:
     return Extracted(reader.pages())
 
 
-def extract(path: Path | str, data: bytes | None = None, *, llm=None) -> Extracted:
+def _image(data: bytes, ext: str, llm, *, vision: bool, defer: bool, ocr: bool) -> Extracted:
+    """An image file (plan, photo, scan): Tesseract's text if ``ocr``, the model's – right away or, with
+    ``defer``, later (Extracted.vision_pages) – with Tesseract's text as a hint."""
+    known = ocr_image(data) if ocr else ""
+    if not vision:
+        if known:
+            return Extracted([Page(1, known)], incomplete=True,
+                             message=f"Bild per Texterkennung gelesen – {_VISION_OFF}")
+        return Extracted([], status="skipped", incomplete=True, message=f"Bild – {_VISION_OFF}")
+    if defer:
+        if known:
+            return Extracted([Page(1, known)], vision_pages=[1])
+        return Extracted([], status="skipped", vision_pages=[1])
+    text = llm.describe_image(data, IMAGE_EXT[ext], vision_prompt(known)).text or ""
+    if not text.strip() and known:
+        return Extracted([Page(1, known)], incomplete=True, message="Bildauswertung ergab keinen Text")
+    return Extracted([Page(1, text)], method="vision", incomplete=not text.strip())
+
+
+def extract(path: Path | str, data: bytes | None = None, *, llm=None, defer_vision: bool = False,
+            ocr: bool | None = None, recheck: bool = False, vision: bool | None = None) -> Extracted:
     """Extract text from a file. ``data`` may be given (mail attachments); the file is only read.
+
+    ``defer_vision``: the model is not called – scan pages (and images) are listed in
+    ``Extracted.vision_pages`` for the phase "Bildauswertung", with their text layer or Tesseract's text for
+    now. ``ocr``: read pages without a text layer (and images) with Tesseract first (default: if it is
+    installed). ``recheck``: see _pdf_pages. ``vision``: whether vision is on, if not from ``llm``.
 
     Within a memory limit (MEMORY_LIMIT_MB, the extraction worker), an incomplete result of an extraction
     that ran out of memory names the limit (Extracted.limit): a higher limit reads the file again."""
     shortage = _Shortage()
     token = _SHORTAGE.set(shortage)
+    if vision is None:
+        vision = llm is not None and getattr(llm, "vision", False)
+    ocr = ocr_available() if ocr is None else ocr
     try:
-        result = _extract(Path(path), data, llm)
+        result = _extract(Path(path), data, llm, defer=defer_vision and vision, ocr=ocr, recheck=recheck,
+                          vision=vision)
     finally:
         _SHORTAGE.reset(token)
     if shortage.met and MEMORY_LIMIT_MB and result.incomplete:
@@ -2326,7 +2784,8 @@ def extract(path: Path | str, data: bytes | None = None, *, llm=None) -> Extract
     return result
 
 
-def _extract(path: Path, data: bytes | None, llm) -> Extracted:
+def _extract(path: Path, data: bytes | None, llm, *, defer: bool = False, ocr: bool = False,
+             recheck: bool = False, vision: bool = False) -> Extracted:
     ext = path.suffix.lower()
     if ext not in SUPPORTED_EXT:
         return Extracted([], status="skipped", message=f"Format {ext or '(ohne Endung)'} nicht unterstützt")
@@ -2336,7 +2795,7 @@ def _extract(path: Path, data: bytes | None, llm) -> Extracted:
         if ext in TEXT_EXT:
             result = Extracted([Page(None, decode_text(data))])
         elif ext == ".pdf":
-            result = _pdf(data, llm, path.name)
+            result = _pdf(data, llm, path.name, vision=vision, defer=defer, ocr=ocr, recheck=recheck)
         elif ext == ".docx":
             result = _docx(data)
         elif ext in ODF_EXT:
@@ -2344,11 +2803,9 @@ def _extract(path: Path, data: bytes | None, llm) -> Extracted:
         elif ext == ".eml":
             result = _eml(data)
         else:  # images: plans, photos, scans
-            if llm is None or not getattr(llm, "vision", False):
-                return Extracted([], status="skipped", incomplete=True,
-                                 message="Bild – Bildauswertung ausgeschaltet (LLM_VISION=0)")
-            text = llm.describe_image(data, IMAGE_EXT[ext], VISION_PROMPT).text
-            result = Extracted([Page(1, text)], method="vision", incomplete=not (text or "").strip())
+            result = _image(data, ext, llm, vision=vision, defer=defer, ocr=ocr)
+            if result.status != "ok":
+                return result
     except MemoryError as exc:  # within the worker's memory limit (EXTRACT_MEMORY_MB): it will not fit later
         _out_of_memory(exc)
         result = None  # (handled below: here the exception still holds the reading's memory)

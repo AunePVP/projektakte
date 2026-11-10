@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from . import db, inbox as inbox_queries, structure
+from . import db, inbox as inbox_queries, structure, vision
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .ask import ask as answer_question
 from .search import hybrid_search
@@ -250,6 +250,10 @@ def status(request: Request) -> dict:
             "chunks": one("SELECT COUNT(*) FROM chunks"),
             "chunks_without_vector": one("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL"),
         }
+        # phase "Bildauswertung": scan pages waiting for the model, older PDFs still to be checked for them
+        pending = vision.pending_counts(conn)
+        counts.update(vision_pending_pages=pending["pages"], vision_pending_documents=pending["documents"],
+                      vision_recheck=pending["recheck"])
         # which folders count as projects: effective PROJECT_NUMBER_PATTERN and PROJECT_FOLDER_DEPTH, with
         # "auto" also a proposal waiting for confirmation and the evidence for it
         layout = structure.current_layout(s, conn).to_dict()

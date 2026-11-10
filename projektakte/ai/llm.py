@@ -142,7 +142,8 @@ class LLMClient:
                 ],
             }
         ]
-        return self.chat(messages, max_tokens=max(self.max_tokens, 1500))
+        # a whole page with its handwriting and stamps (a dense A4 page is 1.500 to 2.500 tokens)
+        return self.chat(messages, max_tokens=max(self.max_tokens, 4000))
 
     def probe(self, timeout: float) -> dict:
         """Reachability and format check for /health/deps: a chat with a few tokens decides ``ok``.

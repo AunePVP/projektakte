@@ -8,8 +8,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 # jbig2dec: pypdf needs it to decode JBIG2 scans ("kompaktes PDF" of office copiers, optimised scans);
 # without it such pages stay unread and are retried endlessly
+# tesseract-ocr + tesseract-ocr-deu: scanned pages without a text layer get Tesseract's text at once (stage 1),
+# before the vision model reads them in the phase "Bildauswertung"; without it they wait for the model
 RUN apt-get update \
- && apt-get install -y --no-install-recommends jbig2dec \
+ && apt-get install -y --no-install-recommends jbig2dec tesseract-ocr tesseract-ocr-deu \
  && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt constraints.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt

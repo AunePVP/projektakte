@@ -24,6 +24,7 @@
       <dt>Mails</dt><dd>{{ st.counts.mails|de_num }} ({{ st.counts.inbox|de_num }} im Eingang{% if st.counts.plmail_open %}, {{ st.counts.plmail_open|de_num }} in plMail noch nicht zugeordnet{% endif %})</dd>
       <dt>Zuordnung</dt><dd>{{ 'von Hand (Mails aus plMail werden in plMail zugeordnet)' if st.assign_mode == 'manual' else 'automatisch über die Projektnummer, sonst Vorschlag' }}</dd>
       <dt>Abschnitte</dt><dd>{{ st.counts.chunks|de_num }} ({{ st.counts.chunks_without_vector|de_num }} ohne Vektor)</dd>
+      {% if st.counts.vision_pending_pages or st.counts.vision_recheck %}<dt>Bildauswertung</dt><dd>{% if st.counts.vision_pending_pages %}{{ st.counts.vision_pending_pages|plural('Seite', 'Seiten') }} in {{ st.counts.vision_pending_documents|plural('Dokument', 'Dokumenten') }} ausstehend (schon mit vorläufigem Text durchsuchbar){% endif %}{% if st.counts.vision_pending_pages and st.counts.vision_recheck %}; {% endif %}{% if st.counts.vision_recheck %}{{ st.counts.vision_recheck|plural('ältere PDF-Datei', 'ältere PDF-Dateien') }} noch auf gescannte Seiten zu prüfen{% endif %}</dd>{% endif %}
     </dl>
   </section>
 </div>

@@ -57,7 +57,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .ai.http import seconds_text
-from .extract import STRUCTURED_EXT, Extracted, Page
+from . import extract as extract_module
+from .extract import IMAGE_EXT, STRUCTURED_EXT, Extracted, Page, PageImages
 
 log = logging.getLogger("projektakte.extract_worker")
 
@@ -66,6 +67,7 @@ _STOP_SECONDS = 3.0  # a worker asked to stop that has not ended by then is kill
 _SLICE_SECONDS = 0.5  # waiting for the worker is done in slices: a close() from another thread is noticed
 _MAX_LOG_RECORDS = 200  # log records forwarded per file: a crafted file must not flood the app's log
 _STOP = b'{"stop": true}'
+_FLAGS = ("defer_vision", "recheck", "ocr")  # flags of extract.extract a request may carry
 
 
 @dataclass(frozen=True)
@@ -189,15 +191,19 @@ class ExtractWorker:
         except ValueError:  # closed meanwhile by another thread
             return None
 
-    def extract(self, filename: str, data: bytes, llm=None) -> Extracted:
+    def extract(self, filename: str, data: bytes, llm=None, **flags) -> Extracted:
         """Extract one file (``filename`` gives the format) in the worker. ``llm`` must be
-        :func:`portable`. Raises ExtractionAborted if the worker is closed meanwhile. If the worker cannot
-        be started, the error is logged once and this and every further file until the next pass are
-        recorded as not read, to be retried later (see the module docstring)."""
+        :func:`portable`; ``flags`` are those of extract.extract (defer_vision, recheck). Raises
+        ExtractionAborted if the worker is closed meanwhile. If the worker cannot be started, the error is
+        logged once and this and every further file until the next pass are recorded as not read, to be
+        retried later (see the module docstring)."""
+        # whether Tesseract is used is decided by the app, as for the extraction profile
+        flags = {"ocr": extract_module.ocr_available(), **{k: v for k, v in flags.items() if v is not None}}
         request = json.dumps({
             "filename": filename,
             "llm": llm.config() if llm is not None else None,
             "level": logging.getLogger().getEffectiveLevel(),
+            "flags": {k: bool(v) for k, v in flags.items() if k in _FLAGS},
         }).encode()
         with self._lock:
             if self._closed:
@@ -212,6 +218,43 @@ class ExtractWorker:
                 else:
                     return self._result(filename, llm)
             return failed(NOT_STARTED_TEXT, retry=True)
+
+    def page_images(self, filename: str, data: bytes, pages: list[int]) -> list[PageImages]:
+        """Decode and prepare the images of ``pages`` of a PDF for the model (extract.page_images) in the
+        worker, under its limits; the model is called by the app (vision.py). A failure of the worker
+        (limits, crash, not started) is the problem of every page: deterministic limits without retry."""
+        request = json.dumps({"op": "images", "filename": filename, "pages": [int(n) for n in pages],
+                              "level": logging.getLogger().getEffectiveLevel()}).encode()
+        with self._lock:
+            if self._closed:
+                raise ExtractionAborted("Leseprozess wurde beendet")
+            outcome: Extracted | dict
+            if self._failure is None:
+                try:
+                    self._hand_over(request, data)
+                except ExtractWorkerError as exc:
+                    self._failure = str(exc)
+                    log.error("%s – Bilder für die Bildauswertung werden in diesem Durchlauf nicht vorbereitet", exc)
+                    outcome = failed(NOT_STARTED_TEXT, retry=True)
+                else:
+                    outcome = self._receive(filename, None)
+            else:
+                outcome = failed(NOT_STARTED_TEXT, retry=True)
+            if isinstance(outcome, Extracted):
+                return [PageImages(n, problem=outcome.message, retry=outcome.retry, limit=outcome.limit)
+                        for n in pages]
+            out = []
+            try:
+                for entry in outcome["pages"]:
+                    images = [(str(mime), self._conn.recv_bytes()) for mime in entry["mimes"]]
+                    out.append(PageImages(int(entry["page"]), images, entry.get("problem"), bool(entry.get("retry")),
+                                          entry.get("partial"), entry.get("limit")))
+            except (OSError, EOFError, ValueError, TypeError, KeyError):
+                ended = self._ended(filename)
+                return [PageImages(n, problem=ended.message, retry=ended.retry, limit=ended.limit) for n in pages]
+            if outcome.get("recycle"):
+                self._discard(graceful=True)
+            return out
 
     def close(self) -> None:
         """Stop the worker (app shutdown). A file being read is abandoned: the reading thread gets
@@ -293,6 +336,18 @@ class ExtractWorker:
         return conn
 
     def _result(self, filename: str, llm) -> Extracted:
+        message = self._receive(filename, llm)
+        if isinstance(message, Extracted):
+            return message
+        if message.get("llm_error") and llm is not None:
+            llm._note_error(str(message["llm_error"]))  # the status page shows the model's last error
+        if message.get("recycle"):  # the worker ends itself after a file that took much memory
+            self._discard(graceful=True)
+        return _extracted(message["result"])
+
+    def _receive(self, filename: str, llm) -> dict | Extracted:
+        """Wait for the worker's answer to a request (progress and log records are handled on the way): the
+        answer, or – the worker ended, hung or was closed – the file's result as an Extracted."""
         conn, wall = self._conn, self.limits.wall_seconds
         deadline = time.monotonic() + wall
         while True:
@@ -315,16 +370,12 @@ class ExtractWorker:
             except (OSError, EOFError, ValueError):
                 return self._ended(filename)
             kind = message.get("kind")
-            if kind == "progress":  # an answer of the vision model: the work goes on
+            if kind == "progress":  # an answer of the vision model, a page read: the work goes on
                 deadline = time.monotonic() + wall
             elif kind == "log":
                 logging.getLogger(str(message["name"])).log(int(message["level"]), "%s", message["text"])
-            elif kind == "result":
-                if message.get("llm_error") and llm is not None:
-                    llm._note_error(str(message["llm_error"]))  # the status page shows the model's last error
-                if message.get("recycle"):  # the worker ends itself after a file that took much memory
-                    self._discard(graceful=True)
-                return _extracted(message["result"])
+            elif kind in ("result", "images"):
+                return message
 
     def _ended(self, filename: str) -> Extracted:
         """The worker ended while reading a file: why, as the file's result."""
@@ -371,7 +422,8 @@ class ExtractWorker:
 def _extracted(data: dict) -> Extracted:
     return Extracted([Page(number, text) for number, text in data["pages"]], status=data["status"],
                      message=data["message"], method=data["method"], incomplete=bool(data["incomplete"]),
-                     retry=bool(data["retry"]), limit=str(data["limit"]) if data.get("limit") else None)
+                     retry=bool(data["retry"]), limit=str(data["limit"]) if data.get("limit") else None,
+                     vision_pages=[int(n) for n in data.get("vision_pages") or ()])
 
 
 # -- the worker's side ------------------------------------------------------------------------------------
@@ -391,6 +443,7 @@ def _serve(conn, limits: Limits, parent: int) -> None:  # pragma: no cover - run
 
     extract.MEMORY_LIMIT_MB = limits.memory_mb
     extract.PAGE_CHECK = lambda: _check_app(parent)
+    extract.PROGRESS = lambda: _send(conn, {"kind": "progress"})  # a page read by Tesseract, an image prepared
     _send(conn, {"ready": True})
     while True:
         try:
@@ -403,8 +456,13 @@ def _serve(conn, limits: Limits, parent: int) -> None:  # pragma: no cover - run
         root.setLevel(int(request["level"]))
         forward.left = _MAX_LOG_RECORDS
         _set_soft_limit("RLIMIT_CPU", math.ceil(_cpu_used() + limits.cpu_seconds))
+        if request.get("op") == "images":  # page images for the phase "Bildauswertung"
+            if not _send_images(conn, request, data, limits):
+                return
+            continue
         llm = _Reporting(LLMClient.from_config(request["llm"]), conn, parent) if request["llm"] else None
-        result = extract.extract(Path(request["filename"]), data, llm=llm)
+        flags = {k: bool(v) for k, v in (request.get("flags") or {}).items() if k in _FLAGS}
+        result = extract.extract(Path(request["filename"]), data, llm=llm, **flags)
         del data
         # memory a large file took is not always given back to the system: a new worker for the next file
         recycle = _resident_mb() > limits.memory_mb / 4
@@ -412,9 +470,36 @@ def _serve(conn, limits: Limits, parent: int) -> None:  # pragma: no cover - run
                      "result": {"pages": [[p.number, p.text] for p in result.pages], "status": result.status,
                                 "message": result.message, "method": result.method,
                                 "incomplete": result.incomplete, "retry": result.retry,
-                                "limit": result.limit}})
+                                "limit": result.limit, "vision_pages": result.vision_pages}})
         if recycle:
             return
+
+
+def _send_images(conn, request: dict, data: bytes, limits: Limits) -> bool:  # pragma: no cover - worker side
+    """Prepare and send the page images of one request (a JSON header, then each image as raw bytes – never
+    pickled). Returns whether the worker goes on (False: it ends itself after much memory was used)."""
+    from . import extract
+
+    try:
+        pages = extract.page_images(data, [int(n) for n in request["pages"]], Path(request["filename"]).name)
+    except MemoryError:
+        pages = [PageImages(int(n), problem=f"Bilder zu groß zum Lesen ({extract._memory_bound()})",
+                            limit=limits.memory_limit()) for n in request["pages"]]
+    except Exception as exc:  # noqa: BLE001 – a broken file: its pages cannot be read now
+        problem = f"Datei nicht lesbar ({type(exc).__name__}: {exc})"[:300]
+        pages = [PageImages(int(n), problem=problem, retry=True) for n in request["pages"]]
+    del data
+    recycle = _resident_mb() > limits.memory_mb / 4
+    _send(conn, {"kind": "images", "recycle": recycle,
+                 "pages": [{"page": p.number, "mimes": [m for m, _b in p.images], "problem": p.problem,
+                            "retry": p.retry, "partial": p.partial, "limit": p.limit} for p in pages]})
+    for p in pages:
+        for _mime, image in p.images:
+            try:
+                conn.send_bytes(image)
+            except OSError:
+                _leave()
+    return not recycle
 
 
 def _send(conn, message: dict) -> None:
@@ -588,18 +673,32 @@ def current() -> ExtractWorker | None:
 
 
 def _takes(worker: ExtractWorker | None, filename: str, llm) -> bool:
-    """Does the worker read this file? PDF, Word, OpenDocument, mail – formats whose structure is parsed – with a model
-    it can rebuild."""
-    return worker is not None and Path(filename).suffix.lower() in STRUCTURED_EXT and portable(llm)
+    """Does the worker read this file? PDF, Word, OpenDocument, mail – formats whose structure is parsed – and,
+    while Tesseract is installed, images (Tesseract parses them), with a model it can rebuild."""
+    ext = Path(filename).suffix.lower()
+    parsed = ext in STRUCTURED_EXT or (ext in IMAGE_EXT and extract_module.ocr_available())
+    return worker is not None and parsed and portable(llm)
 
 
-def extract_file(filename: str, data: bytes, llm, extract):
+def extract_file(filename: str, data: bytes, llm, extract, **flags):
     """Extract one file: in the worker of the running pass if there is one and it takes the file (see
-    _takes), else in this process with ``extract`` (the caller's, so tests can replace it)."""
+    _takes), else in this process with ``extract`` (the caller's, so tests can replace it). ``flags`` (those
+    of extract.extract that are set) are passed on."""
     worker = _active
+    # only flags that are set (callers and tests may replace ``extract`` with a narrower function)
+    flags = {k: v for k, v in flags.items() if v or (k == "ocr" and v is not None)}
     if _takes(worker, filename, llm):
-        return worker.extract(filename, data, llm)
-    return extract(Path(filename), data, llm=llm)
+        return worker.extract(filename, data, llm, **flags)
+    return extract(Path(filename), data, llm=llm, **flags)
+
+
+def page_images(filename: str, data: bytes, pages: list[int], prepare) -> list[PageImages]:
+    """The page images of a PDF for the model: in the worker of the running pass if there is one, else in
+    this process with ``prepare`` (extract.page_images, the caller's)."""
+    worker = _active
+    if worker is not None and Path(filename).suffix.lower() == ".pdf":
+        return worker.page_images(filename, data, pages)
+    return prepare(data, pages, Path(filename).name)
 
 
 def limits_for(filename: str, llm) -> Limits | None:

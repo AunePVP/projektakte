@@ -5,6 +5,24 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Scans in zwei Stufen (Phase „Bildauswertung“):** Beim Einlesen ruft Projektakte das Bildmodell nicht mehr
+  auf. Gescannte Seiten mit OCR-Textebene behalten zunächst ihren Text, Seiten ohne Textebene liest Tesseract
+  (`tesseract-ocr` + `tesseract-ocr-deu`, jetzt im Docker-Image; fehlt es, wie bisher ohne). Das Dokument ist
+  sofort durchsuchbar und als „Bildauswertung ausstehend: N Seite(n)“ markiert. Am Ende jedes Laufs liest die
+  neue Phase „Bildauswertung“ die Seiten mit dem Modell – neueste Dokumente zuerst, höchstens
+  `VISION_CONCURRENCY` Aufrufe gleichzeitig (Standard 3) und höchstens `VISION_PASS_SECONDS` je Lauf (Standard
+  1800 s, danach weiter im nächsten Lauf). Das Modell bekommt Seitenbild **und** bisherigen Text und gibt die
+  Seite vollständig zurück: OCR-Fehler berichtigt, Handschrift als „[handschriftlich: …]“, Stempel als
+  „[Stempel: …]“ an der passenden Stelle. Neu: auch Scans **mit** Textebene gehen an das Modell (eine Seite mit
+  Textebene gilt als Scan, wenn ihre Bilder mindestens 1 Megapixel haben und die halbe Seite bedecken) –
+  handschriftliche Vermerke darauf gingen bisher verloren; digitale Seiten nie. Ältere, ohne Modell gelesene
+  PDF-Dateien prüft die Phase nebenbei auf solche Seiten. Mail-Anhänge gehen denselben Weg. Statusseite und
+  `/api/status` zeigen ausstehende Seiten und Dokumente, das Protokoll jede gelesene Seite. Die Seitenbilder
+  bereitet der Leseprozess vor, Tesseract läuft dort mit dessen Grenzen. Extraktionsversion 7 (liest nur
+  unvollständige Dokumente neu), DB-Migration 10 (Spalten und Tabelle `page_texts`, nur hinzugefügt).
+  `LLM_VISION=0`: nur Tesseract, das Dokument bleibt unvollständig und wird mit `LLM_VISION=1` nachgelesen.
+  Antwortlänge der Bildauswertung bis 4000 Token (ganze Seiten).
+
 - **Neue Projektseite: Zeitleiste links, Rest rechts** (aus dem abgestimmten Entwurf): Die Zeitachse ist keine
   lange Liste mehr, sondern eine senkrechte Zeitleiste – oben neu, die letzten Wochen mit viel Platz, alte
   Jahre knapp (Wurzelkurve). Punkte an den Daten, Zeilen mit Linien dazu, Etiketten für dichte Stellen,
@@ -109,7 +127,7 @@ Roadmap-Schritt.
 - `VISION_SKIP_FOLDERS` (z. B. `Bilder`): Fotos in Ordnern wie `263900-Bilder` gehen nicht an die Bildauswertung;
   ohne die Einstellung werden sie später nachgelesen.
 - Protokoll: je gelesener Datei eine Zeile „Gelesen: <Datei> – ok (Bildauswertung), 3 Seite(n), 7 Abschnitt(e), 12,3 s“.
-- 1917 Tests (4 Integrationstests übersprungen, 1 xfail).
+- 1942 Tests (1937 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`.
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

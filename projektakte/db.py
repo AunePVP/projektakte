@@ -155,6 +155,32 @@ MIGRATIONS: list[str] = [
     ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'projekt';
     CREATE INDEX projects_parent ON projects(parent);
     """,
+    # 10 – two stages for scans (vision.py): a file is stored at once with its text layer or Tesseract's
+    #      text, its scan pages wait for the model (``vision_pending`` of them). ``page_texts`` holds the text
+    #      of every page of such a document until the model has read them all, so the document can be put
+    #      together again; ``vision_note``/``vision_incomplete`` are message and incompleteness of the first
+    #      stage, which stand once the model is done; a page read only partly notes why (``partial``, ``note``),
+    #      whether that may go away (``retry``) and the worker's limit that cut it short (``size_limit``).
+    #      Existing documents have nothing pending.
+    """
+    ALTER TABLE documents ADD COLUMN vision_pending INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE documents ADD COLUMN vision_note TEXT;
+    ALTER TABLE documents ADD COLUMN vision_incomplete INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX documents_vision_pending ON documents(vision_pending) WHERE vision_pending > 0;
+    CREATE TABLE page_texts (
+        doc_id      INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        page        INTEGER NOT NULL,
+        text        TEXT NOT NULL DEFAULT '',
+        state       TEXT NOT NULL DEFAULT 'text',
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        retry_after TEXT,
+        note        TEXT,
+        partial     INTEGER NOT NULL DEFAULT 0,
+        retry       INTEGER NOT NULL DEFAULT 0,
+        size_limit  TEXT,
+        PRIMARY KEY (doc_id, page)
+    );
+    """,
 ]
 
 # projects.kind

@@ -1,4 +1,4 @@
-"""Indexing pipeline: project register → documents → mails → embeddings → assignment.
+"""Indexing pipeline: project register → documents → mails → embeddings → assignment → Bildauswertung.
 
 One call of :func:`run_index` processes everything that is new or changed; it is used by the
 background worker, the CLI (``python -m projektakte.index``) and the tests.
@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 
-from . import db, extract_worker, structure
+from . import db, documents, extract_worker, structure
 from .ai.services import AIServices
 from .assign import assign_mails
 from .config import Settings
@@ -20,6 +20,7 @@ from .mails.jmap_source import JMAPClient, sync_plmail
 from .mails.store import sweep_cache
 from .registry import ENCODING_HINT, active_count, sync_from_folder, unchanged_stats
 from .vectors import DEFAULT_VECTOR_SEARCH, VECTOR_INDEX, embed_pending
+from .vision import run_vision
 
 log = logging.getLogger("projektakte.indexer")
 
@@ -41,9 +42,10 @@ def run_index(settings: Settings, ai: AIServices | None = None, progress=None) -
             progress(name)
 
     # never two passes at the same time (background worker + CLI/test); files are read in the extraction
-    # worker process if the settings say so (EXTRACT_ISOLATION) – it is kept for the next pass
+    # worker process if the settings say so (EXTRACT_ISOLATION) – it is kept for the next pass – and in two
+    # stages: the model reads scan pages in the phase "Bildauswertung" at the end (vision.py)
     VECTOR_INDEX.configure(getattr(settings, "vector_search", DEFAULT_VECTOR_SEARCH))  # mail assignment searches
-    with _RUN_LOCK, extract_worker.isolation(settings):
+    with _RUN_LOCK, extract_worker.isolation(settings), documents.vision_later():
         return _run(settings, ai, phase)
 
 
@@ -144,6 +146,11 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
                                                vector_key=str(settings.db_path),
                                                mode=settings.assign_mode,
                                                min_similarity=settings.assign_min_similarity)
+        # last: the model reads the scan pages within its time budget; the next pass goes on
+        phase("Bildauswertung")
+        stats["vision"] = run_vision(conn, llm, settings, progress=phase)
+        if ai is not None and (stats["vision"].get("pages") or stats["vision"].get("documents")):
+            stats["vision_embeddings"] = embed_pending(conn, ai.embed)  # the sections written anew
     stats["seconds"] = round(time.time() - started, 2)
     log.info("Indexierung fertig: %s", stats)
     return stats

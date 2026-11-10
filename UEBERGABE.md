@@ -22,7 +22,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
-- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.890 Tests, etwa 80 s). Docker-Probelauf:
+- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.940 Tests, etwa 2 min). Docker-Probelauf:
   `sh scripts/docker-smoke.sh`.
 
 ## 3. Stand in Zahlen
@@ -30,7 +30,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
 | Was | Ergebnis |
 |---|---|
 | Phase A (14 Roadmap-Schritte), Zuordnung in plMail, Nachbesserungen | fertig (ROADMAP 1–16a) |
-| Testsuite | grün (zuletzt 1790 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
+| Testsuite | grün (zuletzt 1937 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
 | Docker-Probelauf | grün |
 | Eigener Evaluationssatz mit Fake-KI | 103/103 |
 | Zurückgehaltener Prüfsatz (unabhängiger Autor) mit Fake-KI | 19/28 beantwortbare richtig (0,68), 12/12 Absagen, 0 erfundene Antworten |
@@ -302,6 +302,18 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
   automatisch einem Bauvorhaben zugeordnet, von Hand schon.
 - **Dateitypen:** Nach `.odt` sind die größten nicht gelesenen Typen `.dwg` (Pläne), `.bak`, `.zip`,
   `.dxf` und `.xlsx` (siehe Abschnitt 8, Punkt 3) – genaue Zahlen nennt die Ablage-Prüfung.
+
+## 7b. Scans: zwei Stufen (Bildauswertung)
+
+Beim Einlesen bekommen Scans sofort Text (OCR-Ebene oder Tesseract) und sind durchsuchbar; das Bildmodell
+liest die Seiten danach in der Phase „Bildauswertung“ am Ende jedes Laufs (Bild + Text, Handschrift als
+„[handschriftlich: …]“), neueste zuerst, `VISION_CONCURRENCY=3` gleichzeitig, `VISION_PASS_SECONDS=1800` je
+Lauf. Statusseite: „Bildauswertung – N Seiten in M Dokumenten ausstehend“. Grob gerechnet: 290.000
+Scan-Seiten × 50 s ÷ 3 ≈ 56 Tage Dauerbetrieb für den Altbestand; neue Dateien gehen vor. Tesseract ohne
+Docker: `sudo apt install tesseract-ocr tesseract-ocr-deu`. Zu messen mit der echten KI: Qualität der
+Handschrift-Vermerke an einigen Prüfprotokollen, Dauer je Seite, ob Fragen während der Bildauswertung
+schnell genug bleiben (sonst `VISION_CONCURRENCY=2`). Einzelheiten: README „Scans in zwei Stufen“,
+DECISIONS „Scans in zwei Stufen“.
 
 ## 8. Offene Punkte, nach Wichtigkeit
 

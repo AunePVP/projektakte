@@ -742,3 +742,49 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   Reihenfolge) die Karte, damit die Leiste nicht an den Anfang springt.
 - *Reiter statt Abschnitte*: Dokumente, Anhänge, Mails sind Reiter mit Zahl; Mails und Anhänge zeigen höchstens
   200 Zeilen (`alle zeigen`), weil ein großes Projekt sonst tausende Zeilen in die Seite schreibt.
+
+**Scans in zwei Stufen (Phase „Bildauswertung“)**
+- *Warum*: Gemessen auf der Ablage: rund 892.000 PDF-Seiten, davon 110.000 Scans mit OCR-Ebene und 180.000 ohne
+  Text. Das Bildmodell braucht 40–60 s je Seite, der KI-Server nimmt 4 Anfragen gleichzeitig und beantwortet auch
+  die Fragen. Beim Einlesen auf das Modell zu warten hieße: wochenlang keine neuen Dateien und Mails. Und
+  handschriftliche Vermerke auf Scans mit OCR-Ebene gingen ganz verloren, weil Seiten mit Textebene nie an das
+  Modell gingen.
+- *Stufe 1 sofort*: OCR-Ebene oder Tesseract (`tesseract`-Programm mit `-l deu` über `subprocess`, keine neue
+  Python-Abhängigkeit; fehlt es oder die deutschen Sprachdaten, still ohne). Das Dokument ist gleich
+  durchsuchbar; die Scan-Seiten stehen mit ihrem Text in `page_texts`, damit Stufe 2 das Dokument Seite für
+  Seite wieder zusammensetzen kann, ohne die Datei neu zu lesen.
+- *Variante A (Bild + Text)*: Das Modell bekommt das Seitenbild und den erkannten Text und gibt die ganze Seite
+  zurück. Die Texterkennung liefert die Buchstaben, das Bild die Korrektur, die Handschrift und die Stempel an
+  der richtigen Stelle. Nur Handschrift abfragen wäre billiger, verliert aber die Zuordnung zur Zeile
+  („erledigt“ – welche Klappe?). Gibt das Modell nichts zurück, bleibt der Text der ersten Stufe.
+- *Wann eine Seite ein Scan ist*: ohne Textebene jedes Bild (wie bisher); mit Textebene nur Bilder mit zusammen
+  ≥ 1 Megapixel, die ≥ 50 % der Seite bedecken (Streifen zählen zusammen; ohne bekannte Lage nur die Pixel).
+  Die Megapixel-Grenze stammt aus der Zählung auf der Ablage; die Flächenregel hält Fotos in Berichten und Logos
+  heraus. Ein ganzseitiges Briefbogen-Bild hinter digitalem Text gilt als Scan (kostet Zeit, schadet nicht).
+  Die erste Prüfung liest nur die angegebenen Bildgrößen der Ressourcen, ohne Seiteninhalt – digitale Seiten
+  kosten fast nichts.
+- *Parallel, aber nur das Modell*: Die Seitenbilder dekodiert und setzt weiter der Leseprozess unter seinen
+  Grenzen zusammen (je Anfrage wenige Seiten, als JSON-Kopf plus rohe Bildbytes, nie gepickelt); die App schickt
+  nur die fertigen JPEG/PNG aus bis zu `VISION_CONCURRENCY` Daemon-Threads an das Modell. So bleibt ein
+  Leseprozess (keine Pufferung von Hunderten Bildern, keine weiteren Prozesse mit eigenem Speicherbudget),
+  nicht vertrauenswürdige PDF-Daten werden nie im App-Prozess geparst, und das Vorbereiten (unter einer Sekunde) hält
+  mit 3 Modellaufrufen à 50 s leicht Schritt. Daemon-Threads statt ThreadPoolExecutor: eine Antwort unterwegs
+  hält das Beenden der App nicht auf. Standard 3, damit einer der 4 Plätze für Fragen frei bleibt.
+- *Zeitbudget je Lauf* (`VISION_PASS_SECONDS`, 1800 s): danach werden keine neuen Seiten mehr vergeben, laufende
+  noch abgewartet; dann folgen neue Dateien und Mails im nächsten Lauf. Jede gelesene Seite wird sofort
+  gespeichert, das Dokument am Ende seiner Seiten (oder des Laufs) neu in Abschnitte zerlegt – nur dieses, seine
+  Vektoren macht ein Embedding-Lauf direkt danach. Neueste zuerst (Dokumentdatum, dann Änderungszeit): Neues
+  ist meist gefragter.
+- *Fehler*: Modell aus → Seite mit wachsendem Abstand erneut (15 min … 7 Tage), ihr Text der ersten Stufe bleibt
+  durchsuchbar. Kein Bild lesbar → Seite übersprungen und vermerkt; Teile, die fehlen, Grenzen des Leseprozesses
+  und fehlende Komponenten wirken wie bisher (Wiederholung, `|limit:` im Profil).
+- *Extraktionsversion 7*: nötig, weil vollständige ältere PDF-Dateien nicht wissen, ob sie Scans mit OCR-Ebene
+  enthalten. Die Version markiert, was schon geprüft ist; die Prüfung läuft nebenbei in der Bildauswertung,
+  während das Modell arbeitet, und nur für PDF-Dateien, die ohne Modell gelesen wurden (eine zweite schnelle
+  Vorprüfung ohne Textauszug lässt reine Digital-Dateien gleich durch). Was das Modell schon gelesen hat, bleibt.
+  Der Bump liest sonst nur unvollständige Dokumente neu (sie bekommen jetzt Tesseract bzw. Stufe 2). Das Profil
+  trägt „+ocr“, wenn Tesseract da ist: Nachinstallieren liest die unvollständigen nach.
+- *Direkte Aufrufe* (`extract()`, Skripte, Tests) lesen weiter in einem Zug mit dem Modell (ebenfalls mit Bild +
+  Text); nur ein Indexierungslauf arbeitet in zwei Stufen (`documents.vision_later`).
+- *Fotos in `VISION_SKIP_FOLDERS`*: weder Modell noch Tesseract (Baustellenfotos ergeben keinen Text, nur
+  Zeichenmüll; Tesseract-Text mit weniger als drei Wörtern wird ohnehin verworfen).

@@ -374,8 +374,9 @@ def test_background_indexer_stop_ends_the_worker(fake_ai, tmp_path):
 
 
 def test_stopping_the_app_while_a_file_is_read_ends_the_pass_at_once(fresh_fake_ai, tmp_path):
-    """Shutdown while the worker waits for a slow model: the pass ends without waiting for it, nothing is
-    recorded for the file (read again on the next start), and it is no indexing error."""
+    """Shutdown while the phase "Bildauswertung" waits for a slow model: the pass ends without waiting for
+    it, the file stays stored with its page waiting (read again on the next start), and it is no indexing
+    error. (The file itself is stored by the documents pass, before the model is asked.)"""
     from projektakte.ai.services import AIServices
     from projektakte.background import BackgroundIndexer
 
@@ -387,13 +388,14 @@ def test_stopping_the_app_while_a_file_is_read_ends_the_pass_at_once(fresh_fake_
     fresh_fake_ai.options["delay"] = 30.0
     indexer = BackgroundIndexer(settings, AIServices.from_settings(settings))
     indexer.start()
-    wait_for(lambda: fresh_fake_ai.calls.get("chat"))
+    wait_for(lambda: fresh_fake_ai.calls.get("chat"), timeout=120.0)  # (the embeddings wait first)
     started = time.monotonic()
     indexer.stop()
     assert not indexer.alive and time.monotonic() - started < 5
     assert indexer.status()["last_error"] is None
     conn = sqlite3.connect(settings.db_path)
-    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*), SUM(vision_pending) FROM documents").fetchone() == (1, 1)
+    assert conn.execute("SELECT COUNT(*) FROM page_texts WHERE state = 'pending'").fetchone()[0] == 1
     conn.close()
 
 
@@ -674,7 +676,9 @@ def test_memory_errors_are_too_big_to_read_without_retry(monkeypatch):
 
 
 def test_extraction_version_6_reads_incomplete_documents_again():
-    assert extract_mod.EXTRACT_VERSION == 6 and extract_mod.extraction_profile(None) == "v6:text"
+    # version 7 (two stages for scans, test_bildauswertung_stufen.py) is the next one after 6
+    assert extract_mod.EXTRACT_VERSION >= 6
+    assert extract_mod.extraction_profile(None, ocr=False) == f"v{extract_mod.EXTRACT_VERSION}:text"
 
 
 @pytest.fixture()

@@ -23,6 +23,9 @@ DIFF=$(docker run --rm --entrypoint pip "$IMAGE" freeze --exclude pip 2>/dev/nul
 rm -f "$LOCK"
 [ -z "$DIFF" ] || fail "Pakete im Image weichen von constraints.txt ab: $(echo "$DIFF" | grep '^[<>]' | tr '\n' ' ')"
 echo "Pakete:  wie constraints.txt"
+docker run --rm --entrypoint tesseract "$IMAGE" --list-langs 2>/dev/null | grep -qx deu \
+  || fail "Tesseract mit deutschen Sprachdaten fehlt im Image"
+echo "OCR:     Tesseract mit Deutsch im Image"
 
 START=$(date +%s)
 CID=$(docker run -d --rm -p "127.0.0.1:$PORT:8000" -e AI_MODE=fake -e DEMO_MODE=1 -e INDEX_INTERVAL=0 \

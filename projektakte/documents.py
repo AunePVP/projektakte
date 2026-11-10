@@ -13,6 +13,8 @@ import os
 import re
 import sqlite3
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -20,7 +22,7 @@ from pathlib import Path
 from . import extract_worker
 from .db import BAUVORHABEN
 from .chunking import Chunk, chunk_pages
-from .extract import IMAGE_EXT, SUPPORTED_EXT, Extracted, extract, extraction_profile
+from .extract import IMAGE_EXT, SUPPORTED_EXT, Extracted, Page, extract, extraction_profile
 from .textutil import find_date, fold
 
 log = logging.getLogger("projektakte.documents")
@@ -133,22 +135,40 @@ class PreparedDocument:
 
 _STATUS_DE = {"ok": "ok", "skipped": "übersprungen", "error": "Fehler", "empty": "kein Text"}
 
+# Set during an indexing pass (see vision_later): the model does not read scan pages while a file is read –
+# they are stored with their text layer or Tesseract's text and read by the phase "Bildauswertung".
+_VISION_LATER: ContextVar[bool] = ContextVar("vision_later", default=False)
+
+
+@contextmanager
+def vision_later(on: bool = True):
+    """Within the block, files are read in two stages (see vision.py): the scan pages of PDFs and images
+    are left for the phase "Bildauswertung" instead of being read by the model at once."""
+    token = _VISION_LATER.set(on)
+    try:
+        yield
+    finally:
+        _VISION_LATER.reset(token)
+
 
 def prepare_document(*, rel_path: str, data: bytes, mtime: float | None, llm=None,
-                     doc_date: str | None = None) -> PreparedDocument:
-    """Extract and chunk one file. Slow (PDF parsing, vision model) and touches no database, so the
-    caller should not hold a write transaction meanwhile.
+                     doc_date: str | None = None, ocr: bool | None = None) -> PreparedDocument:
+    """Extract and chunk one file. Slow (PDF parsing, Tesseract, vision model) and touches no database, so
+    the caller should not hold a write transaction meanwhile. ``ocr`` False: no Tesseract (photos).
 
-    During an indexing pass with isolation switched on, PDF, Word, OpenDocument and mail files are read in the
-    extraction worker process with operating-system limits (see extract_worker); it raises
-    ExtractionAborted when the app shuts down meanwhile – nothing is to be written for the file then."""
+    During an indexing pass with isolation switched on, PDF, Word, OpenDocument and mail files (and images,
+    while Tesseract is installed) are read in the extraction worker process with operating-system limits
+    (see extract_worker); it raises ExtractionAborted when the app shuts down meanwhile – nothing is to be
+    written for the file then. Within :func:`vision_later` the model reads no page now (two stages)."""
     filename = Path(rel_path).name
     started = time.monotonic()
-    result = extract_worker.extract_file(filename, data, llm, extract)
+    later = _VISION_LATER.get() and bool(getattr(llm, "vision", False))
+    result = extract_worker.extract_file(filename, data, llm, extract, defer_vision=later, ocr=ocr)
     chunks = chunk_pages(result.pages) if result.status == "ok" else []
-    log.info("Gelesen: %s – %s%s, %d Seite(n), %d Abschnitt(e), %.1f s%s", printable(rel_path), _STATUS_DE.get(
+    pending = f", Bildauswertung ausstehend: {len(result.vision_pages)} Seite(n)" if result.vision_pages else ""
+    log.info("Gelesen: %s – %s%s, %d Seite(n), %d Abschnitt(e), %.1f s%s%s", printable(rel_path), _STATUS_DE.get(
         result.status, result.status), " (Bildauswertung)" if result.method == "vision" else "", len(result.pages),
-        len(chunks), time.monotonic() - started, f" – {result.message}" if result.message else "")
+        len(chunks), time.monotonic() - started, f" – {result.message}" if result.message else "", pending)
     return PreparedDocument(
         rel_path=rel_path, filename=filename, ext=Path(filename).suffix.lower(), size=len(data),
         sha256=sha256(data), mtime=mtime, doc_date=doc_date or document_date(filename, result.text, mtime),
@@ -162,33 +182,86 @@ def write_document(conn: sqlite3.Connection, doc: PreparedDocument, *, path: str
 
     Only fast SQL – the caller commits right after, so the write lock is held briefly."""
     r = doc.result
-    row = conn.execute("SELECT id, sha256, attempts FROM documents WHERE path = ?", (path,)).fetchone()
+    row = conn.execute("SELECT id, sha256, attempts, extract_profile FROM documents WHERE path = ?",
+                       (path,)).fetchone()
     attempts, retry_after = 0, None
     if r.retry:  # count failures of the same content; a new version starts again
         attempts = (row[2] or 0) + 1 if row and row[1] == doc.sha256 else 1
         retry_after = _sqlite_time(_utcnow() + retry_delay(attempts))
+    chunks, status, message, method = doc.chunks, r.status, r.message, r.method
+    pending: list[int] = []
+    known: dict[int, str] = {}
+    if r.vision_pages:
+        # pages the model already read for this content and profile stay read (the file was read again)
+        if row and row[1] == doc.sha256 and row[3] == doc.profile:
+            known = {n: t for n, t in conn.execute(
+                "SELECT page, text FROM page_texts WHERE doc_id = ? AND state = 'done'", (row[0],))}
+        pending = [n for n in r.vision_pages if n not in known]
+        if known:
+            pages = _merged_pages(r.pages, known)
+            chunks = chunk_pages(pages)
+            status, method = ("ok" if any(p.text.strip() for p in pages) else status), "vision"
+        if pending:
+            message = pending_message(r.message, len(pending))
     values = (project, mail_id, doc.rel_path, doc.filename, doc.ext, doc.size, doc.mtime, doc.sha256,
-              doc.doc_date, doc.pages, r.status, r.message, r.method, doc.profile, int(r.incomplete),
-              attempts, retry_after)
+              doc.doc_date, doc.pages, status, message, method, doc.profile, int(r.incomplete or bool(pending)),
+              attempts, retry_after, len(pending), r.message if pending else None, int(r.incomplete))
     if row:
         doc_id = row[0]
         conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+        conn.execute("DELETE FROM page_texts WHERE doc_id = ?", (doc_id,))
         conn.execute(
             "UPDATE documents SET project=?, mail_id=?, rel_path=?, filename=?, ext=?, size=?, mtime=?, "
             "sha256=?, doc_date=?, pages=?, status=?, message=?, method=?, extract_profile=?, incomplete=?, "
-            "attempts=?, retry_after=?, indexed_at=datetime('now') WHERE id=?", (*values, doc_id))
+            "attempts=?, retry_after=?, vision_pending=?, vision_note=?, vision_incomplete=?, "
+            "indexed_at=datetime('now') WHERE id=?", (*values, doc_id))
     else:
         doc_id = conn.execute(
             "INSERT INTO documents(project, mail_id, rel_path, filename, ext, size, mtime, sha256, "
             "doc_date, pages, status, message, method, extract_profile, incomplete, attempts, retry_after, "
-            "path, indexed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))",
-            (*values, path)).lastrowid
-    for c in doc.chunks:
+            "vision_pending, vision_note, vision_incomplete, path, indexed_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))", (*values, path)).lastrowid
+    if pending:
+        store_page_texts(conn, doc_id, r.pages, pending, known)
+    write_chunks(conn, doc_id, chunks, filename=doc.filename, project=project, project_name=project_name,
+                 mail_id=mail_id)
+    return doc_id
+
+
+def pending_message(note: str | None, pages: int) -> str:
+    """The message of a document whose scan pages wait for the model."""
+    text = f"Bildauswertung ausstehend: {pages} Seite(n)"
+    return f"{note}; {text}" if note else text
+
+
+def _merged_pages(pages: list[Page], known: dict[int, str]) -> list[Page]:
+    """The pages of a file with the texts the model gave for some of them (page number → text)."""
+    by_number = {p.number: p.text for p in pages}
+    by_number.update(known)
+    return [Page(n, by_number[n]) for n in sorted(by_number, key=lambda n: n or 0) if by_number[n].strip()]
+
+
+def store_page_texts(conn: sqlite3.Connection, doc_id: int, pages: list[Page], pending: list[int],
+                     done: dict[int, str] | None = None) -> None:
+    """The texts of all pages of a document whose scan pages wait for the model (``pending``), so that the
+    phase "Bildauswertung" can put the document together again with the model's texts; ``done`` are pages
+    already read by it."""
+    done = done or {}
+    texts = {p.number: p.text for p in pages if p.number is not None}
+    rows = [(doc_id, n, text, "text") for n, text in texts.items() if n not in pending and n not in done]
+    rows += [(doc_id, n, texts.get(n, ""), "pending") for n in pending]
+    rows += [(doc_id, n, text, "done") for n, text in done.items()]
+    conn.executemany("INSERT OR REPLACE INTO page_texts(doc_id, page, text, state) VALUES(?,?,?,?)", rows)
+
+
+def write_chunks(conn: sqlite3.Connection, doc_id: int, chunks: list[Chunk], *, filename: str,
+                 project: str | None, project_name: str | None, mail_id: int | None) -> None:
+    """The sections of a document with their full-text rows (its old sections must be deleted already)."""
+    for c in chunks:
         cid = conn.execute(
             "INSERT INTO chunks(doc_id, mail_id, project, ord, page, heading, text) VALUES(?,?,?,?,?,?,?)",
             (doc_id, mail_id, project, c.ord, c.page, c.heading, c.text)).lastrowid
-        add_fts(conn, cid, fts_title(doc.filename, project, project_name, c.heading), c.text)
-    return doc_id
+        add_fts(conn, cid, fts_title(filename, project, project_name, c.heading), c.text)
 
 
 def store_document(conn: sqlite3.Connection, *, path: str, rel_path: str, project: str | None,
@@ -643,8 +716,8 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
             conn.commit()
             stats["unchanged"] += 1
             continue
-        doc = prepare_document(rel_path=shown, data=data, mtime=st.st_mtime,
-                               llm=None if file_profile != profile else llm)  # no lock held
+        doc = prepare_document(rel_path=shown, data=data, mtime=st.st_mtime,  # no lock held
+                               llm=None if file_profile != profile else llm, ocr=False if photo else None)
         if file_profile != profile:
             doc.result.message, doc.profile = PHOTO_SKIPPED_TEXT, file_profile
         try:

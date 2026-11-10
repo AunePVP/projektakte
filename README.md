@@ -340,8 +340,8 @@ passwortgeschützte Dateien werden nicht gelesen. Grenzen je Datei: 64 MB entpac
 größeren Tabelle wird der Anfang gelesen), 10 000 Bestandteile, 100 Ebenen, 500 000 Elemente je Absatz,
 Zeile oder Folie, 32 Mio. Zeichen; Wiederholungen in Tabellen höchstens 100-mal.
 Textdateien in UTF-8, UTF-16/32 (auch Windows-„Unicode“) oder cp1252. Bilder (PNG/JPG/TIFF) und
-PDF-Seiten ohne Textebene werden nur mit `LLM_VISION=1` über das multimodale Modell gelesen, sonst
-als „übersprungen“ vermerkt. Die Bilder gescannter PDF-Seiten liest Pillow aus (JPEG/PNG unverändert,
+gescannte PDF-Seiten liest das multimodale Modell (`LLM_VISION=1`), siehe „Scans in zwei Stufen“; ohne
+Modell und ohne Tesseract werden sie als „übersprungen“ vermerkt. Die Bilder gescannter PDF-Seiten liest Pillow aus (JPEG/PNG unverändert,
 TIFF/CCITT, JPEG 2000 und CMYK umgewandelt, große Bilder verkleinert; Streifen- und Kachelscans
 werden zu einem Seitenbild zusammengesetzt; JBIG2 über `jbig2dec`, das im Docker-Image enthalten
 ist). Ein Bild (ein PDF-Objekt, auch unter mehreren Namen oder auf mehreren Seiten) wird je Dokument
@@ -353,6 +353,28 @@ Bildauswertungen und 4000 Megapixel; der Seiteninhalt wird begrenzt durchlaufen 
 Hinweis ausgelassen und nicht wiederholt. Reine Vektorseiten (CAD-Pläne mit Text als Kurven) gelten als
 Seiten ohne Text.
 
+**Scans in zwei Stufen (Bildauswertung):** Eine PDF-Seite gilt als Scan, wenn sie keine Textebene hat
+und ein Bild zeigt – oder wenn sie eine Textebene (OCR) hat und ihre Bilder zusammen mindestens 1
+Megapixel haben und mindestens die Hälfte der Seite bedecken. Digitale Seiten (Text, höchstens Logo
+oder kleines Foto) gehen nie an das Modell. *Stufe 1* (beim Einlesen, schnell): Scans mit OCR-Ebene
+behalten ihren Text, Scans ohne Text liest Tesseract (`tesseract-ocr` + `tesseract-ocr-deu`, im
+Docker-Image enthalten; fehlt es, bleibt die Seite bis Stufe 2 ohne Text). Das Dokument ist sofort
+durchsuchbar und trägt „Bildauswertung ausstehend: N Seite(n)“. *Stufe 2* ist die eigene Phase
+„Bildauswertung“ am Ende jedes Laufs (nach Dokumenten, Mails und Embeddings): Das Modell bekommt das
+Seitenbild **und** den bisherigen Text und gibt die ganze Seite zurück – OCR-Fehler berichtigt,
+Handschrift als „[handschriftlich: …]“ und Stempel als „[Stempel: …]“ an der passenden Stelle, Pläne
+kurz beschrieben. Neueste Dokumente zuerst, höchstens `VISION_CONCURRENCY` Aufrufe gleichzeitig (3,
+damit einer der vier Plätze des KI-Servers für Fragen frei bleibt) und höchstens
+`VISION_PASS_SECONDS` je Lauf (1800 s); danach läuft der nächste Lauf (neue Dateien, Mails) und die
+Bildauswertung macht dort weiter. Gelesene Seiten ersetzen den Text der ersten Stufe, nur dieses
+Dokument bekommt neue Abschnitte und Vektoren. Mail-Anhänge gehen denselben Weg. Die Statusseite
+zeigt, wie viele Seiten und Dokumente noch warten; das Protokoll jede gelesene Seite. Ältere,
+vollständig gelesene PDF-Dateien (ohne Modell gelesen) prüft die Phase nebenbei auf gescannte Seiten
+mit Textebene – deren Handschrift steht nur im Bild. Fällt das Modell aus, wird die Seite mit
+wachsendem Abstand wiederholt; ihr Text der ersten Stufe bleibt so lange durchsuchbar. Mit
+`LLM_VISION=0` liest nur Tesseract (das Dokument bleibt unvollständig und wird mit `LLM_VISION=1`
+nachgelesen). Fotos in `VISION_SKIP_FOLDERS` bekommen weder Tesseract noch das Modell.
+
 **Eigener Leseprozess:** PDF-, Word-, OpenDocument- und Mail-Dateien (auch Mail-Anhänge) werden nicht im
 Anwendungsprozess gelesen, sondern in einem dauerhaften Leseprozess mit Grenzen je Datei:
 Speicher `EXTRACT_MEMORY_MB` (2048), Rechenzeit `EXTRACT_CPU_SECONDS` (120 s; das Warten auf das
@@ -360,8 +382,10 @@ Sprachmodell zählt nicht) und `EXTRACT_WALL_SECONDS` (3600 s ohne Fortschritt).
 oder absichtlich aufgeblähte Datei kann so weder den Speicher der Anwendung füllen noch die
 Indexierung lange aufhalten: Sie wird als „Datei zu aufwendig zum Lesen“ bzw. „Datei zu groß zum
 Lesen“ vermerkt, der Leseprozess startet neu. Im Docker-Betrieb das Speicherlimit des Containers
-mindestens auf Anwendung + `EXTRACT_MEMORY_MB` setzen. Textdateien und Bilder liest die Anwendung
-selbst; mit `APP_ENV=test` (Testsuite) ist der Leseprozess aus, `EXTRACT_ISOLATION=0/1` schaltet ihn
+mindestens auf Anwendung + `EXTRACT_MEMORY_MB` setzen. Auch die Seitenbilder für die Bildauswertung
+bereitet der Leseprozess vor (die Anwendung schickt nur die fertigen JPEG/PNG an das Modell), und
+Tesseract läuft als Programm des Leseprozesses mit dessen Speichergrenze (je Seite höchstens 60 s, Seitenbilder auf 9 Megapixel verkleinert).
+Textdateien liest die Anwendung selbst, Bilder ebenso, solange Tesseract nicht installiert ist; mit `APP_ENV=test` (Testsuite) ist der Leseprozess aus, `EXTRACT_ISOLATION=0/1` schaltet ihn
 ausdrücklich.
 Ist ein Teilbild nicht lesbar, gilt die Seite als „nur teilweise gelesen“ und wird später
 erneut versucht. Jedes Dokument merkt sich sein Extraktionsprofil: Wird `LLM_VISION`
@@ -526,7 +550,9 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `AI_MODE` | `real` | `fake` = Fake-KI-Dienste im selben Prozess starten, URLs werden ignoriert |
 | `LLM_URL` | `http://192.168.178.62:8000/v1` | Sprachmodell (OpenAI-kompatibel) |
 | `LLM_MODEL` | `qwen3.8-flash-next` | Modellname |
-| `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Rückfall für Scans/Pläne) |
+| `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Scans, Pläne; Phase „Bildauswertung“) |
+| `VISION_CONCURRENCY` | `3` | Gleichzeitige Modellaufrufe der Bildauswertung (ab 1 = nacheinander); der KI-Server nimmt 4, einer bleibt für Fragen frei |
+| `VISION_PASS_SECONDS` | `1800` | Zeitbudget der Bildauswertung je Indexierungslauf in Sekunden, danach geht es im nächsten Lauf weiter; `0` = bis nichts mehr aussteht |
 | `VISION_SKIP_FOLDERS` | leer | Ordnernamen, deren Fotos nicht an das Modell gehen, mit Komma getrennt; `Bilder` trifft auch `263900-Bilder`. Scans (PDF) werden weiter gelesen; ohne die Einstellung werden die Fotos beim nächsten Lauf nachgelesen |
 | `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | `120` / `800` | Sekunden / Antwortlänge |
 | `LLM_EXTRA_BODY` | – | JSON, das in jede Chat-Anfrage gemischt wird, z. B. `{"chat_template_kwargs":{"enable_thinking":false}}` |
