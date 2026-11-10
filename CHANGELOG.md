@@ -127,7 +127,7 @@ Roadmap-Schritt.
 - `VISION_SKIP_FOLDERS` (z. B. `Bilder`): Fotos in Ordnern wie `263900-Bilder` gehen nicht an die Bildauswertung;
   ohne die Einstellung werden sie später nachgelesen.
 - Protokoll: je gelesener Datei eine Zeile „Gelesen: <Datei> – ok (Bildauswertung), 3 Seite(n), 7 Abschnitt(e), 12,3 s“.
-- 1942 Tests (1937 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`.
+- 1962 Tests (1957 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`.
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

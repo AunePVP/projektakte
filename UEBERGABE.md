@@ -22,7 +22,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
-- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.940 Tests, etwa 2 min). Docker-Probelauf:
+- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.960 Tests, etwa 2 min). Docker-Probelauf:
   `sh scripts/docker-smoke.sh`.
 
 ## 3. Stand in Zahlen
@@ -30,7 +30,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
 | Was | Ergebnis |
 |---|---|
 | Phase A (14 Roadmap-Schritte), Zuordnung in plMail, Nachbesserungen | fertig (ROADMAP 1–16a) |
-| Testsuite | grün (zuletzt 1937 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
+| Testsuite | grün (zuletzt 1957 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
 | Docker-Probelauf | grün |
 | Eigener Evaluationssatz mit Fake-KI | 103/103 |
 | Zurückgehaltener Prüfsatz (unabhängiger Autor) mit Fake-KI | 19/28 beantwortbare richtig (0,68), 12/12 Absagen, 0 erfundene Antworten |
