@@ -1404,8 +1404,13 @@ def _read_scanned_pages(empty_pages, llm, name: str) -> _ScanResult:
     result = _ScanResult()
     doc = _DocState()
     decoder = _Decoder()
-    for i, page in empty_pages:
+    total = len(empty_pages)
+    log.info("Bildauswertung: %s – %d Seite(n) ohne Textebene", name, total)
+    every = 1 if total <= 50 else 10  # (the worker forwards at most 200 log records per file)
+    for n, (i, page) in enumerate(empty_pages, start=1):
         _check_page()
+        if n > 1 and (n % every == 0 or n == total):
+            log.info("Bildauswertung: %s – Seite %d von %d", name, n, total)
         key = _text_key(page)  # pages with the same content and resources draw the same
         drawn = doc.drawings.get(key) if key is not None else None
         try:
