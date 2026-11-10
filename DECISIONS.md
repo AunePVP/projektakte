@@ -716,16 +716,3 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   die Vorauswahl vervierfacht, höchstens bis zum 64-fachen.
 - *Matrix bleibt wählbar*: zum Vergleich in der Messung und falls die Bits mit einem Modell schlecht
   funktionieren.
-
-**Zeitachse als Kalender**
-- *Warum*: Große Projekte (über 300 Dokumente seit 2014) machten die Zeitachse zu einer langen Liste, in der
-  das Neue zwischen Altem unterging. Neues soll genau, Altes nur noch als Überblick erscheinen.
-- *Kalender statt Regler*: Ein Feld je Monat, eine Zeile je Jahr – auch ein ruhiges Jahr bleibt eine Zeile,
-  damit die Abstände ehrlich sind. Ein Klick wählt den Monat; kein Schieberegler für den Zeitraum (auf
-  Wunsch des Betreibers) und kein eigenes JavaScript: Links mit HTMX, ohne JavaScript lädt die Seite neu.
-  Eine logarithmische Achse („Fischauge“) wurde als Entwurf gezeigt, ist aber ungewohnter zu bedienen.
-- *Neueste einzeln*: ohne gewählten Monat die Einträge der letzten 30 Tage, mindestens 10, höchstens 30 –
-  so ist die Seite auch nach einer ruhigen Zeit nicht leer und nach einer belebten nicht lang.
-- *Stufen linear zum vollsten Monat* (vier Stufen), damit 1, 2 und 3 Einträge unterscheidbar bleiben; die
-  Zahl steht zusätzlich im Feld und im Linktext für Screenreader.
-- *Keine Meilensteine*: bewusst weggelassen – eine Erkennung aus Ordnern oder Texten wäre unsicher.

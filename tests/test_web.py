@@ -35,7 +35,7 @@ def test_project_list_and_filter(client):
 def test_project_page_sections(client):
     r = client.get("/projekte/BS-2024-0137")
     assert r.status_code == 200
-    for text in ("Frage zu diesem Projekt", "Zeitachse", "Dokumente", "Mails", "Neueste Einträge",
+    for text in ("Frage zu diesem Projekt", "Zeitachse", "Dokumente", "Mails", "Baugenehmigung.pdf",
                  "Zustimmung zur Abweichung Flurlänge", "nicht vollständig gelesen"):
         assert text in r.text, text
     # timeline is chronological (newest first)
@@ -43,59 +43,6 @@ def test_project_page_sections(client):
     iso = [f"{y}{m}{d}" for d, m, y in dates]
     assert iso == sorted(iso, reverse=True) and len(iso) > 5
     assert client.get("/projekte/BS-1999-0001", headers={"Accept": "text/html"}).status_code == 404
-
-
-def _timeline(html: str) -> str:
-    return html.split('<div id="tl">', 1)[1].split('<section id="dokumente">', 1)[0]
-
-
-def test_timeline_as_calendar_with_the_newest_entries(client):
-    """The timeline is a calendar (one row per year, one cell per month with its number of entries); below
-    it the newest entries one by one; a click on a month shows that month – no slider, no script."""
-    tl = _timeline(client.get("/projekte/BS-2024-0137").text)
-    assert '<table class="heat">' in tl and "<th scope=\"row\">2025</th>" in tl and "<th scope=\"row\">2024</th>" in tl
-    assert 'type="range"' not in tl
-    assert re.search(r'aria-label="Februar 2024: 0 Dokumente, 1 Mail"', tl)
-    assert re.search(r'aria-label="März 2024: 1 Dokument, 1 Mail"', tl)
-    newest = tl.split("Neueste Einträge", 1)[1]
-    assert len(re.findall(r'<span class="date">', newest)) == 10  # at least ten newest, demo data is older
-    part = client.get("/projekte/BS-2024-0137/zeitachse", params={"monat": "2024-03"}, headers=HX)
-    assert part.status_code == 200 and "<html" not in part.text and "März 2024" in part.text
-    assert "Baugenehmigung.pdf" in part.text and "Baugenehmigung 63-0137/24" in part.text
-    assert len(re.findall(r'<span class="date">', part.text)) == 2 and "heat-cell l" in part.text
-    assert re.search(r'class="heat-cell l\d sel"', part.text)  # the chosen month is marked
-    assert "Neueste Einträge</a>" in part.text  # the way back
-    # without JavaScript: the page opened at the month; the partial address redirects there
-    page = client.get("/projekte/BS-2024-0137", params={"monat": "2024-03"}).text
-    assert "Baugenehmigung.pdf" in _timeline(page)
-    plain = client.get("/projekte/BS-2024-0137/zeitachse", params={"monat": "2024-03"}, follow_redirects=False)
-    assert plain.status_code == 303 and plain.headers["location"].endswith("?monat=2024-03#zeitachse")
-    # an empty or unusable month
-    assert "Keine Einträge in diesem Monat" in client.get("/projekte/BS-2024-0137/zeitachse",
-                                                          params={"monat": "2024-08"}, headers=HX).text
-    assert "Neueste Einträge" in client.get("/projekte/BS-2024-0137/zeitachse",
-                                            params={"monat": "2024-13"}, headers=HX).text
-    assert client.get("/projekte/BS-1999-0001/zeitachse", headers={**HX, "Accept": "text/html"}).status_code == 404
-
-
-def test_timeline_view_levels_and_recent_entries():
-    from datetime import date
-
-    from projektakte.web import timeline_view
-    entries = ([{"kind": "doc", "date": f"2026-11-{d:02d}"} for d in range(1, 9)]
-               + [{"kind": "mail", "date": "2026-10-20T10:00:00+00:00"}] * 40
-               + [{"kind": "doc", "date": "2014-03-01"}, {"kind": "doc", "date": None}])
-    tl = timeline_view(entries, "", today=date(2026, 11, 10))
-    assert [y["year"] for y in tl["years"]] == list(range(2026, 2013, -1))  # quiet years still one row each
-    nov, okt = tl["years"][0]["cells"][10], tl["years"][0]["cells"][9]
-    assert okt["n"] == 40 and okt["level"] == 4 and nov["n"] == 8 and 1 <= nov["level"] < 4
-    assert tl["years"][0]["cells"][11]["future"] and not nov["future"]
-    assert tl["years"][-1]["cells"][2]["n"] == 1 and tl["undated"] == 1 and tl["total"] == 50
-    assert len(tl["entries"]) == 30 and tl["title"] == "Neueste Einträge"  # 48 in the last 30 days, capped
-    few = timeline_view(entries[-2:], "", today=date(2026, 11, 10))
-    assert len(few["entries"]) == 2 and few["note"] == ""
-    assert len(timeline_view(entries, "ohne", today=date(2026, 11, 10))["entries"]) == 1
-    assert timeline_view([], "")["years"] == []
 
 
 def _browser(html: str) -> str:

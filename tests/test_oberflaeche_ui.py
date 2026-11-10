@@ -390,9 +390,8 @@ def test_project_page_lists_mail_attachments(ro):
     assert re.search(r'<a href="/mails/\d+">Stellungnahme Brandschutzdienststelle', section)
     assert re.search(r'<span class="muted">\d\d\.\d\d\.\d{4}</span>', section)
     assert ro.get(f"/dokumente/{doc_id}").status_code == 200
-    # the timeline names the attachment at its mail (in the month of the mail)
-    month = ro.get("/projekte/BS-2024-0137", params={"monat": "2024-02"}).text
-    assert f'📎 <a href="/dokumente/{doc_id}">Stellungnahme Feuerwehr.pdf</a>' in month
+    # the timeline names the attachment at its mail
+    assert f'📎 <a href="/dokumente/{doc_id}">Stellungnahme Feuerwehr.pdf</a>' in html
     assert "Anhang aus Mails" in html or "Anhänge aus Mails" in html
 
 

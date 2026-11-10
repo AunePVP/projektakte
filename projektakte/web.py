@@ -397,108 +397,8 @@ def _project_attachments(conn, number: str) -> list[dict]:
         "WHERE m.project = ? AND m.deleted = 0 ORDER BY m.date DESC, d.id", (number,))]
 
 
-MONTHS_DE = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober",
-             "November", "Dezember")
-MONTHS_SHORT = ("Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez")
-NO_DATE = "ohne"  # the timeline's "month" of entries without a date
-TIMELINE_RECENT_DAYS = 30  # shown one by one when no month is chosen …
-TIMELINE_RECENT_MIN = 10  # … at least this many newest entries …
-TIMELINE_RECENT_MAX = 30  # … at most this many
-
-
-def _project_mails(conn, number: str) -> list[dict]:
-    return [dict(r) for r in conn.execute(
-        "SELECT id, subject, sender, sender_name, date, assign_status, assign_method, has_attachments "
-        "FROM mails WHERE project = ? AND deleted = 0 ORDER BY date DESC", (number,))]
-
-
-def timeline_entries(docs: list[dict], mails: list[dict], attachments: list[dict]) -> list[dict]:
-    """Documents and mails of a project, newest first; a mail carries its attachments."""
-    atts_by_mail: dict[int, list[dict]] = {}
-    for a in attachments:
-        atts_by_mail.setdefault(a["mail_id"], []).append(a)
-    return sorted(
-        [{"kind": "doc", "date": d["doc_date"], "title": d["rel_path"], "id": d["id"], "sub": d["ext"][1:].upper(),
-          "atts": []} for d in docs]
-        + [{"kind": "mail", "date": m["date"], "title": m["subject"], "id": m["id"],
-            "sub": m["sender_name"] or m["sender"], "atts": atts_by_mail.get(m["id"], [])} for m in mails],
-        key=lambda e: local_sort_key(e["date"]), reverse=True)
-
-
-def _month_key(day: date | None) -> str:
-    return f"{day.year:04d}-{day.month:02d}" if day else NO_DATE
-
-
-def timeline_url(number: str, month: str = "", partial: bool = False) -> str:
-    """The project page with the timeline at ``month`` ("YYYY-MM", "ohne", "" = newest) – or, with
-    ``partial``, just the timeline (HTMX)."""
-    base = f"/projekte/{quote(number, safe='')}"
-    query = f"?{urlencode({'monat': month})}" if month else ""
-    return f"{base}/zeitachse{query}" if partial else f"{base}{query}#zeitachse"
-
-
-templates.env.globals["timeline_url"] = timeline_url
-
-
-def timeline_view(entries: list[dict], month: str = "", today: date | None = None) -> dict:
-    """The timeline as a calendar: one row per year (the years of the entries, newest first), one cell per
-    month – its number of entries and a level 0–4 for the shade. Below it the entries of the chosen
-    ``month`` ("YYYY-MM" or "ohne" for entries without a date); without one the newest entries one by
-    one (those of the last TIMELINE_RECENT_DAYS days, at least TIMELINE_RECENT_MIN, at most
-    TIMELINE_RECENT_MAX). Old years thus take one line each, recent work is shown in full."""
-    today = today or datetime.now(LOCAL_TZ).date()
-    by_month: dict[str, list[dict]] = {}
-    for e in entries:
-        e["day"] = local_day(e["date"])
-        by_month.setdefault(_month_key(e["day"]), []).append(e)
-    years = sorted({e["day"].year for e in entries if e["day"]}, reverse=True)
-    top = max((len(v) for k, v in by_month.items() if k != NO_DATE), default=1)
-    rows = []
-    for y in range(years[0], years[-1] - 1, -1) if years else ():
-        cells = []
-        for m in range(1, 13):
-            key = f"{y:04d}-{m:02d}"
-            got = by_month.get(key, [])
-            n = len(got)
-            docs = sum(e["kind"] == "doc" for e in got)
-            cells.append({"key": key, "n": n, "level": 0 if not n else max(1, min(4, math.ceil(n / top * 4))),
-                          "future": (y, m) > (today.year, today.month), "selected": key == month,
-                          "label": f"{MONTHS_DE[m - 1]} {y}: " + (
-                              f"{plural(docs, 'Dokument', 'Dokumente')}, {plural(n - docs, 'Mail', 'Mails')}"
-                              if n else "keine Einträge")})
-        rows.append({"year": y, "cells": cells, "total": sum(c["n"] for c in cells)})
-    if month and (month == NO_DATE or re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month)):
-        shown = by_month.get(month, [])
-        title = "Ohne Datum" if month == NO_DATE else f"{MONTHS_DE[int(month[5:]) - 1]} {month[:4]}"
-        note = "" if shown else "Keine Einträge in diesem Monat."
-    else:
-        month = ""
-        cutoff = date.fromordinal(today.toordinal() - TIMELINE_RECENT_DAYS)
-        recent = [e for e in entries if e["day"] and e["day"] >= cutoff]
-        shown = (recent if len(recent) >= TIMELINE_RECENT_MIN else entries[:TIMELINE_RECENT_MIN])[:TIMELINE_RECENT_MAX]
-        title = "Neueste Einträge"
-        note = (f"{len(shown)} von {len(entries)} – ältere über die Monate oben." if len(entries) > len(shown) else "")
-    return {"years": rows, "months": MONTHS_SHORT, "month": month, "title": title, "entries": shown, "note": note,
-            "undated": len(by_month.get(NO_DATE, [])), "total": len(entries)}
-
-
-@router.get("/projekte/{number}/zeitachse", response_class=HTMLResponse)
-def project_timeline(request: Request, number: str, monat: str = ""):
-    """The timeline of a project at one month: the HTMX partial, else the whole project page."""
-    if not is_htmx(request):
-        return RedirectResponse(timeline_url(number, monat), status_code=303)
-    s = _settings(request)
-    with db.session(s.db_path) as conn:
-        p = get_project(conn, number)
-        if not p:
-            raise HTTPException(404, f"Projekt {number} nicht gefunden")
-        entries = timeline_entries(_project_docs(conn, p["number"]), _project_mails(conn, p["number"]),
-                                   _project_attachments(conn, p["number"]))
-    return render(request, "_timeline.html", p=p, tl=timeline_view(entries, monat))
-
-
 @router.get("/projekte/{number}", response_class=HTMLResponse)
-def project_page(request: Request, number: str, ordner: str = "", monat: str = ""):
+def project_page(request: Request, number: str, ordner: str = ""):
     s = _settings(request)
     with db.session(s.db_path) as conn:
         p = get_project(conn, number)
@@ -510,17 +410,27 @@ def project_page(request: Request, number: str, ordner: str = "", monat: str = "
         subprojects = (_with_activity(children(conn, p["number"]), _activity(conn))
                        if p.get("kind") == BAUVORHABEN else [])
         docs = _project_docs(conn, p["number"])
-        mails = _project_mails(conn, p["number"])
+        mails = [dict(r) for r in conn.execute(
+            "SELECT id, subject, sender, sender_name, date, assign_status, assign_method, has_attachments "
+            "FROM mails WHERE project = ? AND deleted = 0 ORDER BY date DESC", (p["number"],))]
         attachments = _project_attachments(conn, p["number"])
         suggested = conn.execute("SELECT COUNT(*) FROM mails WHERE suggested_project = ? AND deleted = 0 "
                                  "AND assign_status = 'suggested'", (p["number"],)).fetchone()[0]
         folders = project_folders(conn, p["number"])
-    tl = timeline_view(timeline_entries(docs, mails, attachments), monat)
+    atts_by_mail: dict[int, list[dict]] = {}
+    for a in attachments:
+        atts_by_mail.setdefault(a["mail_id"], []).append(a)
+    timeline = sorted(
+        [{"kind": "doc", "date": d["doc_date"], "title": d["rel_path"], "id": d["id"], "sub": d["ext"][1:].upper(),
+          "atts": []} for d in docs]
+        + [{"kind": "mail", "date": m["date"], "title": m["subject"], "id": m["id"],
+            "sub": m["sender_name"] or m["sender"], "atts": atts_by_mail.get(m["id"], [])} for m in mails],
+        key=lambda e: local_sort_key(e["date"]), reverse=True)
     # all folders of the project (several folders with its number are read as one project), primary first
     p["folders"] = [_below_projects_dir(f, s.projects_dir) for f in folders or [p["path"]]]
     p["rel"] = p["folders"][0]
     return render(request, "project.html", p=p, docs=docs, mails=mails, attachments=attachments,
-                  tl=tl, suggested=suggested, site=site, subprojects=subprojects,
+                  timeline=timeline, suggested=suggested, site=site, subprojects=subprojects,
                   is_site=p.get("kind") == BAUVORHABEN, browser=folder_view(docs, ordner))
 
 

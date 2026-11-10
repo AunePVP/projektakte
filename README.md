@@ -89,9 +89,7 @@ nur mit `PROJEKTAKTE_INTEGRATION=1` (siehe docs/ki-dienste.md).
   neueste Dokument- oder Mail-Datum, das nicht in der Zukunft liegt (ein Datum aus dem Text wie ein
   geplanter Termin „29.06.2030“ zählt nicht).
 - **Projektseite** – Fragefeld (Antwort mit nummerierten, verlinkten Quellen), Zeitachse aus
-  Dokumenten und Mails als Kalender (eine Zeile je Jahr, ein Feld je Monat mit der Zahl der Einträge, je
-  dunkler desto mehr; darunter die neuesten Einträge einzeln – die der letzten 30 Tage, mindestens 10,
-  höchstens 30 –, ein Klick auf einen Monat zeigt dessen Einträge), Dokumente als Ordneransicht (oberste Ebene mit den Ordnern und der Zahl ihrer
+  Dokumenten und Mails, Dokumente als Ordneransicht (oberste Ebene mit den Ordnern und der Zahl ihrer
   Dokumente, ein Klick öffnet einen Ordner mit seinen Unterordnern und Dateien; Pfad zum Zurückspringen,
   Hinweis auf übersprungene Scans auch am Ordner), Anhänge aus Mails, Mails mit Zuordnungsart. Die
   Ordneransicht zeigt, was im Index steht – nicht gelesene Dateitypen fehlen.
