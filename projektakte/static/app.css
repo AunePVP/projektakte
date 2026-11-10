@@ -91,6 +91,25 @@ p.pill, dd.pill { display: block; white-space: normal; border-radius: var(--radi
   border-radius: 50%; background: var(--info); }
 .timeline li.doc::before { background: var(--accent); }
 .timeline .date { display: inline-block; width: 6.5rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* timeline calendar: one row per year, one cell per month, shaded by the number of entries */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.heat-wrap { overflow-x: auto; margin-bottom: .6rem; }
+table.heat { border-collapse: separate; border-spacing: 3px; min-width: 34rem; width: 100%; table-layout: fixed; }
+table.heat caption { text-align: left; caption-side: top; padding-bottom: .3rem; }
+table.heat th { font-size: .78rem; font-weight: 600; color: var(--muted); text-align: center; white-space: nowrap;
+  overflow-wrap: normal; }
+table.heat th[scope="row"] { width: 3.2rem; text-align: left; color: var(--text); font-variant-numeric: tabular-nums; }
+table.heat th.num, table.heat td.num { width: 3.6rem; }
+table.heat td { padding: 0; }
+.heat-cell { display: flex; align-items: center; justify-content: center; height: 1.9rem; border-radius: 4px;
+  font-size: .78rem; font-variant-numeric: tabular-nums; color: var(--text); text-decoration: none; }
+a.heat-cell:hover { outline: 2px solid var(--text); outline-offset: -2px; text-decoration: none; }
+.heat-cell.l0 { background: #eef1f5; } .heat-cell.l1 { background: #c9d6e6; } .heat-cell.l2 { background: #8aa6c8; }
+.heat-cell.l3 { background: #4a74a8; color: #fff; } .heat-cell.l4 { background: #1f4e85; color: #fff; }
+.heat-cell.future { background: repeating-linear-gradient(45deg, #f6f7f9 0 4px, #fff 4px 8px); }
+.heat-cell.sel { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--accent); }
+.tl-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1rem; margin: .4rem 0 .3rem; }
+.tl-head h3 { margin: 0; font-size: 1rem; }
 .tag { font-size: .75rem; padding: 0 .4rem; border-radius: 4px; background: #eceff3; margin-right: .3rem; }
 .tag.doc { background: #f8e6e5; color: var(--accent-dark); } .tag.mail { background: #e6effa; color: var(--info); }
 .answer { margin-top: .8rem; padding: .8rem 1rem; border-left: 4px solid var(--ok); background: #f5fbf7;

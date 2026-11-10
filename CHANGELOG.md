@@ -5,6 +5,12 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Zeitachse als Kalender:** Statt aller Einträge untereinander zeigt die Projektseite je Jahr eine Zeile mit
+  zwölf Monatsfeldern (Zahl der Einträge, je dunkler desto mehr) und darunter nur die neuesten Einträge
+  einzeln; ein Klick auf einen Monat zeigt dessen Einträge (`?monat=JJJJ-MM`, mit HTMX nur die Zeitachse).
+  Einträge ohne Datum sind eigens erreichbar. Ein Projekt seit 2014 braucht so ein Dutzend Zeilen statt
+  Hunderter.
+
 - **Kompakte Vektorsuche (`VECTOR_SEARCH=kompakt`, Standard):** Im Arbeitsspeicher liegt nur noch 1 Bit je
   Dimension (320 statt 10.240 Byte je Abschnitt bei 2560 Dimensionen); die Suche wählt damit 2000
   Kandidaten vor und bewertet sie mit den vollen Vektoren aus SQLite genau. Ein Projekt mit höchstens 2000

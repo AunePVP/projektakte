@@ -43,19 +43,7 @@
 
 <section id="zeitachse">
   <h2>Zeitachse</h2>
-  {% if timeline %}
-  <ol class="timeline">
-    {% for e in timeline %}
-    <li class="{{ e.kind }}">
-      <span class="date">{{ e.date|de_date }}</span>
-      <span class="tag {{ e.kind }}">{{ 'Mail' if e.kind == 'mail' else 'Dokument' }}</span>
-      {% if e.kind == 'mail' %}<a href="/mails/{{ e.id }}">{{ e.title or '(ohne Betreff)' }}</a> <span class="muted">– {{ e.sub }}</span>
-      {% if e.atts %}<span class="atts-inline">📎 {% for a in e.atts %}<a href="/dokumente/{{ a.id }}">{{ a.filename|path }}</a>{% if a.status == 'pending' %} <span class="muted small">(Anhang ausstehend)</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}
-      {% else %}<a href="/dokumente/{{ e.id }}">{{ e.title|path }}</a> <span class="muted">{{ e.sub }}</span>{% endif %}
-    </li>
-    {% endfor %}
-  </ol>
-  {% else %}<p class="empty">Noch keine Einträge.</p>{% endif %}
+  {% include "_timeline.html" %}
 </section>
 
 <section id="dokumente">
