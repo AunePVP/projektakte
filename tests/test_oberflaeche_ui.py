@@ -383,16 +383,18 @@ def test_api_inbox_paging(rw):
 
 # --------------------------------------------------------------------------- DEMO-9 attachments
 def test_project_page_lists_mail_attachments(ro):
-    html = ro.get("/projekte/BS-2024-0137").text
-    section = _section(html, '<section id="anhaenge">', "</section>")
+    html = ro.get("/projekte/BS-2024-0137", params={"tab": "anhaenge"}).text
+    section = _section(html, '<div id="inhalt">', "</table>")
     assert "Anhänge aus Mails" in section
     doc_id = re.search(r'<a href="/dokumente/(\d+)">Stellungnahme Feuerwehr.pdf</a>', section).group(1)
-    assert re.search(r'<a href="/mails/\d+">Stellungnahme Brandschutzdienststelle', section)
+    mail_id = re.search(r'<a href="/mails/(\d+)">Stellungnahme Brandschutzdienststelle', section).group(1)
     assert re.search(r'<span class="muted">\d\d\.\d\d\.\d{4}</span>', section)
     assert ro.get(f"/dokumente/{doc_id}").status_code == 200
-    # the timeline names the attachment at its mail
-    assert f'📎 <a href="/dokumente/{doc_id}">Stellungnahme Feuerwehr.pdf</a>' in html
-    assert "Anhang aus Mails" in html or "Anhänge aus Mails" in html
+    # chosen in the timeline, the mail names its attachment
+    page = ro.get("/projekte/BS-2024-0137", params={"auswahl": f"m{mail_id}"}).text
+    card = _section(page, '<div id="auswahl"', "</section>")
+    assert f'<a href="/dokumente/{doc_id}">Stellungnahme Feuerwehr.pdf</a>' in card
+    assert "Stellungnahme Brandschutzdienststelle" in card
 
 
 # --------------------------------------------------------------------------- BUG-11 local dates
@@ -413,7 +415,7 @@ def test_project_list_and_timeline_use_the_local_day(rw):
     rows = rw.get("/", params={"q": "BS-2024-0137"}, headers=HX).text
     assert "01.01.2026" in rows and "31.12.2025" not in rows
     page = rw.get("/projekte/BS-2024-0137").text
-    assert re.findall(r'<span class="date">([\d.]+)</span>', page)[0] == "01.01.2026"
+    assert re.findall(r'<span class="d">([\d.]+)</span>', page)[0] == "01.01.26"  # the newest label of the timeline
 
 
 # --------------------------------------------------------------------------- DEMO-10 status page

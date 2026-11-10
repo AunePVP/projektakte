@@ -277,9 +277,8 @@ def test_mobile_tables_keep_words_and_status_details():
 
 
 def test_project_page_moves_secondary_columns_on_mobile(ro):
-    html = ro.get("/projekte/BS-2024-0137").text
-    mails = html.split('<section id="mails">', 1)[1].split("</section>", 1)[0]
+    mails = ro.get("/projekte/BS-2024-0137", params={"tab": "mails"}).text.split('<div id="inhalt">', 1)[1]
     assert '<th class="w-l hide-sm">Von</th>' in mails and '<span class="show-sm muted small">' in mails
     assert '<td class="date">' in mails
-    atts = html.split('<section id="anhaenge">', 1)[1].split("</section>", 1)[0]
+    atts = ro.get("/projekte/BS-2024-0137", params={"tab": "anhaenge"}).text.split('<div id="inhalt">', 1)[1]
     assert '<span class="show-sm small">aus der Mail <a href="/mails/' in atts

@@ -1,0 +1,46 @@
+{#- The tabs of a project page: documents (file browser), attachments from mails, mails. -#}
+<div id="inhalt">
+  <nav class="tabs" aria-label="Inhalte des Projekts">
+    {% for key, label, n in tabs %}
+    <a href="{{ tab_url(p.number, key) }}" hx-get="{{ tab_url(p.number, key, partial=True) }}" hx-target="#inhalt" hx-swap="outerHTML" hx-push-url="{{ tab_url(p.number, key) }}"{% if tab == key %} class="on" aria-current="page"{% endif %}>{{ label }} <span class="n">{{ n|de_num }}</span></a>
+    {% endfor %}
+  </nav>
+  {% if tab == 'dokumente' %}
+  {% if is_site %}<p class="muted small">Dokumente des Bauvorhabens selbst (außerhalb der Unterprojekte).</p>{% endif %}
+  {% include "_doc_browser.html" %}
+  <p class="muted small">Gezeigt wird, was Projektakte gelesen hat – Dateitypen, die nicht gelesen werden (z. B. Pläne als DWG), fehlen hier.</p>
+  {% elif tab == 'anhaenge' %}
+  <table class="list">
+    <thead><tr><th>Datei</th><th class="w-s hide-sm">Typ</th><th class="hide-sm">Aus der Mail</th><th class="w-l">Hinweis</th></tr></thead>
+    <tbody>
+    {% for a in attachments %}
+    <tr>
+      <td><a href="/dokumente/{{ a.id }}">{{ a.filename|path }}</a>
+        <span class="show-sm small">aus der Mail <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a> <span class="muted">vom {{ a.date|de_date }}</span></span></td>
+      <td class="hide-sm">{{ a.ext[1:]|upper }}</td>
+      <td class="hide-sm"><span class="muted">{{ a.date|de_date }}</span> <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a></td>
+      <td>{% if a.status != 'ok' %}<span class="pill warn" title="{{ a.message or '' }}">{{ DOC_STATUS.get(a.status, a.status) }}</span>{% elif a.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
+    </tr>
+    {% else %}<tr><td colspan="4" class="empty">Keine Anhänge in den zugeordneten Mails.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  {% if atts_cut %}<p class="muted small">{{ attachments|length|de_num }} von {{ (attachments|length + atts_cut)|de_num }} – <a href="{{ tab_url(p.number, 'anhaenge', everything=True) }}" hx-get="{{ tab_url(p.number, 'anhaenge', partial=True, everything=True) }}" hx-target="#inhalt" hx-swap="outerHTML">alle zeigen</a></p>{% endif %}
+  {% else %}
+  <table class="list">
+    <thead><tr><th class="w-m date">Datum</th><th class="w-l hide-sm">Von</th><th>Betreff</th><th class="w-l">Zuordnung</th></tr></thead>
+    <tbody>
+    {% for m in mails %}
+    <tr>
+      <td class="date">{{ m.date|de_date }}</td>
+      <td class="hide-sm">{{ m.sender_name or m.sender }}</td>
+      <td><a href="/mails/{{ m.id }}">{{ m.subject or '(ohne Betreff)' }}</a>{% if m.has_attachments %} <span class="muted" title="mit Anhang">📎</span>{% endif %}
+        <span class="show-sm muted small">{{ m.sender_name or m.sender }}</span></td>
+      {% set how = METHOD_LABELS.get(m.assign_method, ASSIGN_LABELS[m.assign_status]) %}
+      <td><span class="pill {{ m.assign_status }}" title="{{ how }}">{{ how }}</span></td>
+    </tr>
+    {% else %}<tr><td colspan="4" class="empty">Keine Mails zugeordnet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  {% if mails_cut %}<p class="muted small">{{ mails|length|de_num }} von {{ (mails|length + mails_cut)|de_num }} – <a href="{{ tab_url(p.number, 'mails', everything=True) }}" hx-get="{{ tab_url(p.number, 'mails', partial=True, everything=True) }}" hx-target="#inhalt" hx-swap="outerHTML">alle zeigen</a></p>{% endif %}
+  {% endif %}
+</div>

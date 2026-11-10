@@ -1,0 +1,21 @@
+{#- The timeline in the left column of a project page: filter, the drawing (scrolls by itself) and a note. -#}
+<div id="tl">
+  <div class="tl-head">
+    <h2>Zeitleiste</h2>
+    <div class="tl-filter" role="group" aria-label="Zeitleiste filtern">
+      {% for key, label in (('alle', 'Alle'), ('doc', 'Dokumente'), ('mail', 'Mails')) %}
+      <a href="{{ timeline_url(p.number, key, selected) }}" hx-get="{{ timeline_url(p.number, key, selected, partial=True) }}" hx-target="#tl" hx-swap="outerHTML" hx-push-url="{{ timeline_url(p.number, key, selected) }}"{% if art == key %} class="on" aria-current="true"{% endif %}>{{ label }} <span class="n">{{ counts[key]|de_num }}</span></a>
+      {% endfor %}
+    </div>
+  </div>
+  {% if tl.empty %}<p class="empty">Noch keine Einträge.</p>
+  {% else %}
+  <div class="tl-scroll">
+    {% if tl.height %}{% include "_tl_svg.html" %}{% else %}<p class="empty" id="tl-svg">Keine Einträge mit Datum.</p>{% endif %}
+  </div>
+  <p class="tl-foot muted small">
+    <span class="key doc">Dokument</span> <span class="key mail">Mail</span> · oben neu, je tiefer desto gröber
+    {% if tl.undated %}<br><a href="{{ timeline_url(p.number, art, 'zohne') }}" hx-get="{{ timeline_url(p.number, art, 'zohne', partial=True, only_svg=True) }}" hx-target="#tl-svg" hx-swap="outerHTML" hx-push-url="{{ timeline_url(p.number, art, 'zohne') }}">{{ tl.undated|plural('Eintrag', 'Einträge') }} ohne Datum</a>{% endif %}
+  </p>
+  {% endif %}
+</div>

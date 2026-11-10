@@ -1,0 +1,3 @@
+{#- htmx answer of the timeline: the drawing alone or the whole timeline, and the card out of band. -#}
+{% if only_svg %}{% if tl.height %}{% include "_tl_svg.html" %}{% else %}<p class="empty" id="tl-svg">Keine Einträge mit Datum.</p>{% endif %}{% else %}{% include "_zeitleiste.html" %}{% endif %}
+{% with oob=true %}{% include "_auswahl.html" %}{% endwith %}

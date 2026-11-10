@@ -1,0 +1,25 @@
+{#- The drawing of the timeline (zeitleiste.build): axis, ticks, dots and leader lines are SVG; the clickable
+    lines are real HTML links inside <foreignObject> – htmx does not cancel the click on an SVG <a>, and
+    inline styles are not allowed, so every position is an attribute. -#}
+{%- macro hx(art, key) -%}
+href="{{ timeline_url(p.number, art, key) }}" hx-get="{{ timeline_url(p.number, art, key, partial=True, only_svg=True) }}" hx-target="#tl-svg" hx-swap="outerHTML" hx-push-url="{{ timeline_url(p.number, art, key) }}"
+{%- endmacro -%}
+<svg id="tl-svg" class="tl-svg" viewBox="0 0 {{ tl.width }} {{ tl.height }}" role="group" aria-label="Zeitleiste, neueste Einträge oben">
+  <line class="tl-axis" x1="{{ tl.axis }}" y1="0" x2="{{ tl.axis }}" y2="{{ tl.height }}"/>
+  {% for k in tl.ticks %}
+  <line class="tl-mark" x1="{{ tl.axis - 5 }}" y1="{{ k.y }}" x2="{{ tl.axis + 1 }}" y2="{{ k.y }}"/>
+  {% if k.show %}<text class="tl-tick{% if k.major %} major{% endif %}" x="{{ tl.axis - 9 }}" y="{{ k.y|float + 4 }}" text-anchor="end">{{ k.text }}</text>{% endif %}
+  {% endfor %}
+  {% for l in tl.leaders %}<path class="tl-leader" d="{{ l.d }}"/>{% endfor %}
+  {% for o in tl.dots %}<circle class="tl-dot {{ o.kind }}" cx="{{ tl.axis }}" cy="{{ o.y }}" r="3.5"/>{% endfor %}
+  {% for l in tl.labels %}
+  <foreignObject x="{{ tl.label_x }}" y="{{ l.y_top }}" width="{{ tl.label_w }}" height="18">
+    <a class="tl-lab {{ l.kind }}{% if l.sel %} sel{% endif %}" {{ hx(art, l.key) }} title="{{ l.full }}"{% if l.sel %} aria-current="true"{% endif %}><span class="d">{{ l.date }}</span><span class="sq"></span><span class="t">{{ l.title }}</span></a>
+  </foreignObject>
+  {% endfor %}
+  {% for c in tl.chips %}
+  <foreignObject x="{{ tl.label_x }}" y="{{ c.y_top }}" width="{{ c.width }}" height="20">
+    <a class="tl-chip{% if c.sel %} sel{% endif %}" {{ hx(art, c.key) }}{% if c.sel %} aria-current="true"{% endif %}>{{ c.text }}</a>
+  </foreignObject>
+  {% endfor %}
+</svg>

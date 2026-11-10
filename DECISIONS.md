@@ -716,3 +716,29 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   die Vorauswahl vervierfacht, höchstens bis zum 64-fachen.
 - *Matrix bleibt wählbar*: zum Vergleich in der Messung und falls die Bits mit einem Modell schlecht
   funktionieren.
+
+**Projektseite: Zeitleiste links, Rest rechts**
+- *Warum*: Ein Projekt mit über 300 Dokumenten seit 2014 machte die Zeitachse zu einer langen Liste. Neues
+  soll genau, Altes nur noch grob erscheinen – und Dokumente, Anhänge und Mails sollen nicht mehr
+  untereinander durch die Seite führen. Gewählt nach Entwürfen im Gespräch (Kalender, Fischauge, Ausschnitt,
+  Minikarte …); Meilensteine und Schieberegler wollte der Betreiber nicht.
+- *Wurzelkurve statt Logarithmus*: Position = (Alter / ältestes Alter)^0,45. Die letzten Wochen sind fein
+  aufgelöst, ein altes Jahr braucht rund 100 px, und die Skala bleibt lesbar (ein echter Logarithmus staucht
+  die ältesten Jahre auf Striche). Höhe 460 bis 2400 px je nach Zahl der Einträge, die Leiste scrollt für sich.
+- *Bezugspunkt ist der neueste Eintrag*, höchstens heute: Ein ruhendes Projekt hat keine leere Fläche oben,
+  ein Eintrag in der Zukunft verschiebt nichts. Einträge ohne Datum haben einen eigenen Link.
+- *Zeilen, wo Platz ist, sonst Etiketten*: Zeilen dürfen höchstens 26 px unter ihren Punkt rutschen (eine
+  feine Linie zeigt, wohin sie gehören); dichtere Strecken werden zu einem Etikett mit Zahl und Zeitraum, das
+  die Einträge dieser Tage rechts auflistet. Bis 30 Einträge gibt es nie Etiketten – die Leiste wird länger.
+  Punkte am selben Ort und Linien über sechs je Etikett werden weggelassen, damit eine Seite mit Tausenden
+  Einträgen leicht bleibt (491 Einträge: 84 KB).
+- *SVG mit `foreignObject`*: Die Seite erlaubt keine Inline-Styles (CSP), Positionen müssen Attribute sein –
+  das kann SVG. Die klickbaren Zeilen sind echte HTML-Links in `foreignObject`, weil htmx den Klick auf einen
+  SVG-`<a>` nicht abbricht (die Seite würde zusätzlich neu geladen). Alle Maße rechnet `zeitleiste.py`, die
+  Vorlage druckt sie nur; die Farben stehen in `app.css`.
+- *Auswahl in der Adresse*: `?auswahl=` trägt den Eintrag oder die Strecke, damit Zurück-Taste, Lesezeichen
+  und Links gehen; Strecken sind Datumsbereiche (stabil, auch wenn sich die Etiketten ändern). Unbrauchbare
+  Werte zeigen keine Karte statt eines Fehlers. Ein Klick tauscht nur die Zeichnung und (außerhalb der
+  Reihenfolge) die Karte, damit die Leiste nicht an den Anfang springt.
+- *Reiter statt Abschnitte*: Dokumente, Anhänge, Mails sind Reiter mit Zahl; Mails und Anhänge zeigen höchstens
+  200 Zeilen (`alle zeigen`), weil ein großes Projekt sonst tausende Zeilen in die Seite schreibt.

@@ -5,6 +5,14 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Neue Projektseite: Zeitleiste links, Rest rechts** (aus dem abgestimmten Entwurf): Die Zeitachse ist keine
+  lange Liste mehr, sondern eine senkrechte Zeitleiste – oben neu, die letzten Wochen mit viel Platz, alte
+  Jahre knapp (Wurzelkurve). Punkte an den Daten, Zeilen mit Linien dazu, Etiketten für dichte Stellen,
+  Randmarken für Wochen, Monate und Jahre, Filter Alle/Dokumente/Mails. Ein Klick zeigt die Karte des Eintrags
+  oder die Einträge einer Strecke rechts oben (`?auswahl=d12`, `m5`, `z2024-01-01_2024-03-31`, `zohne`).
+  Rechts darunter das Fragefeld und Reiter für Dokumente (Ordneransicht), Anhänge und Mails (je 200 Zeilen,
+  dann „alle zeigen“). Breitere Seite (1400 statt 1100 px) nur für die Projektseite. Ohne JavaScript über
+  Links, mit JavaScript nur der geänderte Teil (`/projekte/<Nr>/zeitleiste`, `/inhalt`).
 - **Kompakte Vektorsuche (`VECTOR_SEARCH=kompakt`, Standard):** Im Arbeitsspeicher liegt nur noch 1 Bit je
   Dimension (320 statt 10.240 Byte je Abschnitt bei 2560 Dimensionen); die Suche wählt damit 2000
   Kandidaten vor und bewertet sie mit den vollen Vektoren aus SQLite genau. Ein Projekt mit höchstens 2000

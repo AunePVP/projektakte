@@ -360,7 +360,7 @@ def test_pending_attachment_offers_no_file_link(rw):
     assert rw.get(f"/dokumente/{pending}/datei").status_code == 404
     assert "Originaldatei öffnen" in rw.get(f"/dokumente/{ok}").text
 
-    project = rw.get("/projekte/BS-2024-0137").text
+    project = rw.get("/projekte/BS-2024-0137", params={"auswahl": f"m{mid}"}).text  # the card of the mail in the timeline
     assert f"/dokumente/{pending}/datei" not in project
     assert re.search(rf'<a href="/dokumente/{pending}">Notiz\.txt</a> <span class="muted small">\(Anhang ausstehend\)',
                      project)

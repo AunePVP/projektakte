@@ -30,7 +30,7 @@
 {% if demo_mode or ai_mode == 'fake' %}
 <div class="notice">Demo-Betrieb{% if demo_mode %}: frei erfundene Projekte und Mails{% endif %}{% if ai_mode == 'fake' %}; KI-Dienste simuliert{% endif %}.</div>
 {% endif %}
-<main>
+<main{% if wide %} class="wide"{% endif %}>
 {% block content %}{% endblock %}
 </main>
 <footer>Projektakte {{ version }} · nur lesend · alle Daten bleiben im lokalen Netz</footer>

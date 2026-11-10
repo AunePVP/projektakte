@@ -24,7 +24,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from markupsafe import Markup, escape
 
-from . import __version__, db, inbox, structure
+from . import __version__, db, inbox, structure, zeitleiste
 from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .config import DEFAULT_PROJECT_NUMBER_PATTERN
@@ -397,41 +397,177 @@ def _project_attachments(conn, number: str) -> list[dict]:
         "WHERE m.project = ? AND m.deleted = 0 ORDER BY m.date DESC, d.id", (number,))]
 
 
-@router.get("/projekte/{number}", response_class=HTMLResponse)
-def project_page(request: Request, number: str, ordner: str = ""):
+def _project_mails(conn, number: str) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT id, subject, sender, sender_name, date, assign_status, assign_method, has_attachments "
+        "FROM mails WHERE project = ? AND deleted = 0 ORDER BY date DESC", (number,))]
+
+
+TABS = (("dokumente", "Dokumente"), ("anhaenge", "Anhänge aus Mails"), ("mails", "Mails"))
+ARTS = ("alle", "doc", "mail")
+LIST_LIMIT = 200  # rows of the mail and attachment tabs before "alle zeigen"
+GROUP_LIMIT = 60  # entries of a chosen stretch of the timeline
+_SEL_ENTRY = re.compile(r"[dm]\d{1,12}")
+_SEL_GROUP = re.compile(r"z(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})")
+
+
+def tab_url(number: str, tab: str = "dokumente", folder: str = "", partial: bool = False,
+            everything: bool = False) -> str:
+    """The project page at a tab (of documents: at a folder) – or, with ``partial``, just that content (HTMX)."""
+    base = f"/projekte/{quote(number, safe='')}"
+    query = {}
+    if tab != "dokumente":
+        query["tab"] = tab
+    if folder:
+        query["ordner"] = folder
+    if everything:
+        query["alle"] = "1"
+    qs = f"?{urlencode(query)}" if query else ""
+    return f"{base}/inhalt{qs}" if partial else f"{base}{qs}#inhalt"
+
+
+def timeline_url(number: str, art: str = "alle", selected: str = "", partial: bool = False,
+                 only_svg: bool = False) -> str:
+    """The project page with the timeline filtered by ``art`` and ``selected`` marked – or, with ``partial``,
+    just the timeline (``only_svg``: its drawing only, so a scrolled timeline stays where it is) (HTMX)."""
+    base = f"/projekte/{quote(number, safe='')}"
+    query = {}
+    if art in ARTS and art != "alle":
+        query["art"] = art
+    if selected:
+        query["auswahl"] = selected
+    if partial and only_svg:
+        query["nur"] = "svg"
+    qs = f"?{urlencode(query)}" if query else ""
+    return f"{base}/zeitleiste{qs}" if partial else f"{base}{qs}#zeitleiste"
+
+
+templates.env.globals.update(tab_url=tab_url, timeline_url=timeline_url)
+
+
+def timeline_entries(docs: list[dict], mails: list[dict], attachments: list[dict]) -> list[dict]:
+    """Documents and mails of a project as timeline entries, newest first; a mail carries its attachments."""
+    atts_by_mail: dict[int, list[dict]] = {}
+    for a in attachments:
+        atts_by_mail.setdefault(a["mail_id"], []).append(a)
+    entries = []
+    for d in docs:
+        rel = (d["rel_path"] or "").replace("\\", "/")
+        entries.append({"key": f"d{d['id']}", "kind": "doc", "id": d["id"], "title": d["filename"] or rel,
+                        "full": rel, "date": d["doc_date"], "day": local_day(d["doc_date"]),
+                        "sort": local_sort_key(d["doc_date"]), "sub": (d["ext"] or "")[1:].upper(),
+                        "folder": rel.rsplit("/", 1)[0] if "/" in rel else "", "status": d["status"],
+                        "message": d["message"], "method": d["method"], "atts": []})
+    for m in mails:
+        entries.append({"key": f"m{m['id']}", "kind": "mail", "id": m["id"], "title": m["subject"] or "(ohne Betreff)",
+                        "full": m["subject"] or "(ohne Betreff)", "date": m["date"], "day": local_day(m["date"]),
+                        "sort": local_sort_key(m["date"]), "sub": m["sender_name"] or m["sender"],
+                        "atts": atts_by_mail.get(m["id"], [])})
+    return sorted(entries, key=lambda e: e["sort"], reverse=True)
+
+
+def timeline_selection(entries: list[dict], selected: str, art: str) -> dict | None:
+    """What a ``auswahl`` value names: one entry ("d12", "m5"), a stretch of the timeline
+    ("z2024-01-01_2024-03-31", the entries of those days) or the undated entries ("zohne") – or None."""
+    if _SEL_ENTRY.fullmatch(selected or ""):
+        found = next((e for e in entries if e["key"] == selected), None)
+        return {"type": "entry", "key": selected, "entry": found} if found else None
+    fits = [e for e in entries if art == "alle" or e["kind"] == art]
+    if selected == "zohne":
+        members = [e for e in fits if e["day"] is None]
+        title = "Einträge ohne Datum"
+    elif m := _SEL_GROUP.fullmatch(selected or ""):
+        try:
+            first, last = date.fromisoformat(m.group(1)), date.fromisoformat(m.group(2))
+        except ValueError:
+            return None
+        members = [e for e in fits if e["day"] is not None and first <= e["day"] <= last]
+        title = f"{de_date(first.isoformat())}" + ("" if first == last else f" – {de_date(last.isoformat())}")
+    else:
+        return None
+    return {"type": "group", "key": selected, "title": title, "total": len(members),
+            "members": members[:GROUP_LIMIT]}
+
+
+def _load_project(conn, number: str) -> tuple[dict, list[dict], list[dict], list[dict]]:
+    p = get_project(conn, number)
+    if not p:
+        raise HTTPException(404, f"Projekt {number} nicht gefunden")
+    return p, _project_docs(conn, p["number"]), _project_mails(conn, p["number"]), _project_attachments(conn, p["number"])
+
+
+def _timeline_context(entries: list[dict], art: str, auswahl: str, today: date | None = None) -> dict:
+    art = art if art in ARTS else "alle"
+    selection = timeline_selection(entries, auswahl, art)
+    selected = selection["key"] if selection else ""
+    return {"art": art, "tl": zeitleiste.build(entries, today or datetime.now(LOCAL_TZ).date(), art, selected),
+            "sel": selection, "selected": selected,
+            "counts": {"alle": len(entries), "doc": sum(e["kind"] == "doc" for e in entries),
+                       "mail": sum(e["kind"] == "mail" for e in entries)}}
+
+
+def _content_context(p: dict, docs: list[dict], mails: list[dict], attachments: list[dict], tab: str, folder: str,
+                     everything: bool) -> dict:
+    """What the tabs below the question show (documents as a file browser, attachments, mails)."""
+    tab = tab if tab in dict(TABS) else "dokumente"
+    if folder:
+        tab = "dokumente"
+    shown_mails = mails if everything else mails[:LIST_LIMIT]
+    shown_atts = attachments if everything else attachments[:LIST_LIMIT]
+    return {"tab": tab, "tabs": [(k, label, n) for (k, label), n in zip(TABS, (len(docs), len(attachments), len(mails)))],
+            "browser": folder_view(docs, folder) if tab == "dokumente" else None,
+            "mails": shown_mails, "attachments": shown_atts, "everything": everything,
+            "mails_cut": len(mails) - len(shown_mails), "atts_cut": len(attachments) - len(shown_atts)}
+
+
+@router.get("/projekte/{number}/zeitleiste", response_class=HTMLResponse)
+def project_timeline(request: Request, number: str, art: str = "alle", auswahl: str = "", nur: str = ""):
+    """The timeline of a project (and the card of what is chosen in it): the HTMX partial, else the page."""
+    if not is_htmx(request):
+        return RedirectResponse(timeline_url(number, art, auswahl), status_code=303)
     s = _settings(request)
     with db.session(s.db_path) as conn:
-        p = get_project(conn, number)
-        if not p:
-            raise HTTPException(404, f"Projekt {number} nicht gefunden")
+        p, docs, mails, attachments = _load_project(conn, number)
+    ctx = _timeline_context(timeline_entries(docs, mails, attachments), art, auswahl)
+    return render(request, "_zeitleiste_antwort.html", p=p, only_svg=nur == "svg", **ctx)
+
+
+@router.get("/projekte/{number}/inhalt", response_class=HTMLResponse)
+def project_content(request: Request, number: str, tab: str = "dokumente", ordner: str = "", alle: str = ""):
+    """The tabs of a project page (documents, attachments, mails): the HTMX partial, else the page."""
+    folder = clean_folder(ordner)
+    if not is_htmx(request):
+        return RedirectResponse(tab_url(number, tab, folder, everything=bool(alle)), status_code=303)
+    s = _settings(request)
+    with db.session(s.db_path) as conn:
+        p, docs, mails, attachments = _load_project(conn, number)
+    return render(request, "_inhalt.html", p=p, is_site=p.get("kind") == BAUVORHABEN,
+                  **_content_context(p, docs, mails, attachments, tab, folder, bool(alle)))
+
+
+@router.get("/projekte/{number}", response_class=HTMLResponse)
+def project_page(request: Request, number: str, art: str = "alle", auswahl: str = "", tab: str = "dokumente",
+                 ordner: str = "", alle: str = ""):
+    s = _settings(request)
+    with db.session(s.db_path) as conn:
+        p, docs, mails, attachments = _load_project(conn, number)
         # a site (Bauvorhaben): its own files (outside every order) and its orders (Unterprojekte);
         # an order: a link to its site
         site = get_project(conn, p["parent"]) if p.get("parent") else None
         subprojects = (_with_activity(children(conn, p["number"]), _activity(conn))
                        if p.get("kind") == BAUVORHABEN else [])
-        docs = _project_docs(conn, p["number"])
-        mails = [dict(r) for r in conn.execute(
-            "SELECT id, subject, sender, sender_name, date, assign_status, assign_method, has_attachments "
-            "FROM mails WHERE project = ? AND deleted = 0 ORDER BY date DESC", (p["number"],))]
-        attachments = _project_attachments(conn, p["number"])
         suggested = conn.execute("SELECT COUNT(*) FROM mails WHERE suggested_project = ? AND deleted = 0 "
                                  "AND assign_status = 'suggested'", (p["number"],)).fetchone()[0]
         folders = project_folders(conn, p["number"])
-    atts_by_mail: dict[int, list[dict]] = {}
-    for a in attachments:
-        atts_by_mail.setdefault(a["mail_id"], []).append(a)
-    timeline = sorted(
-        [{"kind": "doc", "date": d["doc_date"], "title": d["rel_path"], "id": d["id"], "sub": d["ext"][1:].upper(),
-          "atts": []} for d in docs]
-        + [{"kind": "mail", "date": m["date"], "title": m["subject"], "id": m["id"],
-            "sub": m["sender_name"] or m["sender"], "atts": atts_by_mail.get(m["id"], [])} for m in mails],
-        key=lambda e: local_sort_key(e["date"]), reverse=True)
+    entries = timeline_entries(docs, mails, attachments)
     # all folders of the project (several folders with its number are read as one project), primary first
     p["folders"] = [_below_projects_dir(f, s.projects_dir) for f in folders or [p["path"]]]
     p["rel"] = p["folders"][0]
-    return render(request, "project.html", p=p, docs=docs, mails=mails, attachments=attachments,
-                  timeline=timeline, suggested=suggested, site=site, subprojects=subprojects,
-                  is_site=p.get("kind") == BAUVORHABEN, browser=folder_view(docs, ordner))
+    return render(request, "project.html", p=p, docs=docs, mails_all=mails, attachments_all=attachments,
+                  suggested=suggested, site=site, subprojects=subprojects, wide=True,
+                  is_site=p.get("kind") == BAUVORHABEN, only_svg=False,
+                  **_timeline_context(entries, art, auswahl),
+                  **_content_context(p, docs, mails, attachments, tab, clean_folder(ordner), bool(alle)))
 
 
 def clean_folder(folder: str | None) -> str:
@@ -445,7 +581,7 @@ def folder_url(number: str, folder: str = "", partial: bool = False) -> str:
     base = f"/projekte/{quote(number, safe='')}"
     if partial:
         return f"{base}/ordner" + (f"?{urlencode({'pfad': folder})}" if folder else "")
-    return base + (f"?{urlencode({'ordner': folder})}" if folder else "") + "#dokumente"
+    return base + (f"?{urlencode({'ordner': folder})}" if folder else "") + "#inhalt"
 
 
 templates.env.globals["folder_url"] = folder_url

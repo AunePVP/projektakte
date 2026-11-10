@@ -85,12 +85,66 @@ p.pill, dd.pill { display: block; white-space: normal; border-radius: var(--radi
 .warn-text { color: var(--warn); }
 .tabs { display: flex; flex-wrap: wrap; gap: .3rem; border-bottom: 1px solid var(--line); margin: .8rem 0; }
 .tabs a { padding: .35rem .8rem; }
-.timeline { list-style: none; padding: 0; margin: 0; border-left: 2px solid var(--line); }
-.timeline li { padding: .3rem 0 .3rem 1rem; position: relative; }
-.timeline li::before { content: ""; position: absolute; left: -6px; top: .75rem; width: 10px; height: 10px;
-  border-radius: 50%; background: var(--info); }
-.timeline li.doc::before { background: var(--accent); }
-.timeline .date { display: inline-block; width: 6.5rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* project page: the timeline in a left column (sticky), question, chosen entry and tabs on the right */
+main.wide { max-width: 1400px; }
+.proj-layout { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; }
+.proj-side { flex: 0 1 22.5rem; min-width: 17rem; margin: 0; padding: .7rem .8rem .5rem; }
+.proj-main { flex: 999 1 34rem; min-width: 0; }
+.proj-main > section, .proj-main > div > section.card { margin-top: 0; }
+.proj-main > * + * { margin-top: .9rem; }
+.proj-side { max-width: 100%; }
+@media (min-width: 62rem) { .proj-side { position: sticky; top: .6rem; } }
+@media (max-width: 61.99rem) { .proj-side { flex-basis: 100%; } }
+.tl-head h2 { margin: 0 0 .4rem; font-size: 1.05rem; }
+.tl-filter { display: flex; flex-wrap: wrap; margin-bottom: .5rem; }
+.tl-filter a { padding: .25rem .6rem; border: 1px solid var(--line); margin-left: -1px; background: #fff; color: var(--text);
+  font-size: .87rem; }
+.tl-filter a:first-child { border-radius: 6px 0 0 6px; margin-left: 0; } .tl-filter a:last-child { border-radius: 0 6px 6px 0; }
+.tl-filter a:hover { text-decoration: none; background: #f4f5f7; }
+.tl-filter a.on { background: var(--text); border-color: var(--text); color: #fff; }
+.tl-filter .n, .tabs .n { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+.tl-filter a.on .n { color: #d7dbe2; }
+.tl-scroll { max-height: min(80vh, 1100px); overflow: auto; margin: 0 -.3rem; }
+.tl-svg { display: block; width: 100%; height: auto; }
+.tl-axis { stroke: var(--line); stroke-width: 2; }
+.tl-mark { stroke: #b8c0cc; stroke-width: 1; }
+.tl-tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.tl-tick.major { fill: var(--text); font-weight: 650; }
+.tl-leader { fill: none; stroke: #d3d9e1; stroke-width: 1; }
+.tl-dot { stroke: #fff; stroke-width: 2; paint-order: stroke; }
+.tl-dot.doc, .tl-lab.doc .sq { fill: var(--accent); background: var(--accent); }
+.tl-dot.mail, .tl-lab.mail .sq { fill: var(--info); background: var(--info); }
+.tl-lab { display: flex; align-items: center; gap: 6px; height: 18px; padding: 0 4px; border-radius: 4px; color: var(--text);
+  font-size: 12.5px; line-height: 18px; white-space: nowrap; overflow: hidden; }
+.tl-lab:hover { background: #eef1f5; text-decoration: none; }
+.tl-lab.sel, .tl-chip.sel { background: #f8e6e5; box-shadow: 0 0 0 1.5px var(--accent); }
+.tl-lab .d { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; flex: none; }
+.tl-lab .sq { width: 6px; height: 6px; border-radius: 2px; flex: none; }
+.tl-lab .t { overflow: hidden; text-overflow: ellipsis; }
+.tl-chip { display: inline-block; max-width: 100%; height: 20px; padding: 0 10px; border: 1px solid var(--line);
+  border-radius: 999px; background: #fff; color: var(--text); font-size: 12px; line-height: 18px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.tl-chip:hover { border-color: var(--text); text-decoration: none; }
+.tl-foot { margin: .3rem 0 0; }
+.key::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+.key.doc::before { background: var(--accent); } .key.mail::before { background: var(--info); }
+/* the chosen entry of the timeline */
+.auswahl { border-color: #e9b8b4; }
+.auswahl-head { display: flex; justify-content: space-between; gap: .8rem; align-items: flex-start; }
+.auswahl h2 { margin: .1rem 0; font-size: 1.1rem; }
+.auswahl .kind { font-size: .75rem; font-weight: 650; text-transform: uppercase; color: var(--muted); }
+.auswahl .kind.doc { color: var(--accent-dark); } .auswahl .kind.mail { color: var(--info); }
+.auswahl .close { padding: .25rem .6rem; flex: none; }
+.auswahl-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0 0; }
+ul.plain { list-style: none; padding: 0; margin: .5rem 0 0; }
+ul.plain.group li { padding: .25rem 0; border-top: 1px solid #eef1f5; }
+ul.plain.group .date { display: inline-block; width: 6.2rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* the tabs below the question */
+.inhalt-card { padding-top: 0; }
+.inhalt-card .tabs { margin: 0 0 .7rem; }
+.inhalt-card .tabs a { padding: .55rem .9rem; border-bottom: 3px solid transparent; margin-bottom: -1px; color: var(--text); }
+.inhalt-card .tabs a:hover { text-decoration: none; background: #f4f5f7; }
+.inhalt-card .tabs a.on { border-bottom-color: var(--accent); font-weight: 650; }
 .tag { font-size: .75rem; padding: 0 .4rem; border-radius: 4px; background: #eceff3; margin-right: .3rem; }
 .tag.doc { background: #f8e6e5; color: var(--accent-dark); } .tag.mail { background: #e6effa; color: var(--info); }
 .answer { margin-top: .8rem; padding: .8rem 1rem; border-left: 4px solid var(--ok); background: #f5fbf7;
@@ -127,7 +181,6 @@ blockquote { margin: .25rem 0 0; padding: .3rem .6rem; border-left: 3px solid va
 .filters a.active { border-color: var(--accent); background: #f1e4e3; }
 .filters .count { color: var(--muted); font-variant-numeric: tabular-nums; }
 .pager { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; justify-content: center; margin: 1rem 0; }
-.atts-inline { display: inline-block; margin-left: .3rem; font-size: .88rem; }
 .actions { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
 .actions form { margin: 0; display: flex; gap: .3rem; flex-wrap: wrap; }
 .assign-form select, .assign-form input[type=text] { width: 16rem; max-width: 100%; }

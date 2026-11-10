@@ -88,11 +88,20 @@ nur mit `PROJEKTAKTE_INTEGRATION=1` (siehe docs/ki-dienste.md).
   `PROJECT_PARENT_DIGITS` die Unterprojekte eingerückt unter ihrem Bauvorhaben. „Letzte Aktivität“ ist das
   neueste Dokument- oder Mail-Datum, das nicht in der Zukunft liegt (ein Datum aus dem Text wie ein
   geplanter Termin „29.06.2030“ zählt nicht).
-- **Projektseite** – Fragefeld (Antwort mit nummerierten, verlinkten Quellen), Zeitachse aus
-  Dokumenten und Mails, Dokumente als Ordneransicht (oberste Ebene mit den Ordnern und der Zahl ihrer
-  Dokumente, ein Klick öffnet einen Ordner mit seinen Unterordnern und Dateien; Pfad zum Zurückspringen,
-  Hinweis auf übersprungene Scans auch am Ordner), Anhänge aus Mails, Mails mit Zuordnungsart. Die
-  Ordneransicht zeigt, was im Index steht – nicht gelesene Dateitypen fehlen.
+- **Projektseite** – zwei Spalten. Links die **Zeitleiste**: senkrecht, oben der neueste Eintrag; die Zeit läuft
+  auf einer Wurzelkurve, die letzten Wochen bekommen viel Platz, alte Jahre wenig. Jeder Eintrag ist ein Punkt
+  an seinem Datum; wo Platz ist, steht eine Zeile (Datum, Titel) mit einer feinen Linie zum Punkt, sonst fasst
+  ein Etikett („23 Einträge · Mär 18 – Okt 19“) die Einträge einer Strecke zusammen. Randmarken nennen Wochen,
+  Monate und Jahre. Filter Alle / Dokumente / Mails; bis 30 Einträge bekommt jeder eine eigene Zeile. Ein Klick
+  auf eine Zeile oder ein Etikett zeigt rechts oben die Karte des Eintrags (Öffnen, „Im Ordner zeigen“, bei
+  einer Mail die Anhänge) bzw. die Einträge der Strecke; die Adresse trägt die Auswahl (`?auswahl=…`). Rechts
+  das Fragefeld (Antwort mit nummerierten, verlinkten Quellen) und darunter Reiter: **Dokumente** als
+  Ordneransicht (oberste Ebene mit den Ordnern und der Zahl ihrer Dokumente, ein Klick öffnet einen Ordner;
+  Hinweis auf übersprungene Scans auch am Ordner), **Anhänge aus Mails** und **Mails** mit Zuordnungsart (je
+  höchstens 200 Zeilen, dann „alle zeigen“). Die Ordneransicht zeigt, was im Index steht – nicht gelesene
+  Dateitypen fehlen. Alles geht auch ohne JavaScript (Links laden die Seite neu); mit JavaScript wird nur der
+  betroffene Teil ersetzt, die Zeitleiste behält ihre Scrollposition. Auf dem Handy steht die Zeitleiste über
+  dem Rest.
 - **Antworten** – bei einer belegten Antwort die zitierten Quellen (Nummern wie im Text), weitere
   Fundstellen eingeklappt. Ohne Antwort („nicht gefunden“, unbelegt, abgebrochen, KI nicht
   erreichbar) immer die „Möglichen Fundstellen“ und ein Knopf „In der Suche öffnen“.

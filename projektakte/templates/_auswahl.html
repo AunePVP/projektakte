@@ -1,0 +1,45 @@
+{#- The card of what is chosen in the timeline (one entry, or the entries of a stretch). Always present (empty
+    when nothing is chosen) so htmx can replace it out of band. -#}
+<div id="auswahl"{% if oob %} hx-swap-oob="outerHTML"{% endif %}>
+{% if sel %}
+  {% set close = timeline_url(p.number, art) %}
+  <section class="card auswahl" aria-label="Auswahl aus der Zeitleiste">
+    <div class="auswahl-head">
+      {% if sel.type == 'entry' %}{% set e = sel.entry %}
+      <div>
+        <div class="kind {{ e.kind }}">{{ 'Mail' if e.kind == 'mail' else 'Dokument' }} · aus der Zeitleiste</div>
+        <h2>{{ e.title|path }}</h2>
+        <div class="muted small">{{ e.date|de_date }}{% if e.kind == 'mail' %} · von {{ e.sub }}{% else %}{% if e.folder %} · {{ e.folder|path }}{% endif %} · {{ e.sub }}{% endif %}</div>
+      </div>
+      {% else %}
+      <div>
+        <div class="kind">Zeitraum · aus der Zeitleiste</div>
+        <h2>{{ sel.title }}</h2>
+        <div class="muted small">{{ sel.total|plural('Eintrag', 'Einträge') }}{% if sel.total > sel.members|length %}, die neuesten {{ sel.members|length }} gezeigt{% endif %}</div>
+      </div>
+      {% endif %}
+      <a class="button secondary close" href="{{ close }}" hx-get="{{ timeline_url(p.number, art, '', partial=True, only_svg=True) }}" hx-target="#tl-svg" hx-swap="outerHTML" hx-push-url="{{ close }}" aria-label="Auswahl schließen">✕</a>
+    </div>
+    {% if sel.type == 'entry' %}
+      {% set e = sel.entry %}
+      {% if e.kind == 'doc' and e.status != 'ok' %}<p class="note warn">{{ DOC_STATUS.get(e.status, e.status) }}{% if e.message %}: {{ e.message }}{% endif %}</p>{% endif %}
+      {% if e.kind == 'mail' and e.atts %}
+      <ul class="plain">{% for a in e.atts %}<li><a href="/dokumente/{{ a.id }}">{{ a.filename|path }}</a>{% if a.status == 'pending' %} <span class="muted small">(Anhang ausstehend)</span>{% endif %}</li>{% endfor %}</ul>
+      {% endif %}
+      <p class="auswahl-actions">
+        <a class="button" href="{{ '/mails/' ~ e.id if e.kind == 'mail' else '/dokumente/' ~ e.id }}">Öffnen</a>
+        {% if e.kind == 'doc' %}<a class="button secondary" href="{{ tab_url(p.number, 'dokumente', e.folder) }}" hx-get="{{ tab_url(p.number, 'dokumente', e.folder, partial=True) }}" hx-target="#inhalt" hx-swap="outerHTML" hx-push-url="{{ tab_url(p.number, 'dokumente', e.folder) }}">Im Ordner zeigen</a>{% endif %}
+      </p>
+    {% else %}
+      {% if sel.members %}
+      <ul class="plain group">
+        {% for e in sel.members %}
+        <li><span class="date">{{ e.date|de_date }}</span> <span class="tag {{ e.kind }}">{{ 'Mail' if e.kind == 'mail' else 'Dokument' }}</span>
+          <a href="{{ '/mails/' ~ e.id if e.kind == 'mail' else '/dokumente/' ~ e.id }}">{{ e.title|path }}</a>{% if e.kind == 'mail' %} <span class="muted small">– {{ e.sub }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% else %}<p class="empty">Keine Einträge.</p>{% endif %}
+    {% endif %}
+  </section>
+{% endif %}
+</div>
