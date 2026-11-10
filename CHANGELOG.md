@@ -104,8 +104,10 @@ Roadmap-Schritt.
 - Große CAD-Pläne: pypdf liest bis zu 8 Mio. Bausteine je Seiteninhalt statt 2 Mio. (vorher „Reached maximum
   number of tokens per stream“, die Beschriftung fehlte); `fonttools` als Abhängigkeit, damit Zeichen
   eingebetteter CFF-Schriften richtig gelesen werden (vorher Warnung „fontTools is required“).
+- `VISION_SKIP_FOLDERS` (z. B. `Bilder`): Fotos in Ordnern wie `263900-Bilder` gehen nicht an die Bildauswertung;
+  ohne die Einstellung werden sie später nachgelesen.
 - Protokoll: je gelesener Datei eine Zeile „Gelesen: <Datei> – ok (Bildauswertung), 3 Seite(n), 7 Abschnitt(e), 12,3 s“.
-- 1914 Tests (4 Integrationstests übersprungen, 1 xfail).
+- 1917 Tests (4 Integrationstests übersprungen, 1 xfail).
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

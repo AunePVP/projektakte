@@ -20,7 +20,7 @@ from pathlib import Path
 from . import extract_worker
 from .db import BAUVORHABEN
 from .chunking import Chunk, chunk_pages
-from .extract import SUPPORTED_EXT, Extracted, extract, extraction_profile
+from .extract import IMAGE_EXT, SUPPORTED_EXT, Extracted, extract, extraction_profile
 from .textutil import find_date, fold
 
 log = logging.getLogger("projektakte.documents")
@@ -477,7 +477,7 @@ class _ProjectState:
 
 
 def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *,
-                            projects_dir: Path | str | None = None) -> dict:
+                            projects_dir: Path | str | None = None, skip_photos: tuple[str, ...] = ()) -> dict:
     """Bring the documents of one project up to date – all its folders: the primary folder
     (``project["path"]``) and the further folders with the same number (``project["further"]``, read
     from the register if the key is missing). Every file is read and extracted without holding the
@@ -523,7 +523,7 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
                       prefix=folder_prefix(stored_root, stored),
                       boundary=Path(projects_dir).resolve() if projects_dir else root.resolve(),
                       profile=profile, now=now, seen=seen, bad=bad, unlisted=unlisted,
-                      exclude=frozenset(project.get("exclude") or ()))
+                      exclude=frozenset(project.get("exclude") or ()), skip_photos=skip_photos)
     if not reachable:  # nothing could be read: change nothing
         return stats
     handover = project.get("handover") or ()
@@ -561,7 +561,8 @@ def _what(project: dict) -> str:
 
 def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState, stats: dict, *, llm,
                   stored: Path, root: Path, prefix: str, boundary: Path, profile: str, now: str, seen: set[str],
-                  bad: list[str], unlisted: list[Path], exclude: frozenset[str] = frozenset()) -> None:
+                  bad: list[str], unlisted: list[Path], exclude: frozenset[str] = frozenset(),
+                  skip_photos: tuple[str, ...] = ()) -> None:
     """The files of one folder of a project (``stored`` as registered, ``root`` its real path): new and
     changed ones are extracted and written, every file found is added to ``seen``; folders inside that
     could not be listed are added to ``unlisted``, names in a wrong encoding to ``bad``. Subfolders
@@ -620,7 +621,11 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
             conn.execute("UPDATE documents SET rel_path = ? WHERE id = ?", (shown, row["id"]))
             conn.commit()
             row["rel_path"] = shown
-        due = row is not None and reprocess_due(row, profile, now, extract_worker.limits_for(f.name, llm))
+        # a photo in a folder of VISION_SKIP_FOLDERS: not sent to the vision model; its own profile, so that
+        # removing the folder from the setting reads it
+        photo = bool(skip_photos) and f.suffix.lower() in IMAGE_EXT and _in_folder(shown, stored.name, skip_photos)
+        file_profile = f"{profile}{PHOTO_MARK}" if photo and getattr(llm, "vision", False) else profile
+        due = row is not None and reprocess_due(row, file_profile, now, extract_worker.limits_for(f.name, llm))
         if row and row["size"] == st.st_size and row["mtime"] == st.st_mtime and not due:
             stats["unchanged"] += 1
             continue
@@ -638,7 +643,10 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
             conn.commit()
             stats["unchanged"] += 1
             continue
-        doc = prepare_document(rel_path=shown, data=data, mtime=st.st_mtime, llm=llm)  # no lock held
+        doc = prepare_document(rel_path=shown, data=data, mtime=st.st_mtime,
+                               llm=None if file_profile != profile else llm)  # no lock held
+        if file_profile != profile:
+            doc.result.message, doc.profile = PHOTO_SKIPPED_TEXT, file_profile
         try:
             write_document(conn, doc, path=key, project=project["number"], project_name=project["name"])
         except UnicodeError as exc:  # text that cannot be stored – this file only, the pass goes on
@@ -657,6 +665,22 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
                 unlisted.append(stored / Path(os.fsdecode(e.filename)).relative_to(root))
             except ValueError:
                 unlisted.append(Path(printable(os.fsdecode(e.filename))))
+
+
+PHOTO_MARK = ":ohne-fotos"
+PHOTO_SKIPPED_TEXT = "Foto in einem Bilder-Ordner – nicht ausgewertet (VISION_SKIP_FOLDERS)"
+
+
+def _in_folder(rel_path: str, folder: str, names: tuple[str, ...]) -> bool:
+    """Does the file lie in a folder named like one of ``names`` – the name itself or ending in it after
+    a separator ("Bilder": Bilder, 263900-Bilder, 263900_Bilder), any case? ``folder`` is the name of
+    the project folder the path starts in (itself a part folder such as 119300-Bilder)."""
+    wanted = [n.casefold() for n in names]
+    for part in (folder, *Path(rel_path).parts[:-1]):
+        name = part.casefold()
+        if any(name == w or (name.endswith(w) and name[-len(w) - 1] in "-_ ") for w in wanted):
+            return True
+    return False
 
 
 def _owner(conn: sqlite3.Connection, path: str, number: str) -> sqlite3.Row | None:
@@ -752,7 +776,8 @@ def site_exclusions(conn: sqlite3.Connection, further: dict[str, list[str]] | No
     return out
 
 
-def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Path | str | None = None) -> dict:
+def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Path | str | None = None,
+                        skip_photos: tuple[str, ...] = ()) -> dict:
     """Index the files of all active projects (files of unknown projects leave the index first).
     ``projects_dir`` is the boundary for links (default: each project folder itself). A project whose
     files cannot be stored (a name that is no valid UTF-8 the checks missed) is skipped with a warning
@@ -775,7 +800,7 @@ def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Pat
             p["exclude"] = excluded.get(p["number"], set())
             p["handover"] = [(folders, ex) for n, folders, ex in areas if n != p["number"]]
         try:
-            stats = index_project_documents(conn, p, llm=llm, projects_dir=projects_dir)
+            stats = index_project_documents(conn, p, llm=llm, projects_dir=projects_dir, skip_photos=skip_photos)
         except UnicodeError as exc:
             conn.rollback()
             warn_once(log, "Projekt %s: Dokumente nicht vollständig gelesen – ein Name ist kein gültiges UTF-8 "

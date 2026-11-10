@@ -250,6 +250,8 @@ class Settings:
     assign_min_share: float
     assign_min_lead: float
     # access control
+    # folder names whose photos are not sent to the vision model ("Bilder" also matches 263900-Bilder)
+    vision_skip_folders: tuple[str, ...] = ()
     auth_users: str = field(default="", repr=False)
     auth_users_file: str = ""
     auth_disabled: bool = False
@@ -387,6 +389,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         # the demo with fake services reads its plans and scans by default (deterministic transcript)
         llm_vision=(_bool(e.get("LLM_VISION")) if (e.get("LLM_VISION") or "").strip()
                     else demo_mode and (e.get("AI_MODE") or "").strip().lower() == "fake"),
+        vision_skip_folders=tuple(w.strip() for w in (e.get("VISION_SKIP_FOLDERS") or "").split(",") if w.strip()),
         llm_timeout=_timeout(e, "LLM_TIMEOUT", 120.0, warnings),
         llm_max_tokens=_int(e.get("LLM_MAX_TOKENS"), 800),
         llm_extra_body=extra_body,

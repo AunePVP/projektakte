@@ -520,6 +520,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_URL` | `http://192.168.178.62:8000/v1` | Sprachmodell (OpenAI-kompatibel) |
 | `LLM_MODEL` | `qwen3.8-flash-next` | Modellname |
 | `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Rückfall für Scans/Pläne) |
+| `VISION_SKIP_FOLDERS` | leer | Ordnernamen, deren Fotos nicht an das Modell gehen, mit Komma getrennt; `Bilder` trifft auch `263900-Bilder`. Scans (PDF) werden weiter gelesen; ohne die Einstellung werden die Fotos beim nächsten Lauf nachgelesen |
 | `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | `120` / `800` | Sekunden / Antwortlänge |
 | `LLM_EXTRA_BODY` | – | JSON, das in jede Chat-Anfrage gemischt wird, z. B. `{"chat_template_kwargs":{"enable_thinking":false}}` |
 | `EMBED_URL` | `http://192.168.178.62:8001` | Embedding-Dienst (ohne `/v1`) |

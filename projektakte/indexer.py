@@ -76,7 +76,8 @@ def _index_documents(conn, llm, settings: Settings) -> dict:
     with a warning – the mails, embeddings and the assignment still run – instead of the whole pass
     failing."""
     try:
-        return index_all_documents(conn, llm=llm, projects_dir=settings.projects_dir)
+        return index_all_documents(conn, llm=llm, projects_dir=settings.projects_dir,
+                                   skip_photos=settings.vision_skip_folders)
     except UnicodeError as exc:
         conn.rollback()
         log.warning("Dokumente: ein Datei- oder Ordnername ist kein gültiges UTF-8 (%s) – %s", exc, ENCODING_HINT)
