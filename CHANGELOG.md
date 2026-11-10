@@ -92,7 +92,10 @@ Roadmap-Schritt.
 - Läuft das Lesen einer Datei in die Speichergrenze, wird sie als „zu groß“ vermerkt, statt den
   Leseprozess beim Protokollieren ein zweites Mal an der Grenze scheitern zu lassen (vorher: Absturz
   des Leseprozesses und endlose Wiederholung).
-- 1902 Tests (4 Integrationstests übersprungen, 1 xfail).
+- Verschlüsselte PDFs (AES), die nur gegen Bearbeiten geschützt sind, werden gelesen (neue Abhängigkeit
+  `cryptography`; vorher Fehler „cryptography>=3.1 is required“); PDFs, die zum Öffnen ein Passwort
+  brauchen, werden ohne erneuten Versuch übersprungen.
+- 1906 Tests (4 Integrationstests übersprungen, 1 xfail).
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

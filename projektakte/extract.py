@@ -250,8 +250,17 @@ def html_to_text(html: str) -> str:
 
 def _pdf(data: bytes, llm, name: str) -> Extracted:
     from pypdf import PdfReader
+    from pypdf.errors import FileNotDecryptedError
 
     reader = PdfReader(io.BytesIO(data))
+    if reader.is_encrypted:
+        # many PDFs are only protected against editing or printing: they open with an empty password
+        try:
+            opened = reader.decrypt("")
+        except FileNotDecryptedError:
+            opened = 0
+        if not opened:
+            return Extracted([], status="skipped", message=PDF_ENCRYPTED_TEXT)
     pages = []
     empty_pages = []
     texts: dict[tuple, str] = {}  # pages drawing the same content with the same resources: one extraction
@@ -1693,6 +1702,7 @@ _ZIP_ENTRY_BYTES = 256
 _ODF_CHUNK = 1 << 16  # decompressed bytes handed to the XML parser at a time
 
 ODF_ENCRYPTED_TEXT = "Datei ist mit einem Passwort geschützt (verschlüsselt) – nicht gelesen"
+PDF_ENCRYPTED_TEXT = ODF_ENCRYPTED_TEXT
 ODF_DTD_TEXT = ("Datei nicht gelesen (XML mit eigener DTD bzw. Entity-Deklarationen – aus Sicherheitsgründen "
                 "nicht erlaubt)")
 

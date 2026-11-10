@@ -1,6 +1,8 @@
 fastapi==0.162.0
 uvicorn==0.54.0
 pypdf==6.21.4
+# cryptography: pypdf needs it to open AES-encrypted PDFs (often only protected against editing)
+cryptography==50.0.2
 python-docx==1.2.0
 numpy==2.5.4
 jinja2==3.1.6
