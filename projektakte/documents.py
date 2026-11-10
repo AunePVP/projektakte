@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -130,6 +131,9 @@ class PreparedDocument:
     profile: str
 
 
+_STATUS_DE = {"ok": "ok", "skipped": "übersprungen", "error": "Fehler", "empty": "kein Text"}
+
+
 def prepare_document(*, rel_path: str, data: bytes, mtime: float | None, llm=None,
                      doc_date: str | None = None) -> PreparedDocument:
     """Extract and chunk one file. Slow (PDF parsing, vision model) and touches no database, so the
@@ -139,8 +143,12 @@ def prepare_document(*, rel_path: str, data: bytes, mtime: float | None, llm=Non
     extraction worker process with operating-system limits (see extract_worker); it raises
     ExtractionAborted when the app shuts down meanwhile – nothing is to be written for the file then."""
     filename = Path(rel_path).name
+    started = time.monotonic()
     result = extract_worker.extract_file(filename, data, llm, extract)
     chunks = chunk_pages(result.pages) if result.status == "ok" else []
+    log.info("Gelesen: %s – %s%s, %d Seite(n), %d Abschnitt(e), %.1f s%s", printable(rel_path), _STATUS_DE.get(
+        result.status, result.status), " (Bildauswertung)" if result.method == "vision" else "", len(result.pages),
+        len(chunks), time.monotonic() - started, f" – {result.message}" if result.message else "")
     return PreparedDocument(
         rel_path=rel_path, filename=filename, ext=Path(filename).suffix.lower(), size=len(data),
         sha256=sha256(data), mtime=mtime, doc_date=doc_date or document_date(filename, result.text, mtime),
