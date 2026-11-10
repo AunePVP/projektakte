@@ -95,7 +95,10 @@ Roadmap-Schritt.
 - Verschlüsselte PDFs (AES), die nur gegen Bearbeiten geschützt sind, werden gelesen (neue Abhängigkeit
   `cryptography`; vorher Fehler „cryptography>=3.1 is required“); PDFs, die zum Öffnen ein Passwort
   brauchen, werden ohne erneuten Versuch übersprungen.
-- 1913 Tests (4 Integrationstests übersprungen, 1 xfail).
+- Große CAD-Pläne: pypdf liest bis zu 8 Mio. Bausteine je Seiteninhalt statt 2 Mio. (vorher „Reached maximum
+  number of tokens per stream“, die Beschriftung fehlte); `fonttools` als Abhängigkeit, damit Zeichen
+  eingebetteter CFF-Schriften richtig gelesen werden (vorher Warnung „fontTools is required“).
+- 1914 Tests (4 Integrationstests übersprungen, 1 xfail).
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

@@ -248,7 +248,19 @@ def html_to_text(html: str) -> str:
     return re.sub(r"\n\s*\n+", "\n\n", text).strip()
 
 
+# Tokens pypdf parses in one content stream (its default, 2 million, cuts off the labels of large CAD
+# plans); measured: 10 million take about 28 s and 1.2 GB – within the extraction worker's limits.
+PDF_STREAM_TOKENS = 8_000_000
+
+
 def _pdf(data: bytes, llm, name: str) -> Extracted:
+    from pypdf import apply_configuration
+
+    with apply_configuration(stream_parsing_work_maximum_count=PDF_STREAM_TOKENS):
+        return _pdf_pages(data, llm, name)
+
+
+def _pdf_pages(data: bytes, llm, name: str) -> Extracted:
     from pypdf import PdfReader
     from pypdf.errors import FileNotDecryptedError
 
