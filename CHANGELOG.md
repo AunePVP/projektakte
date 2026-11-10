@@ -95,7 +95,7 @@ Roadmap-Schritt.
 - Verschlüsselte PDFs (AES), die nur gegen Bearbeiten geschützt sind, werden gelesen (neue Abhängigkeit
   `cryptography`; vorher Fehler „cryptography>=3.1 is required“); PDFs, die zum Öffnen ein Passwort
   brauchen, werden ohne erneuten Versuch übersprungen.
-- 1906 Tests (4 Integrationstests übersprungen, 1 xfail).
+- 1913 Tests (4 Integrationstests übersprungen, 1 xfail).
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 
