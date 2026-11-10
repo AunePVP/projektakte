@@ -36,13 +36,58 @@ def test_project_page_sections(client):
     r = client.get("/projekte/BS-2024-0137")
     assert r.status_code == 200
     for text in ("Frage zu diesem Projekt", "Zeitachse", "Dokumente", "Mails", "Baugenehmigung.pdf",
-                 "Zustimmung zur Abweichung Flurlänge", "übersprungen"):
+                 "Zustimmung zur Abweichung Flurlänge", "nicht vollständig gelesen"):
         assert text in r.text, text
     # timeline is chronological (newest first)
     dates = re.findall(r'<span class="date">(\d\d)\.(\d\d)\.(\d{4})</span>', r.text)
     iso = [f"{y}{m}{d}" for d, m, y in dates]
     assert iso == sorted(iso, reverse=True) and len(iso) > 5
     assert client.get("/projekte/BS-1999-0001", headers={"Accept": "text/html"}).status_code == 404
+
+
+def _browser(html: str) -> str:
+    return html.split('<div id="dok-browser">', 1)[1].split("</table>", 1)[0]
+
+
+def test_project_documents_as_file_browser(client):
+    """Documents are shown one folder at a time: the top level lists the folders (with their document
+    count), a click opens a folder – with HTMX only the browser is replaced, without it the page."""
+    top = _browser(client.get("/projekte/BS-2024-0137").text)
+    for name in ("01 Genehmigung", "02 Konzept", "05 Pläne"):
+        assert f">{name}</a>" in top, name
+    assert "Baugenehmigung.pdf" not in top  # files stay inside their folder
+    assert "1 Dokument<" in top and "1 nicht vollständig gelesen" in top  # the skipped scan in 05 Pläne
+    part = client.get("/projekte/BS-2024-0137/ordner", params={"pfad": "05 Pläne"}, headers=HX)
+    assert part.status_code == 200 and "<html" not in part.text
+    assert "Fluchtwegplan EG.png" in part.text and "übersprungen" in part.text
+    assert "01 Genehmigung" not in part.text and "übergeordneter Ordner" in part.text
+    assert "/projekte/BS-2024-0137#dokumente" in part.text  # back to the top level
+    # the same folder without JavaScript: the whole page opened there
+    page = client.get("/projekte/BS-2024-0137", params={"ordner": "05 Pläne"}).text
+    assert "Fluchtwegplan EG.png" in _browser(page) and "<html" in page
+    plain = client.get("/projekte/BS-2024-0137/ordner", params={"pfad": "05 Pläne"}, follow_redirects=False)
+    assert plain.status_code == 303 and plain.headers["location"].endswith("?ordner=05+Pl%C3%A4ne#dokumente")
+    # a folder that does not exist (or tries to leave the project) shows a note, never other files
+    gone = _browser(client.get("/projekte/BS-2024-0137", params={"ordner": "../BS-2023-0412"}).text)
+    assert "nicht (mehr)" in gone
+    assert client.get("/projekte/BS-1999-0001/ordner", headers={**HX, "Accept": "text/html"}).status_code == 404
+
+
+def test_folder_view_levels():
+    from projektakte.web import folder_view
+    docs = [{"rel_path": p, "filename": p.rsplit("/", 1)[-1], "status": st} for p, st in (
+        ("a.txt", "ok"), ("B/x.pdf", "ok"), ("B/C/y.pdf", "error"), ("B/C/D/z.pdf", "ok"), ("b2/w.txt", "ok"))]
+    top = folder_view(docs, "")
+    assert [f["name"] for f in top["folders"]] == ["B", "b2"] and [d["rel_path"] for d in top["files"]] == ["a.txt"]
+    assert top["folders"][0]["count"] == 3 and top["folders"][0]["problems"] == 1 and top["parent"] is None
+    b = folder_view(docs, "/B/")
+    assert b["folder"] == "B" and [f["name"] for f in b["folders"]] == ["C"] and b["parent"] == ""
+    assert [d["rel_path"] for d in b["files"]] == ["B/x.pdf"]
+    c = folder_view(docs, "B/C")
+    assert [x["path"] for x in c["crumbs"]] == ["B", "B/C"] and c["parent"] == "B"
+    assert [f["path"] for f in c["folders"]] == ["B/C/D"] and [d["rel_path"] for d in c["files"]] == ["B/C/y.pdf"]
+    assert not folder_view(docs, "Bx")["found"] and not folder_view(docs, "b")["found"]
+    assert folder_view(docs, "../B")["folder"] == "B"  # ".." never leaves the project
 
 
 def test_ask_form_htmx_and_plain(client):

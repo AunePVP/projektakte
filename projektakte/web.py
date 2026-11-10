@@ -398,7 +398,7 @@ def _project_attachments(conn, number: str) -> list[dict]:
 
 
 @router.get("/projekte/{number}", response_class=HTMLResponse)
-def project_page(request: Request, number: str):
+def project_page(request: Request, number: str, ordner: str = ""):
     s = _settings(request)
     with db.session(s.db_path) as conn:
         p = get_project(conn, number)
@@ -409,9 +409,7 @@ def project_page(request: Request, number: str):
         site = get_project(conn, p["parent"]) if p.get("parent") else None
         subprojects = (_with_activity(children(conn, p["number"]), _activity(conn))
                        if p.get("kind") == BAUVORHABEN else [])
-        docs = [dict(r) for r in conn.execute(
-            "SELECT id, rel_path, filename, ext, size, doc_date, pages, status, message, method FROM documents "
-            "WHERE project = ? AND mail_id IS NULL ORDER BY rel_path", (p["number"],))]
+        docs = _project_docs(conn, p["number"])
         mails = [dict(r) for r in conn.execute(
             "SELECT id, subject, sender, sender_name, date, assign_status, assign_method, has_attachments "
             "FROM mails WHERE project = ? AND deleted = 0 ORDER BY date DESC", (p["number"],))]
@@ -433,7 +431,77 @@ def project_page(request: Request, number: str):
     p["rel"] = p["folders"][0]
     return render(request, "project.html", p=p, docs=docs, mails=mails, attachments=attachments,
                   timeline=timeline, suggested=suggested, site=site, subprojects=subprojects,
-                  is_site=p.get("kind") == BAUVORHABEN)
+                  is_site=p.get("kind") == BAUVORHABEN, browser=folder_view(docs, ordner))
+
+
+def clean_folder(folder: str | None) -> str:
+    """A folder inside a project as given in a URL: '/'-separated, without empty, '.' and '..' parts."""
+    parts = [p for p in (folder or "").replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    return "/".join(parts)
+
+
+def folder_url(number: str, folder: str = "", partial: bool = False) -> str:
+    """The project page opened at ``folder`` – or, with ``partial``, just its file browser (HTMX)."""
+    base = f"/projekte/{quote(number, safe='')}"
+    if partial:
+        return f"{base}/ordner" + (f"?{urlencode({'pfad': folder})}" if folder else "")
+    return base + (f"?{urlencode({'ordner': folder})}" if folder else "") + "#dokumente"
+
+
+templates.env.globals["folder_url"] = folder_url
+
+
+def folder_view(docs: list[dict], folder: str) -> dict:
+    """One level of the project's documents as a file browser: the folders and files directly in
+    ``folder`` (a path inside the project, '' = top level), folders first, both by name. A folder
+    counts every document below it and the ones that were not read completely. The tree is built from
+    the indexed documents (their path inside the project), not from the share – it shows what
+    Projektakte has read, and works while the share is not reachable."""
+    folder = clean_folder(folder)
+    depth = len(folder.split("/")) if folder else 0
+    prefix = f"{folder}/" if folder else ""
+    folders: dict[str, dict] = {}
+    files: list[dict] = []
+    for d in docs:
+        parts = (d["rel_path"] or "").replace("\\", "/").split("/")
+        if not "/".join(parts).startswith(prefix) or len(parts) <= depth:
+            continue
+        if len(parts) == depth + 1:
+            files.append(d)
+            continue
+        name = parts[depth]
+        f = folders.setdefault(name, {"name": name, "path": prefix + name, "count": 0, "problems": 0})
+        f["count"] += 1
+        f["problems"] += d.get("status") != "ok"
+    crumbs, acc = [], []
+    for part in folder.split("/") if folder else []:
+        acc.append(part)
+        crumbs.append({"name": part, "path": "/".join(acc)})
+    return {"folder": folder, "crumbs": crumbs,
+            "parent": "/".join(folder.split("/")[:-1]) if folder else None,
+            "folders": sorted(folders.values(), key=lambda f: f["name"].casefold()),
+            "files": sorted(files, key=lambda d: (d["filename"] or d["rel_path"]).casefold()),
+            "found": not folder or bool(folders or files)}
+
+
+def _project_docs(conn, number: str) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT id, rel_path, filename, ext, size, doc_date, pages, status, message, method FROM documents "
+        "WHERE project = ? AND mail_id IS NULL ORDER BY rel_path", (number,))]
+
+
+@router.get("/projekte/{number}/ordner", response_class=HTMLResponse)
+def project_folder(request: Request, number: str, pfad: str = ""):
+    """The file browser of a project at one folder: the HTMX partial, else the whole project page."""
+    if not is_htmx(request):
+        return RedirectResponse(folder_url(number, clean_folder(pfad)), status_code=303)
+    s = _settings(request)
+    with db.session(s.db_path) as conn:
+        p = get_project(conn, number)
+        if not p:
+            raise HTTPException(404, f"Projekt {number} nicht gefunden")
+        docs = _project_docs(conn, p["number"])
+    return render(request, "_doc_browser.html", p=p, browser=folder_view(docs, pfad))
 
 
 def _below_projects_dir(path: str, projects_dir) -> str:

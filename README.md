@@ -89,8 +89,10 @@ nur mit `PROJEKTAKTE_INTEGRATION=1` (siehe docs/ki-dienste.md).
   neueste Dokument- oder Mail-Datum, das nicht in der Zukunft liegt (ein Datum aus dem Text wie ein
   geplanter Termin „29.06.2030“ zählt nicht).
 - **Projektseite** – Fragefeld (Antwort mit nummerierten, verlinkten Quellen), Zeitachse aus
-  Dokumenten und Mails, Dokumente (mit Hinweis auf übersprungene Scans), Anhänge aus Mails, Mails
-  mit Zuordnungsart.
+  Dokumenten und Mails, Dokumente als Ordneransicht (oberste Ebene mit den Ordnern und der Zahl ihrer
+  Dokumente, ein Klick öffnet einen Ordner mit seinen Unterordnern und Dateien; Pfad zum Zurückspringen,
+  Hinweis auf übersprungene Scans auch am Ordner), Anhänge aus Mails, Mails mit Zuordnungsart. Die
+  Ordneransicht zeigt, was im Index steht – nicht gelesene Dateitypen fehlen.
 - **Antworten** – bei einer belegten Antwort die zitierten Quellen (Nummern wie im Text), weitere
   Fundstellen eingeklappt. Ohne Antwort („nicht gefunden“, unbelegt, abgebrochen, KI nicht
   erreichbar) immer die „Möglichen Fundstellen“ und ein Knopf „In der Suche öffnen“.

@@ -60,19 +60,8 @@
 
 <section id="dokumente">
   <h2>{% if is_site %}Dokumente des Bauvorhabens (außerhalb der Unterprojekte){% else %}Dokumente{% endif %}</h2>
-  <table class="list">
-    <thead><tr><th>Datei</th><th class="w-s hide-sm">Typ</th><th class="w-m date">Datum</th><th class="w-l">Hinweis</th></tr></thead>
-    <tbody>
-    {% for d in docs %}
-    <tr>
-      <td><a href="/dokumente/{{ d.id }}">{{ d.rel_path|path }}</a></td>
-      <td class="hide-sm">{{ d.ext[1:]|upper }}</td>
-      <td class="date">{{ d.doc_date|de_date }}</td>
-      <td>{% if d.status != 'ok' %}<span class="pill warn" title="{{ d.message or '' }}">{{ DOC_STATUS.get(d.status, d.status) }}</span>{% elif d.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
-    </tr>
-    {% else %}<tr><td colspan="4" class="empty">Keine Dokumente.</td></tr>{% endfor %}
-    </tbody>
-  </table>
+  {% include "_doc_browser.html" %}
+  <p class="muted small">Gezeigt wird, was Projektakte gelesen hat – Dateitypen, die nicht gelesen werden (z. B. Pläne als DWG), fehlen hier.</p>
 </section>
 
 <section id="anhaenge">

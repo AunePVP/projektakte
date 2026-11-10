@@ -685,3 +685,12 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   gelesenen Formats wurden nie gespeichert und werden als neue Dateien gelesen – nur Mail-Anhänge waren
   gespeichert („Format … nicht unterstützt“) und werden einmal aus dem Cache nachgelesen.
 
+**Dokumente als Ordneransicht**
+- *Aus dem Index, nicht von der Freigabe*: Die Ansicht baut die Ordner aus den Pfaden der gelesenen
+  Dokumente. Kein Klick greift auf den Dateiserver zu (schnell, auch wenn die Freigabe gerade fehlt, kein
+  zweiter Weg an den Grenzen von `PROJECTS_DIR` vorbei); dafür fehlen nicht gelesene Dateitypen – die
+  Seite sagt das.
+- *Ordner als Adressparameter, ohne `..`*: Der Ordner ist nur ein Filter auf die Dokumente des Projekts;
+  leere, `.`- und `..`-Teile werden entfernt, ein unbekannter Ordner zeigt einen Hinweis.
+- *Zahl und Probleme am Ordner*: Damit ein übersprungener Scan tief in der Ablage nicht unsichtbar wird,
+  zeigt jeder Ordner, wie viele Dokumente darunter nicht vollständig gelesen sind.

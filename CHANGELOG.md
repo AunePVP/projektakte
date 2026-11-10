@@ -5,6 +5,11 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Dokumente als Ordneransicht:** Die Projektseite zeigt die Dokumente nicht mehr als eine lange Liste,
+  sondern Ordner für Ordner – oben die Ordner mit der Zahl ihrer Dokumente (und wie viele davon nicht
+  vollständig gelesen sind), ein Klick zeigt Unterordner und Dateien darin. Mit HTMX wird nur die Ansicht
+  ersetzt und die Adresse (`/projekte/<Nr>?ordner=…`) mitgeführt, ohne JavaScript lädt die Seite neu.
+
 - **Bauvorhaben mit Unterprojekten** (`PROJECT_PARENT_DIGITS`, im Büro `4`, Standard aus): Die Aufträge eines
   Bauvorhaben-Ordners (`1015_Altstadt/101500_…`, auch in einem Zwischenordner `1015_PDF_…/101504_…`) sind dessen
   Unterprojekte. Das Bauvorhaben ist ein eigener Eintrag mit den Dateien seines Ordners außerhalb der Aufträge

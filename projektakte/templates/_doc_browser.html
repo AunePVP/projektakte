@@ -1,0 +1,37 @@
+{#- File browser of a project's documents, one folder at a time (web.folder_view). Every link works
+    without JavaScript (the project page at that folder); with HTMX only this block is replaced. -#}
+{%- macro open(folder, label) -%}
+<a href="{{ folder_url(p.number, folder) }}" hx-get="{{ folder_url(p.number, folder, partial=True) }}" hx-target="#dok-browser" hx-swap="outerHTML" hx-push-url="{{ folder_url(p.number, folder) }}">{{ label }}</a>
+{%- endmacro -%}
+<div id="dok-browser">
+  <p class="crumbs dok-path">{% if browser.crumbs %}{{ open('', 'Alle Ordner') }}{% for c in browser.crumbs %} › {% if loop.last %}<strong>{{ c.name|path }}</strong>{% else %}{{ open(c.path, c.name) }}{% endif %}{% endfor %}{% else %}<strong>Alle Ordner</strong>{% endif %}</p>
+  {% if not browser.found %}
+  <p class="empty">Diesen Ordner gibt es im Index nicht (mehr). {{ open('', 'Zur obersten Ebene') }}</p>
+  {% else %}
+  <table class="list dok-browser">
+    <thead><tr><th>Name</th><th class="w-s hide-sm">Typ</th><th class="w-m date">Datum</th><th class="w-l">Hinweis</th></tr></thead>
+    <tbody>
+    {% if browser.parent is not none %}
+    <tr class="dir up"><td colspan="4">{{ open(browser.parent, '.. (übergeordneter Ordner)') }}</td></tr>
+    {% endif %}
+    {% for f in browser.folders %}
+    <tr class="dir">
+      <td>{{ open(f.path, f.name) }}</td>
+      <td class="hide-sm">Ordner</td>
+      <td class="muted small">{{ f.count|plural('Dokument', 'Dokumente') }}</td>
+      <td>{% if f.problems %}<span class="pill warn" title="Dokumente, die nicht vollständig gelesen wurden">{{ f.problems }} nicht vollständig gelesen</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    {% for d in browser.files %}
+    <tr>
+      <td><a href="/dokumente/{{ d.id }}">{{ (d.filename or d.rel_path)|path }}</a></td>
+      <td class="hide-sm">{{ d.ext[1:]|upper }}</td>
+      <td class="date">{{ d.doc_date|de_date }}</td>
+      <td>{% if d.status != 'ok' %}<span class="pill warn" title="{{ d.message or '' }}">{{ DOC_STATUS.get(d.status, d.status) }}</span>{% elif d.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    {% if not browser.folders and not browser.files %}<tr><td colspan="4" class="empty">Keine Dokumente.</td></tr>{% endif %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
