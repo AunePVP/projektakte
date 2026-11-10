@@ -436,10 +436,12 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = a.data_dir or (base.data_dir / "eval")
     s = resolve_settings(eval_settings(data_dir, "real" if a.real else "fake" if a.fake else None))
     ai = AIServices.from_settings(s)
+    from .vectors import VECTOR_INDEX
+    VECTOR_INDEX.configure(s.vector_search)
     print(f"KI-Dienste: {'Fake (im Prozess)' if s.ai_mode == 'fake' else 'echt'} – LLM {s.llm_url} ({s.llm_model}), "
           f"Embeddings {s.embed_url}, Reranker {s.rerank_url}")
     print(f"ASK_MIN_RERANK={s.ask_min_rerank}  ASK_TOP_K={s.ask_top_k}  RERANK_TOP_K={s.rerank_top_k}  "
-          f"Daten: {data_dir}")
+          f"VECTOR_SEARCH={s.vector_search}  Daten: {data_dir}")
     try:
         questions = load_eval(a.eval, name=a.set_name)
     except (OSError, ValueError) as exc:

@@ -694,3 +694,25 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   leere, `.`- und `..`-Teile werden entfernt, ein unbekannter Ordner zeigt einen Hinweis.
 - *Zahl und Probleme am Ordner*: Damit ein übersprungener Scan tief in der Ablage nicht unsichtbar wird,
   zeigt jeder Ordner, wie viele Dokumente darunter nicht vollständig gelesen sind.
+
+**Kompakte Vektorsuche**
+- *Warum*: Die ganze float32-Matrix im RAM war für etwa 100.000 Abschnitte gedacht (1 GB). Die echte Ablage
+  (rund 214.000 lesbare Dateien in 3.353 Aufträgen) ergibt grob 1–5 Mio. Abschnitte, also 10–50 GB RAM.
+- *Vorauswahl mit Vorzeichen-Bits, genaue Bewertung aus SQLite*: 1 Bit je Dimension (Vorzeichen nach
+  Abzug des Mittelwertvektors – Satzvektoren teilen eine gemeinsame Richtung, ohne Zentrieren wären die
+  meisten Bits überall gleich), Vergleich über die Zahl unterschiedlicher Bits mit NumPy, keine neue
+  Abhängigkeit. Die 2000 besten (mindestens 10 × k) werden mit den gespeicherten Vektoren genau bewertet,
+  die Rangfolge und die Werte sind also die genauen.
+- *Gemessen mit künstlichen Vektoren* (200.000 × 1024, viele dichte Themengruppen): RAM 26 statt 819 MB,
+  je Suche etwa 40 ms; die besten 10 stimmen zu 98 % mit der exakten Suche überein, die besten 50 zu 81 % –
+  die Abweichungen liegen bei Treffern mit fast gleichem Wert (Unterschied unter 0,003), danach entscheiden
+  ohnehin Volltext und Reranker. Mit 500 Kandidaten waren es nur 89 % / 55 %, mit 5000 99 % / 93 % bei
+  60 ms. Echte Satzvektoren lassen sich meist besser in Bits fassen; gemessen wird mit der echten KI
+  (Schritt 17, Vergleich mit `VECTOR_SEARCH=matrix`).
+- *In einem Projekt exakt*: Hat der Suchbereich höchstens so viele Abschnitte wie Kandidaten, wird jeder
+  genau bewertet – Fragen in einem Auftrag verlieren nichts.
+- *Ausgeblendete Abschnitte*: Ohne Projektfilter werden die Kandidaten beim Lesen auf sichtbare
+  beschränkt; sind zu wenige sichtbar (viele Projekte fehlen, Abschnitte seit dem Laden gelöscht), wird
+  die Vorauswahl vervierfacht, höchstens bis zum 64-fachen.
+- *Matrix bleibt wählbar*: zum Vergleich in der Messung und falls die Bits mit einem Modell schlecht
+  funktionieren.

@@ -26,6 +26,7 @@ from .auth import COOKIE, PUBLIC_PREFIXES, Auth, is_public
 from .background import BackgroundIndexer
 from .config import Settings, load_settings
 from .startup import check_data_dir, log_startup
+from .vectors import DEFAULT_VECTOR_SEARCH, VECTOR_INDEX
 from .websecurity import UNSAFE_METHODS, SecurityHeadersMiddleware, is_cross_site
 
 log = logging.getLogger("projektakte.main")
@@ -172,6 +173,7 @@ def create_app(settings: Settings | None = None, *, background: bool = True) -> 
     auth = Auth.from_settings(settings)
     db.init_db(settings.db_path)
     settings = resolve_settings(settings)
+    VECTOR_INDEX.configure(getattr(settings, "vector_search", DEFAULT_VECTOR_SEARCH))
     ai = AIServices.from_settings(settings)
     indexer = BackgroundIndexer(settings, ai)
     log_startup(settings, auth)

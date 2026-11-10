@@ -197,6 +197,21 @@ def _assign_mode(value: str | None, plmail: bool) -> str:
     return "manual" if plmail else "auto"
 
 
+VECTOR_SEARCH_MODES = ("kompakt", "matrix")  # vectors.VECTOR_SEARCH_MODES
+
+
+def _vector_search(value: str | None, warnings: list[str]) -> str:
+    """VECTOR_SEARCH: "kompakt" (default, sign codes in memory, exact scores from SQLite) or "matrix"
+    (all vectors in memory)."""
+    raw = (value or "").strip().lower()
+    if not raw:
+        return VECTOR_SEARCH_MODES[0]
+    if raw not in VECTOR_SEARCH_MODES:
+        warnings.append(f"VECTOR_SEARCH={value} ist unbekannt (kompakt oder matrix) – es gilt kompakt")
+        return VECTOR_SEARCH_MODES[0]
+    return raw
+
+
 @dataclass(frozen=True)
 class Settings:
     port: int
@@ -258,6 +273,8 @@ class Settings:
     synonyms_file: str = ""
     # minimum absolute similarity for a mail suggestion (in addition to share/lead); 0 = off
     assign_min_similarity: float = 0.0
+    # how vectors are held for the search: "kompakt" (1 bit per dimension in memory) or "matrix" (all)
+    vector_search: str = "kompakt"
     # reverse proxy: comma-separated IPs whose X-Forwarded-* headers are trusted (uvicorn)
     forwarded_allow_ips: str = ""
     log_level: str = "INFO"
@@ -344,6 +361,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         extra_body = {}
     app_env = (e.get("APP_ENV") or "dev").strip().lower()
     # computed before Settings(...): their warnings must be in config_warnings
+    vector_search = _vector_search(e.get("VECTOR_SEARCH"), warnings)
     extract = {
         # the test suite patches the extraction and passes stub models: it stays in-process there
         "extract_isolation": _bool(e.get("EXTRACT_ISOLATION"), app_env != "test"),
@@ -413,6 +431,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         search_min_rerank=_float(e.get("SEARCH_MIN_RERANK"), 0.05),
         synonyms_file=e.get("SYNONYMS_FILE", ""),
         assign_min_similarity=_float(e.get("ASSIGN_MIN_SIMILARITY"), 0.0),
+        vector_search=vector_search,
         forwarded_allow_ips=e.get("FORWARDED_ALLOW_IPS", ""),
         llm_api_key=e.get("LLM_API_KEY", ""),
         embed_api_key=e.get("EMBED_API_KEY", ""),

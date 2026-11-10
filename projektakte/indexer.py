@@ -19,7 +19,7 @@ from .mails.eml_source import sync_eml_folder
 from .mails.jmap_source import JMAPClient, sync_plmail
 from .mails.store import sweep_cache
 from .registry import ENCODING_HINT, active_count, sync_from_folder, unchanged_stats
-from .vectors import embed_pending
+from .vectors import DEFAULT_VECTOR_SEARCH, VECTOR_INDEX, embed_pending
 
 log = logging.getLogger("projektakte.indexer")
 
@@ -42,6 +42,7 @@ def run_index(settings: Settings, ai: AIServices | None = None, progress=None) -
 
     # never two passes at the same time (background worker + CLI/test); files are read in the extraction
     # worker process if the settings say so (EXTRACT_ISOLATION) – it is kept for the next pass
+    VECTOR_INDEX.configure(getattr(settings, "vector_search", DEFAULT_VECTOR_SEARCH))  # mail assignment searches
     with _RUN_LOCK, extract_worker.isolation(settings):
         return _run(settings, ai, phase)
 

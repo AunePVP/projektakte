@@ -42,8 +42,9 @@ services:
       intern:
         ipv4_address: 172.31.250.20
     # no "ports:": the application is only reachable through Caddy
-    # A memory limit, if set, must hold the app (vector index ≈ sections × dimensions × 4 bytes, e.g.
-    # 100 000 × 2560 × 4 ≈ 1 GB) plus the reading process (EXTRACT_MEMORY_MB, 2 GB):
+    # A memory limit, if set, must hold the app (vector index with VECTOR_SEARCH=kompakt ≈ sections ×
+    # dimensions / 8 bytes, e.g. 1 000 000 × 2560 / 8 ≈ 0.33 GB; with "matrix" × 32 of that) plus the
+    # reading process (EXTRACT_MEMORY_MB, 2 GB):
     # mem_limit: 4g
     logging:
       driver: json-file

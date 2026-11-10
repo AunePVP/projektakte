@@ -5,6 +5,11 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Kompakte Vektorsuche (`VECTOR_SEARCH=kompakt`, Standard):** Im Arbeitsspeicher liegt nur noch 1 Bit je
+  Dimension (320 statt 10.240 Byte je Abschnitt bei 2560 Dimensionen); die Suche wählt damit 2000
+  Kandidaten vor und bewertet sie mit den vollen Vektoren aus SQLite genau. Ein Projekt mit höchstens 2000
+  Abschnitten wird genau durchsucht. Bisheriges Verhalten mit `VECTOR_SEARCH=matrix`. Daten und Index
+  bleiben unverändert.
 - **Dokumente als Ordneransicht:** Die Projektseite zeigt die Dokumente nicht mehr als eine lange Liste,
   sondern Ordner für Ordner – oben die Ordner mit der Zahl ihrer Dokumente (und wie viele davon nicht
   vollständig gelesen sind), ein Klick zeigt Unterordner und Dateien darin. Mit HTMX wird nur die Ansicht

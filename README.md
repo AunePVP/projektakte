@@ -381,8 +381,13 @@ Verknüpfungen (Symlinks), die aus `PROJECTS_DIR` herausführen, werden nie gele
   Ein Anhang, den plMail gerade nicht liefert, hält die Mail nicht auf: Er erscheint als „Anhang
   ausstehend“ und wird nachgeladen. Der Erstabgleich blättert mit Überlappung und gleicht danach alle
   IDs ab, damit gleichzeitiges Löschen keine Mail verschluckt.
-- **Speicher:** Die Vektorsuche hält etwa Abschnitte × Dimension × 4 Byte im RAM (100 000 Abschnitte
-  × 2560 Dimensionen ≈ 1 GB).
+- **Speicher (`VECTOR_SEARCH`):** Die Vektoren liegen vollständig in SQLite. Für die Suche hält
+  Projektakte standardmäßig (`kompakt`) nur 1 Bit je Dimension im RAM – bei 2560 Dimensionen 320 Byte je
+  Abschnitt, 1 Mio. Abschnitte ≈ 0,33 GB. Die Suche wählt damit die 2000 ähnlichsten Abschnitte vor und
+  bewertet sie mit ihren vollen Vektoren aus SQLite genau; in einem Projekt (oder Bauvorhaben) mit höchstens
+  2000 Abschnitten wird jeder genau bewertet. `VECTOR_SEARCH=matrix` hält wie bisher alle Vektoren im RAM
+  (Abschnitte × Dimension × 4 Byte, 1 Mio. × 2560 ≈ 10 GB) und ist über alle Projekte exakt – zum Vergleich
+  mit `projektakte.evaluate`.
 
 **Umstieg von der Demo auf echte Daten:** Der erste Lauf mit `DEMO_MODE=0` nach einem Demo-Lauf
 entfernt die Demo-Projekte mit ihren Dateien und die Demo-Mails aus dem Index (menschliche
@@ -537,6 +542,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `SYNONYMS_FILE` | – | eigene Abkürzungen/Synonyme für den Volltext (siehe „Suche“) |
 | `ASSIGN_MIN_SHARE` / `ASSIGN_MIN_LEAD` | `0.5` / `0.2` | Mail-Vorschlag nur, wenn das beste Projekt mindestens diesen Anteil der ähnlichsten Abschnitte hat und so weit vor dem zweiten liegt |
 | `MAIL_ALLOW_EMPTY` | `0` | `1` = ein leerer/fehlender `MAIL_DIR` leert den Mail-Index (sonst Schutz mit Warnung) |
+| `VECTOR_SEARCH` | `kompakt` | `kompakt` = 1 Bit je Dimension im RAM, genaue Bewertung aus SQLite; `matrix` = alle Vektoren im RAM (siehe „Speicher“) |
 | `ASSIGN_MIN_SIMILARITY` | `0` (aus) | zusätzlich nötige Vektorähnlichkeit für einen Mail-Vorschlag (modellabhängig, mit `projektakte.evaluate` einstellen) |
 | `AUTH_USERS` | – | Benutzer `name:pbkdf2_sha256$…`, durch Komma getrennt (Secret) |
 | `AUTH_USERS_FILE` | – | Datei mit einem Eintrag `name:hash` je Zeile |

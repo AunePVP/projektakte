@@ -177,16 +177,122 @@ def _scores(mat: np.ndarray, q: np.ndarray, rows: np.ndarray | None, block: int 
 _SEARCHABLE = "(c.mail_id IS NOT NULL OR c.project IN (SELECT number FROM projects WHERE active = 1))"
 
 
+# VECTOR_SEARCH: how the vectors are held for searching.
+# "kompakt" (default): in memory only one bit per dimension (sign of the vector minus the mean vector,
+#   2560 dimensions = 320 bytes per section); a search compares these codes (Hamming distance), then
+#   scores the best RESCORE candidates exactly with their full vectors read from SQLite. A scope with
+#   at most RESCORE sections (a project, an order) is scored exactly.
+# "matrix": all vectors as one float32 matrix in memory (sections × dimensions × 4 bytes), exact.
+VECTOR_SEARCH_MODES = ("kompakt", "matrix")
+DEFAULT_VECTOR_SEARCH = "kompakt"
+RESCORE_MIN = 2000  # candidates scored exactly with their full vectors (at least, k × RESCORE_FACTOR)
+RESCORE_FACTOR = 10
+WIDEN_MAX = 64  # at most this many times the candidates are read when most of them are hidden
+MEAN_SAMPLE = 20_000  # vectors sampled for the mean that centres the codes
+_HAMMING_BLOCK = 65_536  # rows per block of the code comparison (bounds the temporary memory)
+_FETCH_IDS = 900  # ids per SQL statement when reading full vectors
+
+
+def _pack(vecs: np.ndarray, words: int) -> np.ndarray:
+    """Sign bits of the rows of ``vecs`` (already centred) as ``words`` uint64 per row."""
+    bits = np.packbits(vecs > 0, axis=1)
+    pad = words * 8 - bits.shape[1]
+    if pad:
+        bits = np.pad(bits, ((0, 0), (0, pad)))
+    return np.ascontiguousarray(bits).view(np.uint64)
+
+
+def _mean_vector(conn: sqlite3.Connection, nbytes: int, n: int, sample: int = MEAN_SAMPLE) -> np.ndarray:
+    """The mean of a sample of the vectors (every n/sample-th id) – sentence vectors share a common
+    direction; without centring most sign bits would be the same for every section."""
+    step = max(1, n // max(1, sample))
+    total = np.zeros(nbytes // 4, dtype=np.float64)
+    count = 0
+    cur = conn.execute("SELECT embedding FROM chunks WHERE embedding IS NOT NULL AND length(embedding) = ? "
+                       "AND id % ? = 0", (nbytes, step))
+    while rows := cur.fetchmany(1024):
+        total += np.vstack([np.frombuffer(r[0], dtype=np.float32) for r in rows]).sum(axis=0, dtype=np.float64)
+        count += len(rows)
+    return (total / count).astype(np.float32) if count else np.zeros(nbytes // 4, dtype=np.float32)
+
+
+def load_codes(conn: sqlite3.Connection, fetch: int = 1024) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """All vectors as (chunk ids ascending, sign codes (n × words uint64), mean vector). Like
+    load_matrix, but the full vectors are only read, never kept; vectors of another dimension than the
+    first are left out."""
+    first = conn.execute("SELECT length(embedding) FROM chunks WHERE embedding IS NOT NULL "
+                         "ORDER BY id LIMIT 1").fetchone()
+    if not first or not first[0]:
+        return np.zeros(0, dtype=np.int64), np.zeros((0, 0), dtype=np.uint64), np.zeros(0, dtype=np.float32)
+    nbytes = int(first[0])
+    dim = nbytes // 4
+    words = (dim + 63) // 64
+    where = "embedding IS NOT NULL AND length(embedding) = ?"
+    n = conn.execute(f"SELECT COUNT(*) FROM chunks WHERE {where}", (nbytes,)).fetchone()[0]
+    mean = _mean_vector(conn, nbytes, n)
+    ids = np.empty(n, dtype=np.int64)
+    codes = np.empty((n, words), dtype=np.uint64)
+    i = 0
+    cur = conn.execute(f"SELECT id, embedding FROM chunks WHERE {where} ORDER BY id", (nbytes,))
+    while rows := cur.fetchmany(fetch):
+        if i + len(rows) > len(ids):  # vectors were added since counting
+            grow = max(len(rows), len(ids) // 8)
+            ids = np.concatenate([ids, np.empty(grow, dtype=np.int64)])
+            codes = np.concatenate([codes, np.empty((grow, words), dtype=np.uint64)])
+        block = np.vstack([np.frombuffer(r[1], dtype=np.float32) for r in rows]) - mean
+        ids[i : i + len(rows)] = [r[0] for r in rows]
+        codes[i : i + len(rows)] = _pack(block, words)
+        i += len(rows)
+    return ids[:i], codes[:i], mean
+
+
+def _hamming(codes: np.ndarray, qcode: np.ndarray, rows: np.ndarray | None) -> np.ndarray:
+    """Differing bits between ``qcode`` and all rows of ``codes`` (or only ``rows``), in blocks."""
+    n = codes.shape[0] if rows is None else rows.size
+    out = np.empty(n, dtype=np.uint32)
+    for s in range(0, n, _HAMMING_BLOCK):
+        part = codes[s : s + _HAMMING_BLOCK] if rows is None else codes[rows[s : s + _HAMMING_BLOCK]]
+        out[s : s + part.shape[0]] = np.bitwise_count(part ^ qcode).sum(axis=1, dtype=np.uint32)
+    return out
+
+
+def _full_vectors(conn: sqlite3.Connection, ids, dim: int, searchable: bool) -> tuple[list[int], np.ndarray]:
+    """The full vectors of ``ids`` from SQLite (sections deleted meanwhile, of another dimension or –
+    with ``searchable`` – not to be found are left out)."""
+    got_ids: list[int] = []
+    got: list[np.ndarray] = []
+    ids = [int(c) for c in ids]
+    extra = f" AND {_SEARCHABLE}" if searchable else ""
+    for s in range(0, len(ids), _FETCH_IDS):
+        part = ",".join(map(str, ids[s : s + _FETCH_IDS]))
+        for cid, blob in conn.execute(f"SELECT c.id, c.embedding FROM chunks c WHERE c.id IN ({part}) "
+                                      f"AND c.embedding IS NOT NULL{extra}"):
+            if len(blob) == dim * 4:
+                got_ids.append(cid)
+                got.append(np.frombuffer(blob, dtype=np.float32))
+    return got_ids, (np.vstack(got) if got else np.zeros((0, dim), dtype=np.float32))
+
+
 class VectorIndex:
-    """All chunk vectors as one matrix, reloaded only when the embedding generation changes.
+    """The vectors of all sections, held for searching as set by ``mode`` (VECTOR_SEARCH: "kompakt" or
+    "matrix", see above), reloaded only when the embedding generation changes.
 
     Project membership and visibility are deliberately not cached: they change without new vectors
     (mail assignment, decisions in the inbox, renamed projects, a project folder missing for a
     while), so they are resolved per search in SQL."""
 
-    def __init__(self):
+    def __init__(self, mode: str = DEFAULT_VECTOR_SEARCH):
         self._lock = threading.Lock()
         self._cache: dict[str, tuple] = {}
+        self.mode = mode
+
+    def configure(self, mode: str) -> None:
+        """Switch the way vectors are held (VECTOR_SEARCH); loaded data of the other way is dropped."""
+        mode = mode if mode in VECTOR_SEARCH_MODES else DEFAULT_VECTOR_SEARCH
+        with self._lock:
+            if mode != self.mode:
+                self._cache.clear()
+            self.mode = mode
 
     def clear(self, key: str | None = None) -> None:
         with self._lock:
@@ -198,11 +304,15 @@ class VectorIndex:
     def _load(self, conn: sqlite3.Connection, key: str):
         gen = db.get_meta(conn, "embed_generation", "0")
         cached = self._cache.get(key)
-        if cached and cached[0] == gen:
+        if cached and cached[0] == gen and cached[1] == self.mode:
             return cached
-        self._cache.pop(key, None)  # release the old matrix before the new one is built
-        ids, mat = load_matrix(conn)
-        entry = (gen, ids, mat)
+        self._cache.pop(key, None)  # release the old data before the new is built
+        if self.mode == "matrix":
+            ids, mat = load_matrix(conn)
+            entry = (gen, self.mode, ids, mat, None)
+        else:
+            ids, codes, mean = load_codes(conn)
+            entry = (gen, self.mode, ids, codes, mean)
         self._cache[key] = entry
         return entry
 
@@ -213,11 +323,12 @@ class VectorIndex:
         db.project_scope) if given."""
         scope = list(projects) if projects else ([project] if project else [])
         with self._lock:
-            _, ids, mat = self._load(conn, key)
-        if mat.size == 0 or k <= 0:
+            _, mode, ids, data, mean = self._load(conn, key)
+        if data.size == 0 or k <= 0:
             return []
         q = np.asarray(qvec, dtype=np.float32)
-        if q.shape[0] != mat.shape[1]:
+        dim = data.shape[1] if mode == "matrix" else mean.shape[0]
+        if q.shape[0] != dim:
             return []  # vectors from another model – wait for re-embedding
         rows = None
         if scope:
@@ -229,12 +340,44 @@ class VectorIndex:
             rows = selected if rows is None else np.intersect1d(rows, selected, assume_unique=True)
         if rows is not None and rows.size == 0:
             return []
+        if mode == "matrix":
+            return self._search_matrix(conn, ids, data, q, rows, k)
+        return self._search_codes(conn, ids, data, mean, q, rows, k)
+
+    @staticmethod
+    def _search_matrix(conn, ids, mat, q, rows, k) -> list[tuple[int, float]]:
         scores = _scores(mat, q, rows)
         order = np.argsort(-scores, kind="stable")
         if rows is not None:  # candidates were just read from the database – they exist
             top = order[:k]
             return [(int(c), float(sc)) for c, sc in zip(ids[rows[top]], scores[top])]
         return _top_existing(conn, ids[order], scores[order], k)
+
+    @staticmethod
+    def _search_codes(conn, ids, codes, mean, q, rows, k) -> list[tuple[int, float]]:
+        """Pre-selection by sign codes, then exact scores of the candidates from their full vectors. A
+        scope no larger than the number of candidates is scored exactly. Without a scope the candidates
+        must still be searchable; while fewer than the usual number of candidates are (projects missing,
+        sections deleted since loading), the pre-selection is widened – up to WIDEN_MAX times."""
+        pool = rows if rows is not None else np.arange(ids.size)
+        n = pool.size
+        target = want = max(RESCORE_MIN, RESCORE_FACTOR * k)
+        order = None
+        if n > want:
+            qcode = _pack((q - mean)[None, :], codes.shape[1])[0]
+            dist = _hamming(codes, qcode, rows)
+            order = np.argsort(dist, kind="stable")
+        while True:
+            take = pool if order is None else pool[order[:want]]
+            got_ids, vecs = _full_vectors(conn, ids[take], q.shape[0], searchable=rows is None)
+            if len(got_ids) >= target or order is None or want >= n or want >= WIDEN_MAX * target:
+                break
+            want *= 4  # many candidates were hidden or deleted since loading: look further
+        if not got_ids:
+            return []
+        scores = vecs @ q
+        top = np.argsort(-scores, kind="stable")[:k]
+        return [(int(got_ids[i]), float(scores[i])) for i in top]
 
 
 def _top_existing(conn: sqlite3.Connection, ranked_ids: np.ndarray, ranked_scores: np.ndarray,

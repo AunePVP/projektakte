@@ -189,6 +189,10 @@ erreichen.
 - `SEARCH_MIN_RERANK`: Standard 0,05. Ab hier zeigt die Suche einen Treffer.
 - `ASSIGN_MIN_SIMILARITY` (Mail-Vorschläge): aus.
 
+Außerdem die Vektorsuche vergleichen: einmal wie oben (`VECTOR_SEARCH=kompakt`, Standard), einmal mit
+`-e VECTOR_SEARCH=matrix` im `docker run` (Container neu starten, gleicher Index). Sind die Ergebnisse
+gleich gut, bleibt `kompakt` – es braucht bei großen Ablagen nur einen Bruchteil des Arbeitsspeichers.
+
 Die Standardwerte stammen aus der Entwicklung mit der Fake-KI. Echte Reranker haben andere
 Wertebereiche.
 
@@ -321,8 +325,9 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
      Portionen durchgelesen, dann zusammengeführt. Etwa 40 Modellaufrufe je Projekt, einige Minuten.
    - **Projektüberblick:** einmal je Dokument eine kurze Zusammenfassung beim Einlesen, als
      Orientierung für Überblicksfragen.
-   - **16-Bit-Vektoren:** halber Arbeitsspeicher für die Suche, ohne messbaren Qualitätsverlust,
-     sinnvoll ab einigen hunderttausend Abschnitten.
+   - **Vektoren beim Start schneller laden:** Die kompakte Vektorsuche liest beim Start (und nach jedem
+     Lauf mit neuen Vektoren) alle Vektoren einmal aus SQLite, um die Bits zu bilden – bei Millionen
+     Abschnitten einige Minuten Plattenlesen. Die Bits ließen sich mitspeichern oder nur neue nachladen.
    - **Prefix-Caching auf dem KI-Server** (vLLM `--enable-prefix-caching`).
    - **Verworfen:** pxpipe (Text als Bilder) und Vektoren statt Text an das Sprachmodell. Bringt bei
      deutschem Text nichts und gefährdet exakte Zitate (Abschnitt 9).
