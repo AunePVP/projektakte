@@ -1,15 +1,16 @@
 {% extends "base.html" %}
 {% block title %}{{ p.number }} {{ p.name }}{% endblock %}
 {% block content %}
-<p class="crumbs"><a href="/">Projekte</a> › {{ p.number }}</p>
-<h1>{{ p.name }} <span class="muted">{{ p.number }}</span></h1>
+<p class="crumbs"><a href="/">Projekte</a> ›{% if site %} <a href="/projekte/{{ site.number }}">{{ site.number }} {{ site.name }}</a> ›{% endif %} {{ p.number }}</p>
+<h1>{{ p.name }} <span class="muted">{{ p.number }}</span>{% if is_site %} <span class="pill">Bauvorhaben</span>{% endif %}</h1>
+{% if site %}<p class="site-link">Bauvorhaben: <a href="/projekte/{{ site.number }}">{{ site.number }} {{ site.name }}</a>{% if not site.active %} <span class="muted small">(Ordner zurzeit nicht vorhanden)</span>{% endif %}</p>{% endif %}
 <p class="muted small">{% if p.folders|length > 1 %}{{ p.folders|length }} Ordner mit dieser Nummer, zusammen gelesen{% else %}Ordner: {{ p.rel }}{% endif %} · {{ docs|length|plural('Dokument', 'Dokumente') }} · {{ mails|length|plural('Mail', 'Mails') }}{% if attachments %} · {{ attachments|length|plural('Anhang', 'Anhänge') }} aus Mails{% endif %}
 {% if suggested %} · <a href="/eingang?status=suggested">{{ suggested|plural('Mail', 'Mails') }} im Eingang vorgeschlagen</a>{% endif %}</p>
 {% if p.folders|length > 1 %}<ul class="folders muted small">{% for f in p.folders %}<li>{{ f|path }}{% if loop.first %} <span class="pill">Hauptordner</span>{% endif %}</li>{% endfor %}</ul>{% endif %}
-<nav class="tabs"><a href="#fragen">Fragen</a><a href="#zeitachse">Zeitachse</a><a href="#dokumente">Dokumente</a><a href="#anhaenge">Anhänge</a><a href="#mails">Mails</a></nav>
+<nav class="tabs"><a href="#fragen">Fragen</a>{% if is_site %}<a href="#unterprojekte">Unterprojekte</a>{% endif %}<a href="#zeitachse">Zeitachse</a><a href="#dokumente">Dokumente</a><a href="#anhaenge">Anhänge</a><a href="#mails">Mails</a></nav>
 
 <section id="fragen" class="card">
-  <h2>Frage zu diesem Projekt</h2>
+  <h2>{% if is_site %}Frage zu diesem Bauvorhaben (mit allen Unterprojekten){% else %}Frage zu diesem Projekt{% endif %}</h2>
   <form method="post" action="/fragen" hx-post="/fragen" hx-target="#answer" hx-indicator="#ask-spinner" class="ask-row">
     <input type="hidden" name="project" value="{{ p.number }}">
     <input type="text" name="question" required maxlength="2000" placeholder="z. B. Welche Auflagen zur Rauchableitung stehen in der Baugenehmigung?" aria-label="Frage">
@@ -18,6 +19,27 @@
   </form>
   <div id="answer"></div>
 </section>
+
+{% if is_site %}
+<section id="unterprojekte">
+  <h2>Unterprojekte</h2>
+  <table class="list">
+    <thead><tr><th class="w-num">Nummer</th><th>Projekt</th><th class="w-s num">Dokumente</th><th class="w-s num">Mails</th><th class="w-m">Letzte Aktivität</th></tr></thead>
+    <tbody>
+    {% for c in subprojects %}
+    <tr>
+      <td><a href="/projekte/{{ c.number }}"><strong>{{ c.number }}</strong></a></td>
+      <td><a href="/projekte/{{ c.number }}">{{ c.name }}</a></td>
+      <td class="num">{{ c.docs }}</td>
+      <td class="num">{{ c.mails }}</td>
+      <td>{{ c.last|de_date }}</td>
+    </tr>
+    {% else %}<tr><td colspan="5" class="empty">Keine Unterprojekte gefunden.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">Zeitachse, Dokumente und Mails unten gehören zum Bauvorhaben selbst (Dateien im Bauvorhaben-Ordner außerhalb der Unterprojekte); Fragen oben umfassen alle Unterprojekte.</p>
+</section>
+{% endif %}
 
 <section id="zeitachse">
   <h2>Zeitachse</h2>
@@ -37,7 +59,7 @@
 </section>
 
 <section id="dokumente">
-  <h2>Dokumente</h2>
+  <h2>{% if is_site %}Dokumente des Bauvorhabens (außerhalb der Unterprojekte){% else %}Dokumente{% endif %}</h2>
   <table class="list">
     <thead><tr><th>Datei</th><th class="w-s hide-sm">Typ</th><th class="w-m date">Datum</th><th class="w-l">Hinweis</th></tr></thead>
     <tbody>

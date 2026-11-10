@@ -844,21 +844,31 @@ def query_term_in(q: QueryTerm, doc: frozenset[str], synonyms: Synonyms | None =
 # --------------------------------------------------------------------------- question intent
 _ENUMERATION = re.compile(
     r"\b(in\s+welchen|welche[n]?|alle[n]?|wie\s+viele[n]?|in\s+wie\s+vielen)\s+(\w+\s+)?"
-    r"(projekte[n]?|bauvorhaben|vorhaben|objekte[n]?|gebäude[n]?|baustellen)\b"
+    r"((?:unter)?projekte[n]?|bauvorhaben|vorhaben|objekte[n]?|gebäude[n]?|baustellen)\b"
     r"|\bwo\s+(überall|alles)\b", re.I)
 _PROJECT_QUESTION = re.compile(
     r"\b(welche[mrsn]?|in\s+welche[mrn]?|für\s+welche[sn]?|bei\s+welche[mrn]?)\s+(\w+\s+)?"
-    r"(projekt\w*|bauvorhaben\w*|vorhaben\w*|objekt\w*|gebäude\w*|baustelle\w*)\b|^\s*wo\b", re.I)
+    r"((?:unter)?projekt\w*|bauvorhaben\w*|vorhaben\w*|objekt\w*|gebäude\w*|baustelle\w*)\b|^\s*wo\b", re.I)
+# On a site (Bauvorhaben) its orders are its projects: "In welchem Auftrag …?", "Welche Aufträge …?". Only
+# there – without a site "Welchen Auftrag hat das Bauamt erteilt?" asks about a commission, not a project.
+_ORDER_ENUMERATION = re.compile(
+    r"\b(in\s+welchen|welche[n]?|alle[n]?|wie\s+viele[n]?|in\s+wie\s+vielen)\s+(\w+\s+)?aufträge[n]?\b", re.I)
+_ORDER_QUESTION = re.compile(
+    r"\b(welche[mrsn]?|in\s+welche[mrn]?|für\s+welche[sn]?|bei\s+welche[mrn]?)\s+(\w+\s+)?"
+    r"(auftrag|aufträgen?)\b", re.I)
 
 
-def is_enumeration_question(question: str) -> bool:
-    """'In welchen Projekten …?', 'Welche Projekte …?' – the answer is a list over projects."""
-    return bool(_ENUMERATION.search(question))
+def is_enumeration_question(question: str, *, orders: bool = False) -> bool:
+    """'In welchen Projekten …?', 'Welche Projekte …?' – the answer is a list over projects. ``orders``
+    (the question is about a site): 'Welche Aufträge …?' as well."""
+    return bool(_ENUMERATION.search(question) or (orders and _ORDER_ENUMERATION.search(question)))
 
 
-def is_project_question(question: str) -> bool:
-    """Asks which project(s) something belongs to ('In welchem Projekt …?', 'Wo wird …?')."""
-    return bool(_PROJECT_QUESTION.search(question)) or is_enumeration_question(question)
+def is_project_question(question: str, *, orders: bool = False) -> bool:
+    """Asks which project(s) something belongs to ('In welchem Projekt …?', 'Wo wird …?'); ``orders``
+    (the question is about a site): 'In welchem Auftrag …?' as well."""
+    return (bool(_PROJECT_QUESTION.search(question) or (orders and _ORDER_QUESTION.search(question)))
+            or is_enumeration_question(question, orders=orders))
 
 
 def is_temporal_question(question: str) -> bool:

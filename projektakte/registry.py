@@ -5,7 +5,11 @@ its part folders that lie outside it (119300-Bilder, 119300-CAD next to the orde
 of it), copies (111301_Heisse Bemessung-2013-11-04) and nested copies of a site. All of them are read;
 one of them is the project's primary folder (``projects.path``), the others are its further folders
 (table ``project_folders``). How the primary folder and the name are chosen: :func:`folder_kind`,
-:func:`project_name`."""
+:func:`project_name`.
+
+With PROJECT_PARENT_DIGITS the orders are grouped under their sites (Bauvorhaben, :func:`bauvorhaben`):
+a site is a project row of its own (``kind`` 'bauvorhaben') holding the files in its folders outside
+every order, and each order names it in ``parent``."""
 from __future__ import annotations
 
 import itertools
@@ -13,15 +17,16 @@ import logging
 import os
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import DEFAULT_PROJECT_FOLDER_DEPTH, PROJECT_FOLDER_DEPTH_MAX, pattern_problem
+from .db import BAUVORHABEN, PROJEKT
 # names that are no valid UTF-8 (ENCODING_HINT, has_bad_encoding, printable) are handled in documents.py,
 # which reads the files, and imported from here as well
 from .documents import (ENCODING_HINT, _sqlite_time, further_folders, has_bad_encoding, hide_project_documents,
-                        link_problem, printable, refresh_fts_titles, remove_project_documents,
+                        is_folder, link_problem, printable, refresh_fts_titles, remove_project_documents,
                         restore_project_documents, warn_once)
 
 log = logging.getLogger("projektakte.registry")
@@ -44,6 +49,8 @@ class ProjectFolder:
     name: str
     path: Path  # the primary folder: real path (for reading); names may hold surrogate escapes, see printable()
     further: tuple[Path, ...] = ()  # further folders with the same number, read as part of the project
+    parent: str | None = None  # an order's site (Bauvorhaben) number, see bauvorhaben()
+    kind: str = PROJEKT  # PROJEKT, or BAUVORHABEN for a site
 
     @property
     def folders(self) -> tuple[Path, ...]:
@@ -444,8 +451,68 @@ def scan_projects(root: Path, pattern: str, max_depth: int = DEFAULT_PROJECT_FOL
     return sorted(projects, key=lambda p: p.number)
 
 
+def _site_folder(folder: Path, number: str, root: Path, digits: int) -> Path | None:
+    """The site (Bauvorhaben) folder of a project folder: the OUTERMOST folder above it (below ``root``)
+    whose name starts with exactly ``digits`` digits that the project number continues with a further
+    digit – 1/10/1015_Altstadt for 1/10/1015_Altstadt/1015_PDF_100303/101504_X, not the intermediate
+    folder 1015_PDF_100303. Group folders (1, 10) have another number of digits; a name is not needed
+    (a bare 1015 is a site, too). None if there is none."""
+    found = None
+    for above in folder.parents:  # nearest first: the last match is the outermost
+        if above == root or not above.is_relative_to(root) or above == above.parent:
+            break
+        m = _SITE_HEAD.match(above.name)
+        if m and len(m.group(1)) == digits and number.startswith(m.group(1)):
+            found = above
+    return found
+
+
+def bauvorhaben(projects: list[ProjectFolder], root: Path, digits: int) -> list[ProjectFolder]:
+    """Group the scanned orders under their sites (PROJECT_PARENT_DIGITS = ``digits``): returns the
+    orders – each with ``parent`` set to its site's number where it has one – followed by the sites
+    as projects of kind BAUVORHABEN, sorted by number. Pure path logic on the scanned folders, no
+    reading.
+
+    An order's site is the outermost folder above one of its folders that starts with exactly
+    ``digits`` digits continued by the order number (:func:`_site_folder`; the primary folder decides,
+    else the first further folder that has one). A site exists only while an order has it. All site
+    folders of one number are one site (a copied site 1/10/1073_Turnhalle/1071_Schule next to
+    1/10/1071_Schule): the shallowest, then the first by path is its primary folder, the others are its
+    further folders. Its name is what follows the number in the primary folder's name, else the number.
+    A site number that is a scanned project number itself (patterns of several lengths) is left out:
+    that folder is a project, nothing inside it was scanned. ``digits`` 0 (off) changes nothing."""
+    if digits <= 0:
+        return list(projects)
+    root = Path(root)
+    numbers = {p.number.upper() for p in projects}
+    sites: dict[str, list[Path]] = {}
+    orders: list[ProjectFolder] = []
+    for p in projects:
+        number = p.number
+        site = None
+        if number.isdigit() and len(number) > digits and number[:digits].upper() not in numbers:
+            found = [f for f in (_site_folder(folder, number, root, digits) for folder in p.folders) if f]
+            if found:
+                site = number[:digits]
+                known = sites.setdefault(site, [])
+                known.extend(f for f in found if f not in known)
+        orders.append(replace(p, parent=site, kind=PROJEKT))
+    parents: list[ProjectFolder] = []
+    for number, folders in sorted(sites.items()):
+        kept: list[tuple[Path, Path]] = []  # (folder, real path): the same folder reached twice counts once
+        for folder in sorted(folders, key=lambda f: (len(f.parts), str(f))):
+            real = Path(os.path.realpath(folder))
+            if not any(real == k or real.is_relative_to(k) or k.is_relative_to(real) for _, k in kept):
+                kept.append((folder, real))
+        primary = kept[0][0]
+        m = _SITE_HEAD.match(primary.name)
+        name = (m.group(2).strip() if m else "") or number
+        parents.append(ProjectFolder(number, name, primary, tuple(f for f, _ in kept[1:]), kind=BAUVORHABEN))
+    return orders + parents
+
+
 def sync_projects(conn: sqlite3.Connection, folders: list[ProjectFolder], *,
-                  unreadable: list[Path] | tuple = ()) -> dict:
+                  unreadable: list[Path] | tuple = (), sites: bool = True) -> dict:
     """Store scanned projects and keep the derived data in step.
 
     A project whose folders all disappeared is marked inactive, not deleted (its mails and decisions
@@ -457,20 +524,38 @@ def sync_projects(conn: sqlite3.Connection, folders: list[ProjectFolder], *,
     documents pass then removes its files like vanished files – unless it lies below a folder that
     could not be listed: then it stays. A new name refreshes the full-text titles of all sections.
     Names that are no valid UTF-8 are stored with � (:func:`printable`) – the database only holds
-    valid text. ``folders_changed`` counts the projects whose further folders changed."""
+    valid text. ``folders_changed`` counts the projects whose further folders changed.
+
+    Sites (Bauvorhaben, :func:`bauvorhaben`) are entries of ``folders`` like projects and follow the
+    same rules; ``projects`` counts the projects only, ``bauvorhaben`` the sites. A project's site
+    (``parent``) and its kind are stored with it – a project that no longer has one (the setting
+    switched off) gets NULL, so nothing points at a site that is gone. A site is only seen through the
+    orders the scan found, so a folder that could not be listed INSIDE one of its folders (an intermediate
+    folder 1200_PDF_0101 holding its only order) keeps the site – active, with that folder – as it
+    keeps the orders below it. A site that is no longer seen while its folder still exists (no order in
+    it any more, PROJECT_PARENT_DIGITS switched off) is hidden like a missing project, but logged as one
+    summary line, not as a missing folder."""
     existing = {r["number"]: r for r in conn.execute("SELECT * FROM projects")}
     known_further = further_folders(conn)
     now = _utcnow()
-    stats = {"projects": len(folders), "added": 0, "updated": 0, "reactivated": 0, "deactivated": 0,
+    stats = {"projects": sum(f.kind != BAUVORHABEN for f in folders),
+             "bauvorhaben": sum(f.kind == BAUVORHABEN for f in folders),
+             "added": 0, "updated": 0, "reactivated": 0, "deactivated": 0,
              "documents_hidden": 0, "documents_restored": 0, "documents_removed": 0, "folders_changed": 0}
     blocked = [Path(printable(str(p))) for p in unreadable]
 
     def below_blocked(path: str) -> bool:
         return any(Path(path).is_relative_to(b) for b in blocked)
 
+    def holds_blocked(path: str) -> bool:  # a folder that could not be listed lies inside (or is) ``path``
+        return any(b.is_relative_to(path) for b in blocked)
+
     seen: set[str] = set()
+    sites_back = 0  # sites shown again, sites hidden while their folder exists: one log line each
+    sites_hidden: list[tuple[str, int]] = []
     for f in folders:
         number, name, path = printable(f.number), printable(f.name), printable(str(f.path))
+        parent = printable(f.parent) if f.parent else None
         if number in seen:  # two numbers that differ only in bytes that are no UTF-8
             continue
         seen.add(number)
@@ -479,19 +564,25 @@ def sync_projects(conn: sqlite3.Connection, folders: list[ProjectFolder], *,
         old_further = known_further.get(number, [])
         if row is not None:  # known folders the scan could not see (a folder above them unreadable) stay
             listed = {path, *further}
+            # a site's folder is found through the orders inside it: one holding an unreadable folder
+            # (its orders unseen) stays as well
             further += [old for old in dict.fromkeys([row["path"], *old_further])
-                        if old not in listed and below_blocked(old)]
+                        if old not in listed and (below_blocked(old) or (f.kind == BAUVORHABEN and holds_blocked(old)))]
         if row is None:
-            conn.execute("INSERT INTO projects(number, name, path) VALUES(?, ?, ?)", (number, name, path))
+            conn.execute("INSERT INTO projects(number, name, path, parent, kind) VALUES(?, ?, ?, ?, ?)",
+                         (number, name, path, parent, f.kind))
             stats["added"] += 1
-        elif (row["name"], row["path"], row["active"]) != (name, path, 1):
-            conn.execute("UPDATE projects SET name=?, path=?, active=1, missing_since=NULL, missing_runs=0, "
-                         "updated_at=datetime('now') WHERE number=?", (name, path, number))
+        elif (row["name"], row["path"], row["active"], row["parent"], row["kind"]) != (name, path, 1, parent, f.kind):
+            conn.execute("UPDATE projects SET name=?, path=?, parent=?, kind=?, active=1, missing_since=NULL, "
+                         "missing_runs=0, updated_at=datetime('now') WHERE number=?", (name, path, parent, f.kind, number))
             if not row["active"]:
                 restored = restore_project_documents(conn, number, name)
                 stats["reactivated"] += 1
                 stats["documents_restored"] += restored
-                log.info("Projektordner wieder vorhanden: %s – %d Dokument(e) wieder sichtbar", number, restored)
+                if f.kind == BAUVORHABEN:
+                    sites_back += 1
+                else:
+                    log.info("Projektordner wieder vorhanden: %s – %d Dokument(e) wieder sichtbar", number, restored)
             if row["name"] != name:
                 refresh_fts_titles(conn, number, name)
             stats["updated"] += 1
@@ -506,7 +597,10 @@ def sync_projects(conn: sqlite3.Connection, folders: list[ProjectFolder], *,
                          "entfernt", number, len(gone), gone[0])
     cutoff = _sqlite_time(now - MISSING_GRACE)
     for number, row in existing.items():
-        if number in seen or any(below_blocked(p) for p in (row["path"], *known_further.get(number, ()))):
+        site = row["kind"] == BAUVORHABEN
+        own = (row["path"], *known_further.get(number, ()))
+        # (a site holding an unreadable folder stays – unless Bauvorhaben are switched off: ``sites``)
+        if number in seen or any(below_blocked(p) or (site and sites and holds_blocked(p)) for p in own):
             continue
         if row["active"]:  # just went missing: hide its files, start the grace period
             conn.execute("UPDATE projects SET active=0, missing_since=?, missing_runs=1, "
@@ -514,9 +608,13 @@ def sync_projects(conn: sqlite3.Connection, folders: list[ProjectFolder], *,
             hidden = hide_project_documents(conn, number)
             stats["deactivated"] += 1
             stats["documents_hidden"] += hidden
-            log.warning("Projektordner fehlt: %s (%s) – %d Dokument(e) aus Suche und Antworten ausgeblendet; "
+            if site and is_folder(Path(row["path"])):  # no order in it any more, or the setting is off
+                sites_hidden.append((number, hidden))
+                continue
+            log.warning("%s fehlt: %s (%s) – %d Dokument(e) aus Suche und Antworten ausgeblendet; "
                         "gelöscht werden sie erst, wenn der Ordner %d h lang und in %d Läufen fehlt",
-                        number, row["path"], hidden, MISSING_GRACE // timedelta(hours=1), MISSING_RUNS)
+                        "Bauvorhaben-Ordner" if site else "Projektordner", number, row["path"], hidden,
+                        MISSING_GRACE // timedelta(hours=1), MISSING_RUNS)
             continue
         if row["missing_since"] is None:  # inactive since an older version – its files are gone
             continue
@@ -525,9 +623,16 @@ def sync_projects(conn: sqlite3.Connection, folders: list[ProjectFolder], *,
         if runs >= MISSING_RUNS and row["missing_since"] <= cutoff:
             removed = remove_project_documents(conn, number)
             if removed:
-                log.info("Projektordner %s fehlt seit %s (UTC) – %d Dokument(e) aus dem Index entfernt",
-                         number, row["missing_since"], removed)
+                log.info("%s %s fehlt seit %s (UTC) – %d Dokument(e) aus dem Index entfernt",
+                         "Bauvorhaben" if site else "Projektordner", number, row["missing_since"], removed)
             stats["documents_removed"] += removed
+    if sites_hidden:
+        log.info("%d Bauvorhaben ausgeblendet (z. B. %s) – kein Auftrag mehr darin oder PROJECT_PARENT_DIGITS aus; "
+                 "%d Dokument(e) aus Suche und Antworten ausgeblendet, gelöscht erst nach %d h und %d Läufen",
+                 len(sites_hidden), ", ".join(n for n, _ in sites_hidden[:5]), sum(h for _, h in sites_hidden),
+                 MISSING_GRACE // timedelta(hours=1), MISSING_RUNS)
+    if sites_back:
+        log.info("%d Bauvorhaben wieder eingeblendet", sites_back)
     return stats
 
 
@@ -544,16 +649,18 @@ def unchanged_stats(active: int, problem: str) -> dict:
 
 
 def active_count(conn: sqlite3.Connection) -> int:
-    return conn.execute("SELECT COUNT(*) FROM projects WHERE active = 1").fetchone()[0]
+    """Active projects – sites (Bauvorhaben) are not counted, they exist only through their orders."""
+    return conn.execute("SELECT COUNT(*) FROM projects WHERE active = 1 AND kind = ?", (PROJEKT,)).fetchone()[0]
 
 
 def sync_from_folder(conn: sqlite3.Connection, root: Path, pattern: str, *,
-                     max_depth: int = DEFAULT_PROJECT_FOLDER_DEPTH) -> dict:
+                     max_depth: int = DEFAULT_PROJECT_FOLDER_DEPTH, parent_digits: int = 0) -> dict:
     """Scan PROJECTS_DIR and store the result – unless the folder looks unavailable.
 
     A missing or unreadable folder, or one that suddenly contains no projects although active
     projects are known (share not mounted yet), changes nothing: the stats then carry ``warning``
-    and the caller skips the documents as well. So does an unusable ``pattern``."""
+    and the caller skips the documents as well. So does an unusable ``pattern``. ``parent_digits``
+    (PROJECT_PARENT_DIGITS, 0 = off): group the projects under their sites (:func:`bauvorhaben`)."""
     active = active_count(conn)
     if bad := pattern_problem(pattern):
         problem = f"PROJECT_NUMBER_PATTERN={pattern} ist unbrauchbar: {bad}"
@@ -571,10 +678,11 @@ def sync_from_folder(conn: sqlite3.Connection, root: Path, pattern: str, *,
     if problem:
         log.warning("%s – Projekte und Dokumente bleiben unverändert", problem)
         return unchanged_stats(active, problem)
-    stats = sync_projects(conn, folders, unreadable=unreadable)
+    folders = bauvorhaben(folders, Path(root), parent_digits)  # after the guard: sites exist only with orders
+    stats = sync_projects(conn, folders, unreadable=unreadable, sites=bool(parent_digits))
     if unreadable:
         stats["unreadable"] = [printable(str(p)) for p in unreadable]
-    if merged := [f for f in folders if f.further]:
+    if merged := [f for f in folders if f.further and f.kind != BAUVORHABEN]:
         # one line per pass at most, and only when the folders of a project changed – several folders
         # with one number are normal in many shares (part folders, copies), no warning
         stats["merged"] = {"projects": len(merged), "folders": sum(len(f.further) for f in merged),
@@ -613,7 +721,9 @@ def project_folders(conn: sqlite3.Connection, number: str) -> list[str]:
 
 
 def list_projects(conn: sqlite3.Connection, q: str = "", include_inactive: bool = False) -> list[dict]:
-    sql = "SELECT number, name, path, active FROM projects"
+    """Projects and sites (``kind``; an order's site in ``parent``), newest number first – as text, so a
+    site 1015 sorts after its orders 101500 …: callers that show the tree use :func:`as_tree`."""
+    sql = "SELECT number, name, path, active, parent, kind FROM projects"
     where, args = [], []
     if not include_inactive:
         where.append("active = 1")
@@ -627,6 +737,51 @@ def list_projects(conn: sqlite3.Connection, q: str = "", include_inactive: bool 
 
 
 def get_project(conn: sqlite3.Connection, number: str) -> dict | None:
-    row = conn.execute("SELECT number, name, path, active FROM projects WHERE number = ? COLLATE NOCASE",
+    """A project or site by its exact number (case-insensitive) – never by a prefix: 1015 is the site,
+    101500 one of its orders."""
+    row = conn.execute("SELECT number, name, path, active, parent, kind FROM projects WHERE number = ? COLLATE NOCASE",
                        (number,)).fetchone()
     return dict(row) if row else None
+
+
+def children(conn: sqlite3.Connection, number: str, include_inactive: bool = False) -> list[dict]:
+    """The orders (Unterprojekte) of a site, by number (through ``parent`` only)."""
+    sql = "SELECT number, name, path, active, parent, kind FROM projects WHERE parent = ? AND kind = ?"
+    if not include_inactive:
+        sql += " AND active = 1"
+    return [dict(r) for r in conn.execute(sql + " ORDER BY number", (number, PROJEKT))]
+
+
+def as_tree(projects: list[dict], everything: list[dict] | None = None) -> list[dict]:
+    """Rows for a tree view: each site followed by its orders (``depth`` 1, by number), orders without a
+    site (or whose site is not among the rows) at the top level; the top level newest first, a site where
+    its newest order would be. ``everything`` (all rows, unfiltered): a filter that matched only an order
+    still shows its site above it, one that matched a site shows all its orders. Sites get ``children``
+    (their rows, as shown) and ``subprojects`` (all their orders, also those a filter hides – for counts
+    that cover the whole site)."""
+    everything = projects if everything is None else everything
+    by_number = {p["number"]: p for p in everything}
+    matched = {p["number"] for p in projects}
+    kids: dict[str, list[dict]] = {}
+    for p in everything:
+        if p.get("parent") and by_number.get(p["parent"], {}).get("kind") == BAUVORHABEN:
+            kids.setdefault(p["parent"], []).append(p)
+    top: list[tuple[str, dict, list[dict], list[dict]]] = []
+    for p in everything:
+        if p.get("kind") == BAUVORHABEN:
+            every = sorted(kids.get(p["number"], []), key=lambda c: c["number"])
+            own = every
+            if p["number"] not in matched:
+                own = [c for c in every if c["number"] in matched]
+                if not own:
+                    continue
+            top.append((max([p["number"], *(c["number"] for c in own)]), p, own, every))
+        elif p["number"] in matched and not (p.get("parent") and by_number.get(p["parent"], {}).get("kind") == BAUVORHABEN):
+            top.append((p["number"], p, [], []))
+    out: list[dict] = []
+    for _, p, own, every in sorted(top, key=lambda t: t[0], reverse=True):
+        site = p.get("kind") == BAUVORHABEN
+        out.append({**p, "depth": 0, "children": [{**c, "depth": 1} for c in own] if site else [],
+                    "subprojects": [dict(c) for c in every] if site else []})
+        out.extend({**c, "depth": 1} for c in own)
+    return out

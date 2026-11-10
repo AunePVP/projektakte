@@ -409,11 +409,11 @@ def test_project_list_and_timeline_use_the_local_day(rw):
     with db.session(s.db_path) as conn:
         conn.execute("INSERT INTO mails(source, source_key, subject, sender, date, project, assign_status) "
                      "VALUES('eml', 'eml:silvester', 'Silvester-Mail', 'x@example.org', "
-                     "'2030-12-31T23:30:00+00:00', 'BS-2024-0137', 'assigned')")
+                     "'2025-12-31T23:30:00+00:00', 'BS-2024-0137', 'assigned')")
     rows = rw.get("/", params={"q": "BS-2024-0137"}, headers=HX).text
-    assert "01.01.2031" in rows and "31.12.2030" not in rows
+    assert "01.01.2026" in rows and "31.12.2025" not in rows
     page = rw.get("/projekte/BS-2024-0137").text
-    assert re.findall(r'<span class="date">([\d.]+)</span>', page)[0] == "01.01.2031"
+    assert re.findall(r'<span class="date">([\d.]+)</span>', page)[0] == "01.01.2026"
 
 
 # --------------------------------------------------------------------------- DEMO-10 status page

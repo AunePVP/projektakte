@@ -3,9 +3,9 @@
   <thead><tr><th class="w-num">Nummer</th><th>Projekt</th><th class="w-s num">Dokumente</th><th class="w-s num">Mails</th><th class="w-m">Letzte Aktivität</th></tr></thead>
   <tbody>
   {% for p in projects %}
-  <tr>
+  <tr class="{% if p.kind == 'bauvorhaben' %}site{% elif p.depth %}sub{% endif %}">
     <td><a href="/projekte/{{ p.number }}"><strong>{{ p.number }}</strong></a></td>
-    <td><a href="/projekte/{{ p.number }}">{{ p.name }}</a></td>
+    <td><a href="/projekte/{{ p.number }}">{{ p.name }}</a>{% if p.kind == 'bauvorhaben' %} <span class="pill">Bauvorhaben</span> <span class="muted small">{{ (p.subprojects or p.children)|length|plural('Unterprojekt', 'Unterprojekte') }}</span>{% endif %}</td>
     <td class="num">{{ p.docs }}</td>
     <td class="num">{{ p.mails }}</td>
     <td>{{ p.last|de_date }}</td>
@@ -13,6 +13,7 @@
   {% endfor %}
   </tbody>
 </table>
+{% if projects|selectattr('kind', 'equalto', 'bauvorhaben')|list %}<p class="muted small">Bauvorhaben zählen Dokumente und Mails mit allen Unterprojekten.</p>{% endif %}
 {% else %}
 <p class="empty">{% if q %}Kein Projekt passt zu „{{ q }}“.{% else %}Noch keine Projekte – die Indexierung läuft oder der Projektordner ist leer.{% endif %}</p>
 {% endif %}

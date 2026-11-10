@@ -5,6 +5,28 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Bauvorhaben mit Unterprojekten** (`PROJECT_PARENT_DIGITS`, im Büro `4`, Standard aus): Die Aufträge eines
+  Bauvorhaben-Ordners (`1015_Altstadt/101500_…`, auch in einem Zwischenordner `1015_PDF_…/101504_…`) sind dessen
+  Unterprojekte. Das Bauvorhaben ist ein eigener Eintrag mit den Dateien seines Ordners außerhalb der Aufträge
+  (`1015-Plaene-Aufzug/…`, Dateien direkt im Bauvorhaben); Fragen und Suche zum Bauvorhaben umfassen alle
+  Unterprojekte samt Mails, zu einem Auftrag nur diesen. Der Auftrag `101500` bleibt ein Auftrag (kein
+  Zusammenstoß mit dem Bauvorhaben `1015`). Projektliste mit eingerückten Unterprojekten, Bauvorhaben-Seite
+  mit Unterprojekten, Link „Bauvorhaben: …“ auf der Auftragsseite, Kennzeichnung in den Projektauswahlen;
+  `/api/projects` und `/api/projects/{nr}` mit `kind`, `parent`, `children`, `/api/status` und
+  `/api/integration/info` zählen Bauvorhaben getrennt. Mails werden automatisch nur Aufträgen zugeordnet, von
+  Hand auch einem Bauvorhaben. DB-Migration 9 (Spalten `parent`, `kind`, nur hinzugefügt); Einschalten liest
+  nur die Dateien der Bauvorhaben neu. `scripts/ablage_pruefen.py --bauvorhaben 4` rechnet wie die App,
+  `python -m projektakte.structure` schlägt die Einstellung vor, wenn die Aufträge in Bauvorhaben liegen
+  (nicht bei Jahresordnern wie `2024_Auftraege`). Ein nicht lesbarer Zwischenordner lässt sein Bauvorhaben
+  stehen; Dateien, die zwischen Bauvorhaben und Auftrag oder zwei Bauvorhaben wechseln, ziehen um statt neu
+  gelesen zu werden; Ausschalten meldet eine Sammelzeile statt „Ordner fehlt“ je Bauvorhaben. „Zum
+  Bauvorhaben“ nicht für Normnummern (DIN 1015), „Auftrag“ als Projektfrage nur bei einem Bauvorhaben, die
+  Zahlen eines Bauvorhabens bleiben in der gefilterten Liste vollständig. Die Ablageprüfung meldet einen
+  Ordner mit fremder Nummer im Bauvorhaben mit `--bauvorhaben` als Hinweis (`fremde_nummer_bauvorhaben`:
+  gelesen als Datei des Bauvorhabens), nicht als Fehler.
+- **„Letzte Aktivität“ in der Projektliste** zeigt kein Datum in der Zukunft mehr (ein Datum aus dem
+  Dokumenttext wie „29.06.2030“): es zählt das neueste Datum bis heute.
+
 - **Projektordner per SMB:** Anleitung in deploy/README.md (Lesekonto, `/etc/fstab` mit `ro` und
   `iocharset=utf8`, automount); `compose.yaml` reicht die Freigabe mit `propagation: rslave` durch,
   damit der Container sie auch sieht, wenn sie erst nach ihm eingebunden wird.
@@ -60,7 +82,7 @@ Roadmap-Schritt.
 - Läuft das Lesen einer Datei in die Speichergrenze, wird sie als „zu groß“ vermerkt, statt den
   Leseprozess beim Protokollieren ein zweites Mal an der Grenze scheitern zu lassen (vorher: Absturz
   des Leseprozesses und endlose Wiederholung).
-- 1862 Tests (4 Integrationstests übersprungen, 1 xfail).
+- 1902 Tests (4 Integrationstests übersprungen, 1 xfail).
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

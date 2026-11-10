@@ -28,7 +28,8 @@ from . import __version__, db, inbox, structure
 from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .config import DEFAULT_PROJECT_NUMBER_PATTERN
-from .registry import get_project, list_projects, number_regex, project_folders
+from .db import BAUVORHABEN
+from .registry import as_tree, children, get_project, list_projects, number_regex, project_folders
 from .search import hybrid_search
 from .webtext import (SNIPPET_CHARS, breakable_path, highlight, join_spaced_codes, matcher, parse_blocks, passage,
                       render_html, same_heading, snippet, trim_overlap)
@@ -332,23 +333,50 @@ def _int(value: str | int | None, default: int) -> int:
         return default
 
 
-def _project_rows(conn, q: str) -> list[dict]:
-    """Projects with counts and the last activity (local day of the newest document or mail)."""
-    projects = list_projects(conn, q)
+def _activity(conn, today: date | None = None) -> dict[str, tuple[int, int, date | None]]:
+    """Per project number: (documents, mails, last activity – the local day of the newest document or
+    mail that is not in the future). A document's date often comes from its text (a deadline, a planned
+    opening "29.06.2030"): dates after ``today`` (default: the local day now) never count as activity."""
+    today = today or datetime.now(LOCAL_TZ).date()
+    day_end = datetime.combine(today, datetime.max.time(), LOCAL_TZ).astimezone(timezone.utc)
     docs = {r[0]: (r[1], r[2]) for r in conn.execute(
-        "SELECT project, COUNT(*), MAX(doc_date) FROM documents WHERE mail_id IS NULL AND project IS NOT NULL "
-        "GROUP BY project")}
-    # mail dates are stored uniformly as UTC ISO strings, so MAX() picks the newest mail
+        "SELECT project, COUNT(*), MAX(CASE WHEN substr(doc_date, 1, 10) <= ? THEN doc_date END) FROM documents "
+        "WHERE mail_id IS NULL AND project IS NOT NULL GROUP BY project", (today.isoformat(),))}
+    # mail dates are stored uniformly as UTC ISO strings ("…T…+00:00"), so text order is time order
     mails = {r[0]: (r[1], r[2]) for r in conn.execute(
-        "SELECT project, COUNT(*), MAX(date) FROM mails WHERE deleted = 0 AND project IS NOT NULL "
-        "GROUP BY project")}
-    for p in projects:
-        n_docs, last_doc = docs.get(p["number"], (0, None))
-        n_mails, last_mail = mails.get(p["number"], (0, None))
-        days = [d for d in (local_day(last_doc), local_day(last_mail)) if d]
+        "SELECT project, COUNT(*), MAX(CASE WHEN date <= ? THEN date END) FROM mails WHERE deleted = 0 "
+        "AND project IS NOT NULL GROUP BY project", (day_end.strftime("%Y-%m-%dT%H:%M:%S+00:00"),))}
+    out: dict[str, tuple[int, int, date | None]] = {}
+    for number in docs.keys() | mails.keys():
+        n_docs, last_doc = docs.get(number, (0, None))
+        n_mails, last_mail = mails.get(number, (0, None))
+        days = [d for d in (local_day(last_doc), local_day(last_mail)) if d and d <= today]
+        out[number] = (n_docs, n_mails, max(days) if days else None)
+    return out
+
+
+def _with_activity(rows: list[dict], activity: dict) -> list[dict]:
+    """Counts and last activity on each row; a site (Bauvorhaben) shows them with all its orders."""
+    for p in rows:
+        n_docs, n_mails, last = activity.get(p["number"], (0, 0, None))
+        p["own_docs"], p["own_mails"] = n_docs, n_mails
+        if p.get("kind") == BAUVORHABEN:
+            # all its orders, also those a filter hides: the site's figures are the whole site's
+            for c in p.get("subprojects", p.get("children")) or ():
+                c_docs, c_mails, c_last = activity.get(c["number"], (0, 0, None))
+                n_docs, n_mails = n_docs + c_docs, n_mails + c_mails
+                last = max(d for d in (last, c_last) if d) if (last or c_last) else None
         p["docs"], p["mails"] = n_docs, n_mails
-        p["last"] = max(days).isoformat() if days else None
-    return projects
+        p["last"] = last.isoformat() if last else None
+    return rows
+
+
+def _project_rows(conn, q: str, today: date | None = None) -> list[dict]:
+    """Projects with counts and the last activity, as a tree: each site (Bauvorhaben) with its orders
+    (Unterprojekte) indented beneath it – the site's counts cover them all. A filter that matches an
+    order shows its site above it, one that matches a site all its orders."""
+    rows = as_tree(list_projects(conn, q), list_projects(conn) if q.strip() else None)
+    return _with_activity(rows, _activity(conn, today))
 
 
 # ------------------------------------------------------------------------------------- pages
@@ -376,6 +404,11 @@ def project_page(request: Request, number: str):
         p = get_project(conn, number)
         if not p:
             raise HTTPException(404, f"Projekt {number} nicht gefunden")
+        # a site (Bauvorhaben): its own files (outside every order) and its orders (Unterprojekte);
+        # an order: a link to its site
+        site = get_project(conn, p["parent"]) if p.get("parent") else None
+        subprojects = (_with_activity(children(conn, p["number"]), _activity(conn))
+                       if p.get("kind") == BAUVORHABEN else [])
         docs = [dict(r) for r in conn.execute(
             "SELECT id, rel_path, filename, ext, size, doc_date, pages, status, message, method FROM documents "
             "WHERE project = ? AND mail_id IS NULL ORDER BY rel_path", (p["number"],))]
@@ -399,7 +432,8 @@ def project_page(request: Request, number: str):
     p["folders"] = [_below_projects_dir(f, s.projects_dir) for f in folders or [p["path"]]]
     p["rel"] = p["folders"][0]
     return render(request, "project.html", p=p, docs=docs, mails=mails, attachments=attachments,
-                  timeline=timeline, suggested=suggested)
+                  timeline=timeline, suggested=suggested, site=site, subprojects=subprojects,
+                  is_site=p.get("kind") == BAUVORHABEN)
 
 
 def _below_projects_dir(path: str, projects_dir) -> str:
@@ -413,7 +447,7 @@ def _below_projects_dir(path: str, projects_dir) -> str:
 def ask_page(request: Request, project: str | None = None, q: str = ""):
     """Question form; ``q`` fills in a question typed elsewhere."""
     with db.session(_settings(request).db_path) as conn:
-        projects = list_projects(conn)
+        projects = as_tree(list_projects(conn))
     return render(request, "ask.html", projects=projects, project=project, result=None,
                   question=q.strip()[:MAX_QUERY])
 
@@ -433,7 +467,7 @@ def ask_submit(request: Request, question: str = Form(""), project: str = Form("
                                      context_chars=s.ask_context_chars, min_rerank=s.ask_min_rerank,
                                      rerank_top_k=s.rerank_top_k, synonyms_file=s.synonyms_file,
                                      deadline_s=s.ask_deadline)
-        projects = list_projects(conn)
+        projects = as_tree(list_projects(conn))
     if is_htmx(request):
         return templates.TemplateResponse(request, "_answer.html", {"result": result, "question": question})
     return render(request, "ask.html", projects=projects, project=p["number"] if p else None,
@@ -442,6 +476,10 @@ def ask_submit(request: Request, question: str = Form(""), project: str = Form("
 
 _IDENTIFIER_TOKEN = re.compile(r"[^\W_]+(?:[-/.][^\W_]+)*")
 MAX_PROJECT_LINKS = 3
+# words before a number that make it the number of a standard or rule, never a site: DIN 4102, EN 1634,
+# DIN EN ISO 13943, VdS 2095, DGUV 205-001 – in a fire-safety office these often equal a site number
+_STANDARD_PREFIX = frozenset({"din", "en", "iso", "iec", "vde", "vds", "vdi", "dvgw", "dguv", "trbs", "trgs",
+                              "asr", "bgv", "bgr", "bgi", "nfpa", "cen", "ts"})
 
 
 @lru_cache(maxsize=16)
@@ -461,10 +499,17 @@ def projects_named_in(conn, query: str, code_pattern: str | None = None) -> list
     finder = _number_finder(code_pattern)
     shaped = [m.group(0) for m in finder.finditer(joined)] if finder else []
     tokens = [t for t in _IDENTIFIER_TOKEN.findall(joined) if any(c.isdigit() for c in t) and "-" in t]
+    # a site (Bauvorhaben) is named by its shorter number ("1015"), which is no project number: only
+    # sites are looked up for plain numbers – for a link, never to assign anything
+    plain, before = [], ""
+    for t in _IDENTIFIER_TOKEN.findall(joined):  # not after a standard's name (DIN 1827, DIN EN 1634)
+        if t.isdigit() and before not in _STANDARD_PREFIX:
+            plain.append(t)
+        before = t.lower()
     found: dict[str, dict] = {}
-    for token in dict.fromkeys(shaped + tokens):
+    for token in dict.fromkeys(shaped + tokens + plain):
         p = get_project(conn, token)
-        if p:
+        if p and (token in shaped or token in tokens or p.get("kind") == BAUVORHABEN):
             found.setdefault(p["number"], p)
         if len(found) >= MAX_PROJECT_LINKS:
             break
@@ -484,11 +529,12 @@ def search_page(request: Request, q: str = "", project: str = "", weak: str = ""
             res = hybrid_search(conn, request.app.state.ai, str(s.db_path), query, project=number or None,
                                 k=SEARCH_HITS, rerank_top_k=s.rerank_top_k, synonyms_file=s.synonyms_file)
             named = projects_named_in(conn, query, code_pattern_of(request))
-        projects = list_projects(conn)
+        projects = as_tree(list_projects(conn))
     if res is not None:
         view = search_view(res, min_score=getattr(s, "search_min_rerank", 0.05), show_weak=weak == "1",
                            query=query, code_pattern=code_pattern_of(request))
     return render(request, "search.html", q=query, project=number, projects=projects, res=res, view=view,
+                  show_project=not number or (p or {}).get("kind") == BAUVORHABEN,
                   named_projects=named, all_projects_url=search_url(query, None, weak="1" if weak == "1" else ""),
                   weak_url=search_url(query, number, weak="1"), strong_url=search_url(query, number))
 
@@ -604,7 +650,7 @@ def inbox_page(request: Request, status: str = "", ab: str = "", vor: str = "", 
             if carry:  # a rejected card that left the filter was counted on top of the total there
                 left, in_filter = inbox.count_ids(conn, carry, status=status)
                 total += left - in_filter
-        projects = list_projects(conn)
+        projects = as_tree(list_projects(conn))
     for m in mails:
         m["repeated"] = m["id"] in carry
     counted = [m for m in mails if not m["repeated"]]
@@ -803,7 +849,7 @@ def mail_page(request: Request, mail_id: int):
         atts = [dict(r) for r in conn.execute(
             "SELECT id, filename, ext, size, status, message, path, cache_path, mail_id FROM documents "
             "WHERE mail_id = ? ORDER BY id", (mail_id,))]
-        projects = list_projects(conn)
+        projects = as_tree(list_projects(conn))
     for a in atts:  # "Datei öffnen" only for a file that is there (not for "Anhang ausstehend")
         a["available"] = original_file(s, a) is not None
     m = dict(m)

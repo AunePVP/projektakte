@@ -207,7 +207,11 @@ class VectorIndex:
         return entry
 
     def search(self, conn: sqlite3.Connection, key: str, qvec, *, project: str | None = None,
-               k: int = 50, chunk_ids: set[int] | None = None) -> list[tuple[int, float]]:
+               k: int = 50, chunk_ids: set[int] | None = None,
+               projects: list[str] | tuple[str, ...] | None = None) -> list[tuple[int, float]]:
+        """The ``k`` most similar sections, of ``project`` or of a scope of several (``projects``, see
+        db.project_scope) if given."""
+        scope = list(projects) if projects else ([project] if project else [])
         with self._lock:
             _, ids, mat = self._load(conn, key)
         if mat.size == 0 or k <= 0:
@@ -216,10 +220,10 @@ class VectorIndex:
         if q.shape[0] != mat.shape[1]:
             return []  # vectors from another model – wait for re-embedding
         rows = None
-        if project:
+        if scope:
             rows = _rows_for(ids, (r[0] for r in conn.execute(
-                f"SELECT c.id FROM chunks c WHERE c.project = ? AND c.embedding IS NOT NULL AND {_SEARCHABLE}",
-                (project,))))
+                f"SELECT c.id FROM chunks c WHERE c.project IN ({','.join('?' * len(scope))}) "
+                f"AND c.embedding IS NOT NULL AND {_SEARCHABLE}", scope)))
         if chunk_ids is not None:
             selected = _rows_for(ids, chunk_ids)
             rows = selected if rows is None else np.intersect1d(rows, selected, assume_unique=True)

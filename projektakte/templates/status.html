@@ -19,6 +19,7 @@
     <h2>Bestand</h2>
     <dl class="meta">
       <dt>Projekte</dt><dd>{{ st.counts.projects|de_num }}</dd>
+      {% if st.counts.bauvorhaben %}<dt>Bauvorhaben</dt><dd>{{ st.counts.bauvorhaben|de_num }} (fassen die Projekte als Unterprojekte zusammen)</dd>{% endif %}
       <dt>Dokumente</dt><dd>{{ st.counts.documents|de_num }} ({{ st.counts.documents_skipped|de_num }} übersprungen/fehlerhaft)</dd>
       <dt>Mails</dt><dd>{{ st.counts.mails|de_num }} ({{ st.counts.inbox|de_num }} im Eingang{% if st.counts.plmail_open %}, {{ st.counts.plmail_open|de_num }} in plMail noch nicht zugeordnet{% endif %})</dd>
       <dt>Zuordnung</dt><dd>{{ 'von Hand (Mails aus plMail werden in plMail zugeordnet)' if st.assign_mode == 'manual' else 'automatisch über die Projektnummer, sonst Vorschlag' }}</dd>

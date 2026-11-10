@@ -98,7 +98,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from contextlib import closing
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import db
@@ -106,7 +106,7 @@ from .config import (AUTO, DEFAULT_PROJECT_FOLDER_DEPTH, DEFAULT_PROJECT_NUMBER_
                      load_settings, pattern_problem)
 from .documents import MAX_FILE_BYTES, link_problem
 from .extract import SUPPORTED_EXT
-from .registry import (DATE_GUARD, ENCODING_HINT, YEAR_GUARD, ProjectFolder, alternatives, clamp_depth,
+from .registry import (DATE_GUARD, ENCODING_HINT, YEAR_GUARD, ProjectFolder, alternatives, bauvorhaben, clamp_depth,
                        has_bad_encoding, loose_pattern, printable, project_head, projects_root_problem, scan_projects,
                        year_range_guard)
 
@@ -2467,6 +2467,8 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
         out.append("")
         out.append("In projektakte.env eintragen:")
         out.extend(f"  {line}" for line in env_lines(p))
+        if site_hint := parent_digits_hint(a):
+            out.append(f"  {site_hint}")
         out.append("(oder PROJECT_NUMBER_PATTERN=auto: Projektakte schlägt das Schema beim ersten Lauf vor; es gilt "
                    "erst, wenn es auf der Statusseite oder mit --uebernehmen bestätigt ist, und wechselt danach nie "
                    "von selbst)")
@@ -2475,6 +2477,35 @@ def format_report(analysis: Analysis, current: dict | None = None, files: dict |
         out.append(f"Ordnernamen mit falscher Zeichenkodierung: {de_int(a.bad_names['count'])} (z. B. "
                    f"{', '.join(a.bad_names['examples'][:3])}) – {ENCODING_HINT}.")
     return printable("\n".join(out))
+
+
+def _looks_like_year(number: str) -> bool:
+    """A four-digit number that is a plausible year of an order folder (1950 … next year)."""
+    return number.isdigit() and len(number) == 4 and 1950 <= int(number) <= date.today().year + 1
+
+
+def parent_digits_hint(a: Analysis) -> str | None:
+    """A line suggesting PROJECT_PARENT_DIGITS when a pure digit scheme (\\d{6}) has its projects mostly in
+    site folders whose number is two digits shorter (1015_… holding 101500_…, 101501_…) – the setting
+    then groups the orders under their sites (registry.bauvorhaben). Only a hint: it is not part of
+    the proposal (which is stored and compared) nor of the env lines."""
+    p = a.proposal
+    if p is None or not a.projects:
+        return None
+    m = re.fullmatch(r"\\d\{(\d+)\}", loose_pattern(p.pattern) or p.pattern)
+    digits = int(m.group(1)) - 2 if m else 0
+    if digits < 2:
+        return None
+    grouped = bauvorhaben(a.projects, Path(a.root), digits)
+    within = sum(1 for g in grouped if g.parent)
+    if within * 2 < len(a.projects):
+        return None
+    sites = {g.parent for g in grouped if g.parent}
+    if digits == 4 and all(_looks_like_year(n) for n in sites):
+        # year folders 2023_Auftraege/202301_… are no sites (DECISIONS.md: why a setting, not a detection)
+        return None
+    return (f"PROJECT_PARENT_DIGITS={digits} fasst Aufträge zu Bauvorhaben zusammen ({de_int(within)} von "
+            f"{de_int(len(a.projects))} Projekten liegen in einem Ordner mit {digits}-stelliger Nummer; optional)")
 
 
 def _format_files(f: dict) -> list[str]:

@@ -37,7 +37,7 @@ HTTP-Status (401 falsches/fehlendes Token, 400 ungültige Anfrage).
 Für die Statusanzeige in plMail.
 
 ```json
-{"name": "Projektakte", "version": "0.5.0", "assign_mode": "manual", "projects": 8,
+{"name": "Projektakte", "version": "0.5.0", "assign_mode": "manual", "projects": 8, "bauvorhaben": 0,
  "jmap": {"capability": "urn:plmail:params:jmap:projektakte", "property": "plmail:projektakte"},
  "url": "https://projektakte.lan"}
 ```
@@ -45,12 +45,18 @@ Für die Statusanzeige in plMail.
 ### `GET /api/integration/projects?q=&limit=500`
 
 Aktive Projekte für die Projektauswahl, neueste Nummer zuerst; `q` filtert nach Nummer oder Name.
-plMail sollte die Liste einige Minuten zwischenspeichern.
+plMail sollte die Liste einige Minuten zwischenspeichern. `kind` ist `projekt` oder – mit
+`PROJECT_PARENT_DIGITS` – `bauvorhaben` (die Aufträge eines Bauvorhabens nennen es in `parent`). Ein
+Bauvorhaben darf in plMail von Hand gewählt werden; vorgeschlagen („sicher“ über eine Nummer oder nach dem
+Inhalt) wird nie ein Bauvorhaben, nur Aufträge. `info.projects` zählt nur die Projekte (Aufträge),
+`info.bauvorhaben` die Bauvorhaben.
 
 ```json
 {"count": 8, "projects": [
-  {"number": "BS-2025-0019", "name": "Kita Regenbogen", "url": "https://projektakte.lan/projekte/BS-2025-0019"},
-  {"number": "BS-2024-0137", "name": "Grundschule Am Lindenhof", "url": "…/projekte/BS-2024-0137"}]}
+  {"number": "BS-2025-0019", "name": "Kita Regenbogen", "kind": "projekt", "parent": null,
+   "url": "https://projektakte.lan/projekte/BS-2025-0019"},
+  {"number": "BS-2024-0137", "name": "Grundschule Am Lindenhof", "kind": "projekt", "parent": null,
+   "url": "…/projekte/BS-2024-0137"}]}
 ```
 
 ### `POST /api/integration/suggest`

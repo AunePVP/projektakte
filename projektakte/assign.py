@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .ai import AIServiceError
+from .db import BAUVORHABEN, PROJEKT
 from .documents import fts_title
 from .mails.model import valid_message_id
 from .mails.store import bulk_markers
@@ -157,16 +158,32 @@ _PERSON = re.compile(r"(?<![\w-])(?:Frau|Herrn?|Fr\.|Hr\.)\s+(?:(?:Dr|Prof|Dipl\
 
 # ------------------------------------------------------------------------------------------------
 # project numbers
-def known_projects(conn: sqlite3.Connection) -> dict[str, str]:
-    """lower-case number → canonical number (active projects)."""
-    return {r[0].lower(): r[0] for r in conn.execute("SELECT number FROM projects WHERE active = 1")}
+# Sites (Bauvorhaben, PROJECT_PARENT_DIGITS) are rows of ``projects`` too, but a mail is never assigned to
+# one by its content or a number in its text – they only group orders. Every automatic step works on
+# the projects (orders) only; a person may assign a mail to a site by hand (decide, plMail).
+ACTIVE_PROJECTS = f"SELECT number FROM projects WHERE active = 1 AND kind = '{PROJEKT}'"
 
 
-def numbers_in(text: str, rx, known: dict[str, str]) -> tuple[list[str], list[str]]:
-    """(known project numbers in order of appearance, unknown numbers)."""
+def known_projects(conn: sqlite3.Connection, *, sites: bool = False) -> dict[str, str]:
+    """lower-case number → canonical number: the active projects – with ``sites`` also the active
+    sites (Bauvorhaben), for what a person chose (never for numbers read from a mail)."""
+    sql = "SELECT number FROM projects WHERE active = 1" if sites else ACTIVE_PROJECTS
+    return {r[0].lower(): r[0] for r in conn.execute(sql)}
+
+
+def site_numbers(conn: sqlite3.Connection) -> frozenset[str]:
+    """The numbers of all sites (Bauvorhaben), lower-case."""
+    return frozenset(r[0].lower() for r in conn.execute("SELECT number FROM projects WHERE kind = ?", (BAUVORHABEN,)))
+
+
+def numbers_in(text: str, rx, known: dict[str, str], ignore: frozenset[str] = frozenset()) -> tuple[list[str], list[str]]:
+    """(known project numbers in order of appearance, unknown numbers). Numbers in ``ignore`` (the sites,
+    should a pattern also match their shorter numbers) are neither."""
     found, unknown = [], []
     for m in rx.finditer(text or ""):
         n = m.group(0).lower()
+        if n in ignore:
+            continue
         if n in known:
             if known[n] not in found:
                 found.append(known[n])
@@ -175,13 +192,14 @@ def numbers_in(text: str, rx, known: dict[str, str]) -> tuple[list[str], list[st
     return found, unknown
 
 
-def certain_project(subject: str, body: str, attachment_names: list[str], rx, known: dict[str, str]):
+def certain_project(subject: str, body: str, attachment_names: list[str], rx, known: dict[str, str],
+                    ignore: frozenset[str] = frozenset()):
     """Returns (project, method, reason) or (None, method, reason) with method "ambiguous",
     "unknown" or None (no number at all)."""
     unknown_all: list[str] = []
     for method, text, label in (("subject", subject, "Betreff"), ("body", body, "Text"),
                                 ("attachment", "\n".join(attachment_names), "Anhangnamen")):
-        found, unknown = numbers_in(text, rx, known)
+        found, unknown = numbers_in(text, rx, known, ignore)
         unknown_all += [u for u in unknown if u not in unknown_all]
         if len(found) == 1:
             return found[0], method, f"Projektnummer {found[0]} im {label}."
@@ -392,7 +410,7 @@ class ProjectReferences:
             try:
                 rows = self.conn.execute(
                     "SELECT DISTINCT c.project FROM chunks_fts f JOIN chunks c ON c.id = f.rowid WHERE chunks_fts "
-                    "MATCH ? AND c.project IN (SELECT number FROM projects WHERE active = 1) LIMIT ?",
+                    f"MATCH ? AND c.project IN ({ACTIVE_PROJECTS}) LIMIT ?",
                     (expr, self.MAX_PROJECTS + 1)).fetchall()
             except sqlite3.OperationalError:
                 rows = []
@@ -429,7 +447,7 @@ class ProjectReferences:
 
 # ------------------------------------------------------------------------------------------------
 # content vote
-EVIDENCE_SQL = ("c.project IN (SELECT number FROM projects WHERE active = 1) AND (c.mail_id IS NULL OR "
+EVIDENCE_SQL = (f"c.project IN ({ACTIVE_PROJECTS}) AND (c.mail_id IS NULL OR "
                 "c.mail_id IN (SELECT id FROM mails WHERE assign_status IN ('assigned', 'confirmed') "
                 "AND id != ?))")
 
@@ -451,7 +469,7 @@ class TermFrequency:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        self.projects = conn.execute("SELECT COUNT(*) FROM projects WHERE active = 1").fetchone()[0]
+        self.projects = conn.execute(f"SELECT COUNT(*) FROM ({ACTIVE_PROJECTS})").fetchone()[0]
         self._sections: dict[str, int] = {}
         self._widespread: dict[str, bool] = {}
 
@@ -470,7 +488,7 @@ class TermFrequency:
             try:
                 n = self.conn.execute(
                     "SELECT COUNT(*) FROM (SELECT DISTINCT c.project FROM chunks_fts f JOIN chunks c ON c.id = f.rowid "
-                    "WHERE chunks_fts MATCH ? AND c.project IN (SELECT number FROM projects WHERE active = 1) "
+                    f"WHERE chunks_fts MATCH ? AND c.project IN ({ACTIVE_PROJECTS}) "
                     "LIMIT ?)", (self._match(term), need)).fetchone()[0]
             except sqlite3.OperationalError:
                 n = 0
@@ -608,8 +626,11 @@ def vote_projects(conn: sqlite3.Connection, text: str, qvec, sender_projects: se
         p = project_of.get(cid)
         if p and p not in exclude:
             votes[p] = votes.get(p, 0.0) + score
+    # "wrote only about this project" is decided on the full history: a sender who wrote about an order
+    # and (assigned by hand) about its site wrote about two – the site is never the one bonus project
     hist = sorted(sender_projects)
-    bonus_for = hist[0] if len(hist) == 1 and hist[0] not in exclude else None
+    bonus_for = (hist[0] if len(hist) == 1 and hist[0] not in exclude and hist[0].lower() not in site_numbers(conn)
+                 else None)
     if bonus_for:
         votes[bonus_for] = votes.get(bonus_for, 0.0) + SENDER_BONUS_VOTES
     total = sum(votes.values())
@@ -735,7 +756,8 @@ def suggest(conn: sqlite3.Connection, mail: sqlite3.Row, attachment_names: list[
 
 
 def _names(conn: sqlite3.Connection) -> dict[str, str]:
-    return dict(conn.execute("SELECT number, name FROM projects WHERE active = 1").fetchall())
+    """Names of the active projects (sites not: no content suggestion ever names one)."""
+    return dict(conn.execute(f"SELECT number, name FROM projects WHERE number IN ({ACTIVE_PROJECTS})").fetchall())
 
 
 def _bulk_from_headers(headers: dict | None) -> str | None:
@@ -763,7 +785,7 @@ def suggest_for_text(conn: sqlite3.Connection, ai, vector_key: str, pattern: str
     rx = number_regex(pattern)
     out: list[dict] = []
     for label, text in (("Betreff", subject), ("Text", body), ("Anhangnamen", "\n".join(attachments))):
-        found, _ = numbers_in(text, rx, known)
+        found, _ = numbers_in(text, rx, known, site_numbers(conn))
         for n in found:
             if n not in {o["number"] for o in out}:
                 out.append({"number": n, "name": names.get(n, ""), "confidence": "sicher", "score": 1.0,
@@ -935,22 +957,26 @@ class _Pending:
     rejected: set[str]
 
 
-def _certain(conn: sqlite3.Connection, m: sqlite3.Row, rx, known: dict[str, str], mode: str):
+def _certain(conn: sqlite3.Connection, m: sqlite3.Row, rx, known: dict[str, str], mode: str,
+             chosen: dict[str, str] | None = None, sites: frozenset[str] = frozenset()):
     """Phase 1: everything that needs no content vote. Returns the Outcome, or a _Pending when the
-    mail needs a content suggestion (phase 2)."""
+    mail needs a content suggestion (phase 2). ``known``: the projects a number in the mail may name;
+    ``chosen``: what a person may have chosen (also sites, default ``known``); ``sites``: site numbers,
+    never read from a mail."""
+    chosen = known if chosen is None else chosen
     ext = _external(m)
     if ext and ext.get("status") in ("assigned", "none"):
-        return _plmail_outcome(ext, known)
+        return _plmail_outcome(ext, chosen)
     if mode == "manual" and m["source"] == "jmap":
         return Outcome(PLMAIL_OPEN, PLMAIL_OPEN, None, "Wartet auf Zuordnung in plMail.")
     dec = _decision(conn, m)
     if dec and dec["action"] in ("assign", "none"):
         project = dec["project"] if dec["action"] == "assign" else None
-        if not project or project in known.values():  # else: project folder gone – back to the inbox
+        if not project or project in chosen.values():  # else: project folder gone – back to the inbox
             return Outcome("decided", "confirmed" if project else "none", "manual",
                            _decided_reason(dec["action"], dec["decided_by"]), project=project)
     names = [r[0] for r in conn.execute("SELECT filename FROM documents WHERE mail_id = ?", (m["id"],))]
-    project, method, reason = certain_project(m["subject"], m["body"], names, rx, known)
+    project, method, reason = certain_project(m["subject"], m["body"], names, rx, known, sites)
     if project and mode == "manual":  # a number only proposes – a human confirms
         return Outcome("suggested", "suggested", method, f"{reason[:-1]} – bitte bestätigen.",
                        suggested=project, score=1.0)
@@ -1022,6 +1048,8 @@ def assign_mails(conn: sqlite3.Connection, pattern: str, *, min_share: float, mi
     where = _selection(conn, mode)
     rx = number_regex(pattern)
     known = known_projects(conn)
+    chosen = known_projects(conn, sites=True)
+    sites = site_numbers(conn)
     stats = {"assigned": 0, "suggested": 0, "unassigned": 0, "decided": 0, "plmail": 0, PLMAIL_OPEN: 0,
              "unchanged": 0, "skipped": 0}
     commits = _Commits(conn)
@@ -1043,7 +1071,7 @@ def assign_mails(conn: sqlite3.Connection, pattern: str, *, min_share: float, mi
         m = conn.execute(_MAIL_SQL, (mail_id,)).fetchone()
         if m is None:
             continue
-        result = _certain(conn, m, rx, known, mode)
+        result = _certain(conn, m, rx, known, mode, chosen, sites)
         if isinstance(result, _Pending):
             pending.append(result)
         else:
@@ -1129,7 +1157,7 @@ def _decide(conn: sqlite3.Connection, mail_id: int, action: str, project: str | 
     if m["source"] == "jmap" and (mode == "manual" or _external(m)):
         raise DecisionError("Diese Mail wird in plMail zugeordnet – bitte dort beim Lesen der Mail das "
                             "Projekt wählen.")
-    known = known_projects(conn)
+    known = known_projects(conn, sites=True)  # a person may assign a mail to a site (Bauvorhaben), too
     rejected = _rejected(_decision(conn, m))
     if action == "confirm":
         if not m["suggested_project"]:

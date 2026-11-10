@@ -109,6 +109,10 @@ Die beiden ausgegebenen Zeilen zusammen übernehmen – oder `PROJECT_NUMBER_PAT
 Belege zeigten); eine daneben eingestellte Ebene wird nicht verwendet und beim Start gemeldet. Ist die
 Freigabe plötzlich leer, gilt sie als nicht eingebunden: Vorschlag und bestätigte Struktur bleiben.
 
+Liegen die Aufträge in Bauvorhaben-Ordnern mit kürzerer Nummer (`1015_<Name>/101500_<Auftrag>`), nennt der
+Befehl zusätzlich `PROJECT_PARENT_DIGITS=4`: Damit werden die Aufträge Unterprojekte ihres Bauvorhabens
+(README, „Bauvorhaben und Unterprojekte“). Die Zeile ist freiwillig und gehört nicht zum Vorschlag.
+
 Namen mit falscher Zeichenkodierung (Freigabe ohne `iocharset=utf8` eingebunden): Ordner liest
 Projektakte unter ihrem echten Namen und zeigt sie mit � an; Dateien mit solchen Namen werden
 übersprungen (nicht gelesen) und auf der Statusseite gemeldet. Bereits eingelesene Dokumente mit

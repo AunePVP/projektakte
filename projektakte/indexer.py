@@ -102,7 +102,8 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
             stats["projects"] = unchanged_stats(active_count(conn), layout.problem)
         else:
             stats["projects"] = sync_from_folder(conn, settings.projects_dir, layout.pattern,
-                                                 max_depth=layout.depth)
+                                                 max_depth=layout.depth,
+                                                 parent_digits=getattr(settings, "project_parent_digits", 0))
         conn.commit()
         llm = ai.llm if ai else None
         phase("Dokumente")

@@ -27,17 +27,21 @@ def info(request: Request) -> dict:
     """What plMail needs to know about this Projektakte (for its own status/health display)."""
     s = request.app.state.settings
     with db.session(s.db_path) as conn:
-        projects = conn.execute("SELECT COUNT(*) FROM projects WHERE active = 1").fetchone()[0]
+        # "projects" stays the number of projects (orders); sites (Bauvorhaben) are counted on their own
+        projects, sites = conn.execute(
+            "SELECT COALESCE(SUM(kind != 'bauvorhaben'), 0), COALESCE(SUM(kind = 'bauvorhaben'), 0) FROM projects "
+            "WHERE active = 1").fetchone()
     return {"name": "Projektakte", "version": __version__, "assign_mode": s.assign_mode,
-            "projects": projects, "jmap": {"capability": PROJECT_CAP, "property": PROJECT_PROP},
+            "projects": projects, "bauvorhaben": sites, "jmap": {"capability": PROJECT_CAP, "property": PROJECT_PROP},
             "url": _base_url(request)}
 
 
 @router.get("/projects")
 def projects(request: Request, q: str = "", limit: int = 500) -> dict:
-    """Active projects for plMail's project picker (number, name, link to the project page)."""
+    """Active projects for plMail's project picker (number, name, link to the project page); ``kind``
+    'bauvorhaben' marks a site (a person may assign a mail to it), ``parent`` the site of an order."""
     s = request.app.state.settings
-    sql, args = "SELECT number, name FROM projects WHERE active = 1", []
+    sql, args = "SELECT number, name, kind, parent FROM projects WHERE active = 1", []
     if q.strip():
         sql += " AND (number LIKE ? OR name LIKE ?)"
         args += [f"%{q.strip()}%"] * 2
@@ -47,7 +51,8 @@ def projects(request: Request, q: str = "", limit: int = 500) -> dict:
     with db.session(s.db_path) as conn:
         rows = conn.execute(sql, args).fetchall()
     return {"count": len(rows), "projects": [
-        {"number": r["number"], "name": r["name"], "url": f"{base}/projekte/{r['number']}"} for r in rows]}
+        {"number": r["number"], "name": r["name"], "kind": r["kind"], "parent": r["parent"],
+         "url": f"{base}/projekte/{r['number']}"} for r in rows]}
 
 
 class SuggestRequest(BaseModel):

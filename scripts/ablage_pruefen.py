@@ -27,6 +27,7 @@ Aufruf (im Repository, mit der Python-Umgebung von Projektakte):
 
     .venv/bin/python scripts/ablage_pruefen.py /mnt/projekt
     .venv/bin/python scripts/ablage_pruefen.py /mnt/projekt --csv abweichungen.csv
+    .venv/bin/python scripts/ablage_pruefen.py /mnt/projekt --bauvorhaben 4   # wie PROJECT_PARENT_DIGITS=4
 
 Exit-Code: 0 = keine Fehler (Hinweise möglich), 1 = Fehler gefunden, 2 = Ordner nicht lesbar,
 3 = falscher Aufruf.
@@ -47,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # run from anyw
 
 from projektakte.documents import MAX_FILE_BYTES, has_bad_encoding, printable  # noqa: E402
 from projektakte.extract import SUPPORTED_EXT  # noqa: E402
-from projektakte.registry import PART, head_kind, project_head, scan_projects, site_fit  # noqa: E402
+from projektakte.registry import PART, bauvorhaben, head_kind, project_head, scan_projects, site_fit  # noqa: E402
 
 # ------------------------------------------------------------------------------------------- REGELN
 # The office's filing rule – adjust here if the numbering changes.
@@ -74,6 +75,8 @@ KINDS = {
     "unterordner_ohne_nummer": ("FEHLER", "Ordner im Auftrag ohne Nummer vorne"),
     "dateien_ausserhalb": ("FEHLER", "Dateien in nummerierten Ordnern außerhalb eines Auftrags – werden nicht gelesen"),
     "nicht_lesbar": ("FEHLER", "Ordner nicht lesbar (Rechte?) – Inhalt fehlt in Projektakte"),
+    "fremde_nummer_bauvorhaben": ("HINWEIS", "Ordner mit 6-stelliger Zahl im Bauvorhaben passt nicht zu ihm (z. B. ein "
+                                  "Datum) – wird nicht mit dem Auftrag, sondern als Datei des Bauvorhabens gelesen"),
     "doppelt": ("HINWEIS", "Mehrere Ordner mit derselben Auftragsnummer – werden zusammen gelesen (Nummer prüfen)"),
     "kategorie_als_projekt": ("HINWEIS", "Unterordner ohne seinen Auftragsordner – wird mit seinem Auftrag gelesen"),
     "ebene1": ("HINWEIS", "Ebene 1: nummerierter Ordner ist nicht eine Ziffer"),
@@ -99,6 +102,7 @@ class Report:
         self.issues: dict[str, list[tuple[str, str]]] = defaultdict(list)
         self.counts = Counter()
         self.ext_in = Counter()  # extension → files inside projects
+        self.ext_site = Counter()  # extension → files of a site outside its orders (--bauvorhaben)
         self.too_big = 0
         self.outside: Counter = Counter()  # folder (relative) → files outside any project
         self.missing_categories = Counter()
@@ -125,10 +129,12 @@ def _entries(folder: Path, report: Report) -> list[os.DirEntry]:
 
 
 def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=None,
-          sizes: bool = False, progress=None) -> Report:
+          sizes: bool = False, progress=None, site_digits: int = 0) -> Report:
     """Walk the share once (names only) and compare it with the filing rule and with what Projektakte's
     own scan finds. ``categories``: also check the names of the subfolders in an order against this list
-    (unknown ones, and the ones most orders have but this one lacks); None: only their number."""
+    (unknown ones, and the ones most orders have but this one lacks); None: only their number.
+    ``site_digits`` (PROJECT_PARENT_DIGITS, 0 = off): the orders are grouped under their sites as the
+    app does (registry.bauvorhaben) – files in a site outside its orders are read then, for the site."""
     report = Report(root)
     head = project_head(pattern)
     foreign: list[tuple[str, Path, Path]] = []
@@ -139,6 +145,10 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
     strangers = {str(folder) for _, folder, _ in foreign}  # read by no project
     report.counts["projekte"] = len(found)
     report.counts["mehrere_ordner"] = sum(1 for p in found if p.further)
+    grouped = bauvorhaben(found, root, site_digits) if site_digits > 0 else list(found)
+    site_folders = {str(f) for p in grouped if p.kind == "bauvorhaben" for f in p.folders}
+    report.counts["bauvorhaben"] = sum(p.kind == "bauvorhaben" for p in grouped)
+    report.counts["auftraege_in_bauvorhaben"] = sum(1 for p in grouped if p.parent)
     by_number = {p.number for p in found}
     misplaced: set[str] = set()  # folders read as (part of) an order that are no order folder themselves
     parts: set[str] = set()  # part folders outside their order folder (reported as such, not by their form)
@@ -161,9 +171,15 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
                 part_labels[p.number].add(m.group("name").strip())
             elif folder != p.path:
                 report.add("doppelt", folder, f"{p.number}, zusammen gelesen mit {report.rel(p.path)}")
-    for number, folder, primary in foreign:  # the number of an order of another site: not read at all
-        report.add("fremde_nummer", folder, f"Bauvorhaben {_site_number(folder, root) or '?'} – nicht gelesen, "
-                   f"Auftrag {number} ist {report.rel(primary)}")
+    site_paths = [Path(f) for f in site_folders]
+    for number, folder, primary in foreign:  # the number of an order of another site: not read with it
+        if (any(folder.is_relative_to(f) for f in site_paths)  # its files are read, for the site
+                and not any(folder.is_relative_to(Path(f)) for f in projects)):
+            report.add("fremde_nummer_bauvorhaben", folder, f"Bauvorhaben {_site_number(folder, root) or '?'} – "
+                       f"nicht mit Auftrag {number} ({report.rel(primary)}) gelesen, sondern als Datei des Bauvorhabens")
+        else:
+            report.add("fremde_nummer", folder, f"Bauvorhaben {_site_number(folder, root) or '?'} – nicht gelesen, "
+                       f"Auftrag {number} ist {report.rel(primary)}")
     wanted = set(categories or ())
     orders: dict[str, tuple[Path, set[str]]] = {}  # order → its first order folder, the categories it has
     sites_with_orders: set[str] = set()  # sites holding a folder read as an order or in the order form
@@ -195,7 +211,9 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
             if not is_dir:
                 report.counts["dateien"] += 1
                 files_here += 1
-                if in_project:
+                if not in_project and chain.get("in_site"):  # read by Projektakte, for the site
+                    report.ext_site[Path(name).suffix.lower()] += 1
+                elif in_project:
                     ext = Path(name).suffix.lower()
                     report.ext_in[ext] += 1
                     if sizes and ext in SUPPORTED_EXT:
@@ -212,6 +230,8 @@ def check(root: Path, *, pattern: str = PATTERN, depth: int = DEPTH, categories=
                 continue
             child_level = level + 1
             sub_chain = dict(chain)
+            if str(path) in site_folders:
+                sub_chain["in_site"] = True
             project = projects.get(str(path))
             if project is not None:
                 sub_chain["order"] = project.number
@@ -345,7 +365,8 @@ def _de(n: int) -> str:
     return f"{n:,}".replace(",", ".")
 
 
-def format_report(report: Report, *, pattern: str, depth: int, examples: int, seconds: float) -> str:
+def format_report(report: Report, *, pattern: str, depth: int, examples: int, seconds: float,
+                  site_digits: int = 0) -> str:
     out = [f"Ablage-Prüfung: {printable(str(report.root))}  (nur Namen gelesen, nichts verändert)",
            f"Gelesen: {_de(report.counts['ordner'])} Ordner, {_de(report.counts['dateien'])} Dateien in "
            f"{seconds:.0f} s", "",
@@ -357,9 +378,17 @@ def format_report(report: Report, *, pattern: str, depth: int, examples: int, se
     in_projects = sum(report.ext_in.values())
     readable = sum(n for ext, n in report.ext_in.items() if ext in SUPPORTED_EXT)
     outside = sum(report.outside.values())
+    if site_digits:
+        out.append(f"  Bauvorhaben (PROJECT_PARENT_DIGITS={site_digits}): {_de(report.counts['bauvorhaben'])}, darin "
+                   f"{_de(report.counts['auftraege_in_bauvorhaben'])} der Aufträge als Unterprojekte")
     out.append(f"  Dateien in Aufträgen:               {_de(in_projects)}, davon liest Projektakte {_de(readable)}"
                + (f" (davon zu groß, über 80 MB: {_de(report.too_big)})" if report.too_big else ""))
-    unread = [(ext or "(ohne Endung)", n) for ext, n in report.ext_in.most_common() if ext not in SUPPORTED_EXT]
+    if site_digits:
+        in_sites = sum(report.ext_site.values())
+        out.append(f"  Dateien im Bauvorhaben außerhalb der Aufträge: {_de(in_sites)}, davon liest Projektakte "
+                   f"{_de(sum(n for ext, n in report.ext_site.items() if ext in SUPPORTED_EXT))}")
+    unread = [(ext or "(ohne Endung)", n) for ext, n in (report.ext_in + report.ext_site).most_common()
+              if ext not in SUPPORTED_EXT]
     if unread:
         out.append("  nicht gelesene Dateitypen:          "
                    + ", ".join(f"{ext} {_de(n)}" for ext, n in unread[:10])
@@ -414,6 +443,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--beispiele", type=int, default=10, metavar="N", help="Beispiele je Abweichung (Standard 10)")
     ap.add_argument("--muster", default=PATTERN, help=f"PROJECT_NUMBER_PATTERN (Standard {PATTERN})")
     ap.add_argument("--tiefe", type=int, default=DEPTH, help=f"PROJECT_FOLDER_DEPTH (Standard {DEPTH})")
+    ap.add_argument("--bauvorhaben", type=int, default=0, metavar="N", help="PROJECT_PARENT_DIGITS: Aufträge zu "
+                    "Bauvorhaben mit N-stelliger Nummer zusammenfassen wie die App (Standard 0 = aus; im Büro 4) – "
+                    "Dateien im Bauvorhaben außerhalb der Aufträge zählen dann als gelesen")
     ap.add_argument("--kategorien", nargs="?", const=",".join(CATEGORIES), default=None, metavar="LISTE",
                     help="auch die Namen der Unterordner im Auftrag prüfen (Standard-Liste: "
                     f"{','.join(CATEGORIES)}; eigene Liste mit Komma getrennt)")
@@ -445,13 +477,14 @@ def main(argv: list[str] | None = None) -> int:
         report = check(root, pattern=args.muster, depth=args.tiefe,
                        categories=(tuple(c.strip() for c in args.kategorien.split(",") if c.strip())
                                    if args.kategorien else None),
-                       sizes=args.groessen, progress=progress if sys.stderr.isatty() else None)
+                       sizes=args.groessen, progress=progress if sys.stderr.isatty() else None,
+                       site_digits=max(0, args.bauvorhaben))
     finally:
         app_log.setLevel(level)
     if sys.stderr.isatty():
         print("\r" + " " * 60 + "\r", end="", file=sys.stderr)
     print(format_report(report, pattern=args.muster, depth=args.tiefe, examples=max(0, args.beispiele),
-                        seconds=time.monotonic() - started))
+                        seconds=time.monotonic() - started, site_digits=max(0, args.bauvorhaben)))
     if args.csv:
         write_csv(report, args.csv)
         print(f"\nAlle Abweichungen: {args.csv}")

@@ -30,6 +30,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 
+from . import db
 from .ai import AIServiceError
 from .ai.http import seconds_text
 from .search import (BUDGET_RERANK_NOTE, BUDGET_VECTOR_NOTE, Hit, hybrid_search, load_hits, merge_adjacent,
@@ -202,11 +203,15 @@ def source_header(n: int, h: Hit) -> str:
     """'[2] 03 Prüfung/Prüfbericht Nr. 3.md (Stand 14.11.2024) – Projekt BS-… Name'.
 
     Mails and attachments carry their date in the label already; documents get their document date,
-    so the model can order the sources in time ("letzter Stand")."""
+    so the model can order the sources in time ("letzter Stand"). An order of a site (Bauvorhaben)
+    names it: '– Projekt 101501 Umbau Station (Bauvorhaben 1015 Altstadt)' – the model can tell the
+    orders of one site apart."""
     label = h.label
     if h.kind == "document" and h.date:
         label += f" (Stand {de_date(h.date)})"
     project = f" – Projekt {h.project} {h.project_name}" if h.project else ""
+    if h.project and h.parent:
+        project += f" (Bauvorhaben {h.parent}{' ' + h.parent_name if h.parent_name else ''})"
     return f"[{n}] {label}{project}"
 
 
@@ -412,11 +417,20 @@ def prefer_recent(hits: list[Hit], k: int, recent: int = 2, extra: list[Hit] | N
     return sorted(chosen, key=pool.index)
 
 
-def _main_projects(hits: list[Hit], project: str | None) -> set[str | None]:
-    """The project(s) a question is about: the filter, else the project of the best hit."""
+def _main_projects(hits: list[Hit], project: str | None, scope: list[str] | None = None) -> set[str | None]:
+    """The project(s) a question is about: the filter – for a site (Bauvorhaben) with all its orders,
+    ``scope`` (db.project_scope) –, else the project of the best hit (only it: never its site or siblings)."""
     if project:
-        return {project}
+        return set(scope) if scope else {project}
     return {hits[0].project} if hits else set()
+
+
+def _one_project(hits: list[Hit], project: str | None) -> str | None:
+    """The one number the extra searches of a question run on: the filter (a site's searches cover its
+    orders by themselves, see hybrid_search), else the project of the best hit."""
+    if project:
+        return project
+    return hits[0].project if hits else None
 
 
 def _search_deadline(deadline: float | None, llm_reserve: float) -> float | None:
@@ -435,10 +449,9 @@ def _summary_hits(conn: sqlite3.Connection, ai, vector_key: str, hits: list[Hit]
     the overall assessment, put in front of the question's own hits – behind the best of them when
     the question has a topic of its own ("Fasse zusammen, was die Feuerwehr fordert"). With little time
     left the search falls back to the full text by itself (``deadline``); its notes go to ``notes``."""
-    projects = _main_projects(hits, project) - {None}
-    if len(projects) != 1:
+    number = _one_project(hits, project)
+    if not number:
         return hits
-    (number,) = projects
     res = hybrid_search(conn, ai, vector_key, SUMMARY_QUERY, project=number, k=4, rerank_top_k=rerank_top_k,
                         synonyms_file=synonyms_file, deadline=deadline)
     if notes is not None:
@@ -472,10 +485,9 @@ def _role_hits(conn: sqlite3.Connection, ai, vector_key: str, question: str, hit
     zugestimmt?"): one passage of the project that says who that is ("Bauherr: …, vertreten durch",
     "Teilnehmer: Clara Meier (Architektur)", "Prüfingenieur: …") – so the model can tell whose mail is
     whose."""
-    projects = _main_projects(hits, project) - {None}
-    if len(projects) != 1:
+    number = _one_project(hits, project)
+    if not number:
         return []
-    (number,) = projects
     have = {h.chunk_id for h in hits}
     out: list[Hit] = []
     communication = bool(_COMMUNICATION_Q.search(question))
@@ -531,15 +543,17 @@ def _role_people(texts: list[str], key: str) -> set[str]:
 
 
 def _mails_of(conn: sqlite3.Connection, project: str, people: set[str], have: set[int], limit: int = 2) -> list[Hit]:
-    """The newest mails of the project written by these people (first chunk of each)."""
+    """The newest mails of the project – of a site (Bauvorhaben): of it and its orders – written by these
+    people (first chunk of each)."""
     if not people:
         return []
     cond = " OR ".join("m.sender_name LIKE ?" for _ in people)
     try:
+        scope = db.project_scope(conn, project)
         rows = conn.execute(
-            f"SELECT c.id, c.mail_id FROM chunks c JOIN mails m ON m.id = c.mail_id WHERE c.project = ? "
-            f"AND c.doc_id IS NULL AND ({cond}) ORDER BY m.date DESC, c.ord ASC LIMIT 20",
-            [project, *(f"%{p}%" for p in sorted(people))]).fetchall()
+            f"SELECT c.id, c.mail_id FROM chunks c JOIN mails m ON m.id = c.mail_id WHERE c.project IN "
+            f"({','.join('?' * len(scope))}) AND c.doc_id IS NULL AND ({cond}) ORDER BY m.date DESC, c.ord ASC LIMIT 20",
+            [*scope, *(f"%{p}%" for p in sorted(people))]).fetchall()
     except sqlite3.Error:
         return []
     ids: list[int] = []
@@ -597,8 +611,12 @@ def _ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, projec
     # before it: they may not eat the time it needs
     llm_reserve = min(ai.llm.timeout, deadline_s / 2) if deadline is not None and ai is not None else 0
     search_deadline = _search_deadline(deadline, llm_reserve)
-    across_projects = project is None and is_project_question(question)
-    enumeration = project is None and is_enumeration_question(question)
+    # a site (Bauvorhaben) covers its orders: "In welchem Unterprojekt …?" is asked across them
+    scope = db.project_scope(conn, project) if project else None
+    several = project is None or len(scope) > 1
+    on_site = project is not None and len(scope) > 1  # "In welchem Auftrag …?" only on a site
+    across_projects = several and is_project_question(question, orders=on_site)
+    enumeration = several and is_enumeration_question(question, orders=on_site)
     temporal = is_temporal_question(question)
     summary = is_summary_question(question) and not across_projects
     candidates = max(rerank_top_k, ENUMERATION_RERANK_TOP_K) if across_projects else rerank_top_k
@@ -630,7 +648,7 @@ def _ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, projec
         k = max(top_k, min(2 * top_k, ENUMERATION_MAX_SOURCES))
         hits = diversify_projects(hits, k)
     elif temporal:
-        main = _main_projects(hits or res.hits, project)
+        main = _main_projects(hits or res.hits, project, scope)
         extra = merge_adjacent([h for h in weak if h.project in main])
         hits = prefer_recent(hits, top_k, extra=extra, projects=main if latest_of_one_project else None)
     else:
@@ -646,8 +664,9 @@ def _ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, projec
     result.context = _context(used, question)
     if enumeration:
         n_projects = len({h.project for h in used if h.project})
-        result.notes.append(f"Aufzählung über Projekte: berücksichtigt sind die besten Fundstellen aus "
-                            f"{n_projects} Projekten – eine vollständige Liste liefert die Suche.")
+        where = f"{n_projects} Projekten" + (" des Bauvorhabens" if project else "")
+        result.notes.append(f"Aufzählung über {'Unterprojekte' if project else 'Projekte'}: berücksichtigt sind "
+                            f"die besten Fundstellen aus {where} – eine vollständige Liste liefert die Suche.")
     if ai is None:
         result.answer, result.found, result.status = NO_AI_TEXT, None, "llm_unavailable"
         return result

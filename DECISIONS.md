@@ -577,6 +577,89 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
 - *Trennzeichen aus der Position im Treffer*: keine neue benannte Gruppe im regulären Ausdruck, weil ein
   eigenes `PROJECT_NUMBER_PATTERN` nur `num`/`name` reserviert.
 
+**Bauvorhaben und Unterprojekte**
+- *Beides statt entweder – oder*: Die offene Frage „Projekt = Auftrag oder Bauvorhaben?“ ist mit „beides“
+  entschieden. Aufträge bleiben die Projekte (Mails nennen die 6-stellige Nummer und werden weiter darüber
+  zugeordnet), Bauvorhaben fassen sie als Unterprojekte zusammen: Fragen über alle Aufträge eines
+  Bauvorhabens und die Dateien direkt im Bauvorhaben-Ordner sind möglich, ohne dass ein Auftrag seine
+  Nummer, seine Mails oder seine Dokumente verliert.
+- *Bauvorhaben als eigene Zeile in `projects`*: `kind = 'bauvorhaben'`, die Aufträge nennen es in `parent`
+  (Migration 9, nur hinzugefügt, ohne Fremdschlüssel: Bauvorhaben und Aufträge werden in einem Lauf in
+  beliebiger Reihenfolge geschrieben, ein fehlendes Bauvorhaben darf nie auf seine Aufträge durchschlagen).
+  So nutzen Bauvorhaben alles, was Projekte schon können – weitere Ordner, Frist beim Verschwinden, nicht
+  lesbare Ordner, Ausblenden und Wiederherstellen, Volltexttitel mit dem Namen, Projektseite und
+  Originaldatei –, ohne eigene Lebenszyklus-Logik.
+- *Eine Einstellung statt Automatik*: `PROJECT_PARENT_DIGITS` nennt die Stellenzahl der Bauvorhaben-Nummer.
+  Automatisch („ein Ordner über dem Projekt, dessen Nummer die Projektnummer fortsetzt“) würden in
+  anderen Ablagen falsche Bauvorhaben entstehen: Jahresordner `2024_Auftraege` über `202401_…`,
+  Kundennummern, Gruppenordner `1_Hochbau` über `1234-Kita`. Wie beim Nummernschema entscheidet eine Person;
+  `python -m projektakte.structure` schlägt die Zeile nur vor, wenn die Projekte überwiegend in solchen
+  Ordnern liegen. Standard ist aus – bestehende Installationen ändern sich nicht.
+- *Der äußerste passende Ordner, Nummern immer ganz verglichen*: Ein Zwischenordner `1015_PDF_100303` im
+  Bauvorhaben ist kein eigenes Bauvorhaben (der äußerste Ordner mit genau so vielen Ziffern gewinnt). Der
+  Auftrag `101500` ist ein Auftrag und nie das Bauvorhaben `1015`: Bauvorhaben und Auftrag werden nur über
+  `parent` verbunden und Nummern nur ganz verglichen – nie über einen Präfix (der Auftrag `101599` in einem
+  fremden Bauvorhaben gehört nicht zu `1015`). Eine Bauvorhaben-Nummer, die selbst ein Projekt ist (ein
+  Schema mit mehreren Längen), wird ausgelassen.
+- *Erkennung außerhalb von `scan_projects`*: Die Strukturerkennung und die Ablage-Prüfung zählen das Ergebnis
+  des Scans als Projektordner und vergleichen es mit bestätigten Vorschlägen; Bauvorhaben im Scan hätten
+  bestätigte Schemata ungültig gemacht. `registry.bauvorhaben` arbeitet nur auf den Pfaden der gefundenen
+  Aufträge und liest nichts zusätzlich. Ein Bauvorhaben gibt es nur, solange ein Auftrag darin liegt; ein
+  kopiertes Bauvorhaben ohne Auftrag bleibt ungelesen.
+- *Dateien des Bauvorhabens = was in keinem Projektordner liegt*: Der Lauf über den Bauvorhaben-Ordner betritt
+  keinen registrierten Ordner (Aufträge und ihre weiteren Ordner, andere Projekte, Ordner anderer Bauvorhaben,
+  auch Projekte in ihrer Frist) – verglichen in der gespeicherten Form, damit Namen mit falscher Kodierung
+  passen –, sodass keine Datei doppelt gelesen und kein Dokument zwischen Auftrag und Bauvorhaben hin und her
+  geschrieben wird. Zusätzlich übernimmt ein Bauvorhaben nie die Datei eines aktiven Projekts. Bewusst
+  gehören auch Ordner zum Bauvorhaben, die kein Projekt sind: ein Datumsordner mit fremder Nummer, ein
+  Auftrag tiefer als `PROJECT_FOLDER_DEPTH` – sie liegen im Bauvorhaben und wären sonst gar nicht lesbar.
+  Ein Projekt in seiner Frist hält seinen Ordner nur, solange es noch Dokumente hat: Danach gehört der
+  Ordner dem Bauvorhaben, wie bei einer neu eingerichteten Ablage – sonst hinge das Ergebnis von der
+  Vorgeschichte ab und die Dateien wären für immer ungelesen.
+- *Dokumente umziehen statt neu lesen*: Wechselt eine Datei vom Bauvorhaben zu einem Auftrag (ein neuer
+  Auftragsordner) oder von einem Bauvorhaben zum anderen (eine Kopie `1073_…/1071_…` bekommt einen Auftrag
+  und wird weiterer Ordner von `1071`), zieht das Dokument samt Abschnitten und Vektoren um; nur die
+  Volltexttitel werden neu geschrieben. Ein Bauvorhaben löscht eine Datei, die jetzt ein anderes
+  Bauvorhaben liest, nicht selbst – das andere übernimmt sie im selben Lauf, gleich in welcher Reihenfolge
+  die beiden gelesen werden.
+- *Ein Bauvorhaben ist nur über seine Aufträge sichtbar*: Kann ein Ordner im Bauvorhaben nicht gelesen
+  werden (ein Zwischenordner mit dem einzigen Auftrag), bleiben Bauvorhaben und dieser Ordner wie sie
+  sind – wie ein Projekt unter einem nicht lesbaren Ordner. Sonst würden seine eigenen Dateien
+  ausgeblendet und nach der Frist gelöscht, obwohl der Ordner die ganze Zeit lesbar war. Ein Bauvorhaben,
+  dessen Ordner noch da ist (kein Auftrag mehr darin, Einstellung aus), wird mit der Frist ausgeblendet, aber
+  in einer Sammelzeile im Protokoll gemeldet, nicht als „Ordner fehlt“ je Bauvorhaben.
+- *Umfang über eine Funktion*: `db.project_scope` liefert für ein Bauvorhaben sich selbst und alle
+  Unterprojekte, für einen Auftrag nur ihn. Suche (Volltext, Kennungen, Vektoren), Fragen (Überblick,
+  Beteiligte, neueste Quellen) und deren Mails nutzen sie; ein Auftrag sieht nie Geschwister oder sein
+  Bauvorhaben. Listen der API (`/documents`, `/api/mails?project=`) bleiben genau diese Nummer – ein
+  stiller Wechsel hätte den Vertrag mit plMail und Skripten geändert.
+- *Mails nie automatisch an ein Bauvorhaben*: Nummer im Text, Inhaltsvergleich, Namensbezüge, Absender-Bonus
+  und Wortstatistik arbeiten nur mit Aufträgen; auch ein Schema, das 4 Ziffern mitfinden würde, ordnet nie
+  einem Bauvorhaben zu und nennt dessen Nummer nicht „unbekannt“. Von Hand (Eingang, plMail) darf ein
+  Bauvorhaben gewählt werden. Ob ein Absender „bisher nur zu einem Projekt“ schrieb, zählt aber die ganze
+  Vorgeschichte: Wer zu einem Auftrag und (von Hand zugeordnet) zu dessen Bauvorhaben schrieb, schrieb zu
+  zweien – sonst bekäme ein Geschwister-Auftrag den Bonus.
+- *„Auftrag“ heißt nur beim Bauvorhaben „Projekt“*: „In welchem Auftrag …?“ und „Welche Aufträge …?“ fragen
+  nur bei einer Frage zu einem Bauvorhaben über dessen Unterprojekte. Ohne Auswahl bleibt „Welchen Auftrag
+  hat das Bauamt erteilt?“ eine Frage nach einem Vertrag, nicht nach einem Projekt („Unterprojekt“ gilt
+  überall, das Wort ist eindeutig).
+- *„Zum Bauvorhaben“ nicht für Normnummern*: Eine Zahl nach DIN, EN, ISO, VdS, DGUV … ist die Nummer einer
+  Norm (DIN 4102), auch wenn es ein Bauvorhaben mit dieser Nummer gibt.
+- *Kein Hinweis für Jahresordner*: Der Strukturbericht schlägt `PROJECT_PARENT_DIGITS=4` nicht vor, wenn alle
+  vermeintlichen Bauvorhaben-Nummern Jahre sind (`2023_Auftraege/202301_…`) – genau der Fall, für den es
+  eine Einstellung statt einer Automatik gibt.
+- *Bauvorhaben-Name nicht in die Volltexttitel der Aufträge*: Beim Einschalten müssten die Titel aller
+  Abschnitte aller Aufträge neu geschrieben werden (im Büro über 3.000 Aufträge, eine lange Schreibsperre).
+  Stattdessen begrenzt die Auswahl des Bauvorhabens die Suche, der Reranker und das Sprachmodell sehen den
+  Bauvorhaben-Namen in der Quellenzeile („Projekt 101501 Umbau Station (Bauvorhaben 1015 Altstadt)“), und
+  eine Suche nach der Bauvorhaben-Nummer bietet „Zum Bauvorhaben“ an. Vektoren bleiben unverändert.
+- *Letzte Aktivität ohne Zukunft*: Das Dokumentdatum kommt oft aus dem Text (eine Frist, ein geplanter
+  Termin). Die Projektliste nimmt das neueste Datum, das nicht nach heute liegt; gespeicherte Datumswerte
+  bleiben, weil Suche und Antworten sie brauchen.
+- *Zahlen des Bauvorhabens auch gefiltert ganz*: Filtert die Projektliste auf einen Auftrag, zeigt sie das
+  Bauvorhaben darüber mit den Dokumenten, Mails, der letzten Aktivität und der Zahl aller Unterprojekte –
+  dieselben Werte wie ungefiltert, wie es der Hinweis unter der Liste sagt.
+
 **OpenDocument mit der Standardbibliothek**
 - *zipfile und expat reichen*: keine neue Abhängigkeit; gelesen werden nur `content.xml` und für die
   Passwortprüfung `META-INF/manifest.xml`. Wie Word-Dateien im eigenen Leseprozess.

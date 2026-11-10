@@ -145,7 +145,21 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (project, path)
     );
     """,
+    # 9 – sites (Bauvorhaben) above the orders (registry.bauvorhaben, PROJECT_PARENT_DIGITS): a site is a
+    #     row of its own (kind 'bauvorhaben', its own files: those in its folders outside every order),
+    #     an order names its site in ``parent``. No foreign key: sites and orders are written in one pass
+    #     in any order, and a site that goes missing must never cascade into its orders. Existing rows
+    #     are orders without a site, as before.
+    """
+    ALTER TABLE projects ADD COLUMN parent TEXT;
+    ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'projekt';
+    CREATE INDEX projects_parent ON projects(parent);
+    """,
 ]
+
+# projects.kind
+PROJEKT = "projekt"  # an order (Auftrag) or any project of a share without sites
+BAUVORHABEN = "bauvorhaben"  # a site holding orders (PROJECT_PARENT_DIGITS)
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -180,6 +194,23 @@ def session(path: Path | str) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+
+
+def project_scope(conn: sqlite3.Connection, number: str) -> list[str]:
+    """The project numbers a question or search about ``number`` covers: a site (Bauvorhaben) covers
+    itself and all its orders (Unterprojekte, found through ``projects.parent`` only – never by a number
+    prefix, so 101599 copied under another site, or 101500 for a site 1015, never leaks in); an order or
+    any other project covers exactly itself – never its site or its sibling orders. Matches like
+    ``registry.get_project`` (case-insensitive); an unknown number covers itself."""
+    row = conn.execute("SELECT number, kind FROM projects WHERE number = ? COLLATE NOCASE", (number,)).fetchone()
+    if row is None:
+        return [number]
+    canonical, kind = row[0], row[1]
+    if kind != BAUVORHABEN:
+        return [canonical]
+    children = [r[0] for r in conn.execute(
+        "SELECT number FROM projects WHERE parent = ? AND kind = ? ORDER BY number", (canonical, PROJEKT))]
+    return [canonical, *children]
 
 
 def get_meta(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:

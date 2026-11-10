@@ -4,9 +4,11 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
 
+from . import db
 from .ai import AIServiceError
 import re
 
@@ -83,20 +85,32 @@ def _expanded_query(text: str, max_terms: int, keep_digits: bool, synonyms: Syno
     return " OR ".join(parts) if parts else None
 
 
+def _in_projects(project: str | None, projects: Sequence[str] | None) -> tuple[str, list]:
+    """The SQL condition limiting sections to a project (``project``) or a scope of several (``projects``,
+    see db.project_scope) – empty without either."""
+    scope = list(projects) if projects else ([project] if project else [])
+    if not scope:
+        return "", []
+    if len(scope) == 1:
+        return " AND c.project = ?", scope
+    return f" AND c.project IN ({','.join('?' * len(scope))})", scope
+
+
 def fts_search(conn: sqlite3.Connection, text: str, *, project: str | None = None, k: int = 50,
                where: str = "", args: tuple = (), max_terms: int = 24,
                keep_digits: bool = True, expand: bool = False,
-               synonyms: Synonyms | None = None) -> list[tuple[int, float]]:
-    """Chunk ids by BM25 (best first) with score = -bm25 (higher is better)."""
+               synonyms: Synonyms | None = None, projects: Sequence[str] | None = None) -> list[tuple[int, float]]:
+    """Chunk ids by BM25 (best first) with score = -bm25 (higher is better). ``projects`` (a scope of
+    several numbers) replaces ``project``."""
     q = fts_query(text, max_terms=max_terms, keep_digits=keep_digits, expand=expand, synonyms=synonyms)
     if not q:
         return []
     sql = ("SELECT c.id, bm25(chunks_fts, 2.0, 1.0) AS rank FROM chunks_fts "
            "JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ?")
     params: list = [q]
-    if project:
-        sql += " AND c.project = ?"
-        params.append(project)
+    cond, scope = _in_projects(project, projects)
+    sql += cond
+    params += scope
     if where:
         sql += f" AND {where}"
         params += list(args)
@@ -109,7 +123,7 @@ def fts_search(conn: sqlite3.Connection, text: str, *, project: str | None = Non
 
 
 def identifier_search(conn: sqlite3.Connection, identifiers: list[str], *, project: str | None = None,
-                      k: int = 50) -> list[tuple[int, float]]:
+                      k: int = 50, projects: Sequence[str] | None = None) -> list[tuple[int, float]]:
     """Chunks that contain a reference code literally ("BS-2024-0233", "63-0137/24"): an FTS phrase of
     its parts, so the separators may be written differently."""
     phrases = []
@@ -122,9 +136,9 @@ def identifier_search(conn: sqlite3.Connection, identifiers: list[str], *, proje
     sql = ("SELECT c.id, bm25(chunks_fts, 2.0, 1.0) AS rank FROM chunks_fts "
            "JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ?")
     params: list = [" OR ".join(phrases)]
-    if project:
-        sql += " AND c.project = ?"
-        params.append(project)
+    cond, scope = _in_projects(project, projects)
+    sql += cond
+    params += scope
     sql += " ORDER BY rank LIMIT ?"
     params.append(k)
     try:
@@ -171,6 +185,9 @@ class Hit:
     fused: float = 0.0
     rerank: float | None = None
     ord: int | None = None  # position of the chunk inside its document/mail
+    project_kind: str | None = None  # "bauvorhaben" for a site's own files (db.BAUVORHABEN)
+    parent: str | None = None  # the site (Bauvorhaben) of the hit's order, if any
+    parent_name: str | None = None
 
     @property
     def local_date(self) -> date | None:
@@ -209,11 +226,13 @@ def _de_date(iso: str | None) -> str:
 
 _HIT_SQL = """
 SELECT c.id, c.project, p.name AS project_name, c.doc_id, c.mail_id, c.page, c.heading, c.text, c.ord,
-       d.filename, d.rel_path, d.doc_date, m.subject, m.date AS mail_date, m.sender_name, m.sender
+       d.filename, d.rel_path, d.doc_date, m.subject, m.date AS mail_date, m.sender_name, m.sender,
+       p.kind AS project_kind, p.parent AS parent, pp.name AS parent_name
 FROM chunks c
 LEFT JOIN documents d ON d.id = c.doc_id
 LEFT JOIN mails m ON m.id = c.mail_id
 LEFT JOIN projects p ON p.number = c.project
+LEFT JOIN projects pp ON pp.number = p.parent
 WHERE c.id IN ({ids})
 """
 
@@ -234,12 +253,12 @@ def load_hits(conn: sqlite3.Connection, ids: list[int]) -> dict[int, Hit]:
             title=title or "", doc_id=r["doc_id"], mail_id=r["mail_id"],
             rel_path=r["rel_path"] if kind == "document" else None, page=r["page"], heading=r["heading"],
             date=date, sender=(r["sender_name"] or r["sender"]) if r["mail_id"] else None, text=r["text"],
-            ord=r["ord"])
+            ord=r["ord"], project_kind=r["project_kind"], parent=r["parent"], parent_name=r["parent_name"])
     return out
 
 
 def rerank_text(h: Hit) -> str:
-    ctx = " | ".join(x for x in (h.title, h.project_name, h.heading) if x)
+    ctx = " | ".join(x for x in (h.title, h.project_name, h.parent_name, h.heading) if x)
     return f"{ctx}\n{h.text}"
 
 
@@ -286,11 +305,13 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
     ``deadline`` (``time.monotonic()`` value): the AI calls get at most the remaining time; without
     time left the search falls back to full text / hybrid order instead of waiting."""
     result = SearchResult(query=query, project=project)
+    # a site (Bauvorhaben) covers its orders, an order only itself (db.project_scope)
+    scope = db.project_scope(conn, project) if project else None
     synonyms = load_synonyms(default_synonyms_file() if synonyms_file is None else synonyms_file)
     identifiers = find_identifiers(query)
-    literal = identifier_search(conn, identifiers, project=project, k=CANDIDATES) if identifiers else []
+    literal = identifier_search(conn, identifiers, projects=scope, k=CANDIDATES) if identifiers else []
     codes_only = bool(identifiers) and not query_terms(strip_identifiers(query))
-    fts = fts_search(conn, query, project=project, k=CANDIDATES, expand=True, synonyms=synonyms)
+    fts = fts_search(conn, query, projects=scope, k=CANDIDATES, expand=True, synonyms=synonyms)
     vec: list[tuple[int, float]] = []
     embed_timeout = time_left(deadline, ai.embed.timeout) if ai is not None else None
     if ai is not None and embed_timeout == 0:
@@ -298,7 +319,7 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
     elif ai is not None:
         try:
             qvec = ai.embed.embed_query(query, timeout=embed_timeout)
-            vec = VECTOR_INDEX.search(conn, vector_key, qvec, project=project, k=CANDIDATES)
+            vec = VECTOR_INDEX.search(conn, vector_key, qvec, projects=scope, k=CANDIDATES)
         except AIServiceError as exc:
             log.warning("Vektorsuche nicht verfügbar, nur Volltext: %s", exc)
             result.notes.append(BUDGET_VECTOR_NOTE if _cut_by_budget(exc, embed_timeout, ai.embed.timeout)

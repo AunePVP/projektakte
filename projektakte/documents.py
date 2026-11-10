@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import extract_worker
+from .db import BAUVORHABEN
 from .chunking import Chunk, chunk_pages
 from .extract import SUPPORTED_EXT, Extracted, extract, extraction_profile
 from .textutil import find_date, fold
@@ -387,14 +388,17 @@ def link_problem(link: Path, boundary: Path) -> str | None:
     return None
 
 
-def _project_files(root: Path, boundary: Path | None = None, errors: list | None = None):
+def _project_files(root: Path, boundary: Path | None = None, errors: list | None = None, *,
+                   skip=None):
     """Files of a project folder. Linked folders are never entered; linked files only count when
     their target lies inside ``boundary`` (PROJECTS_DIR) – nothing from outside gets indexed.
-    Folders that cannot be listed are appended to ``errors``."""
+    Folders that cannot be listed are appended to ``errors``. ``skip(folder)`` True: that subfolder
+    is not entered at all (the folders of the orders inside a site, see index_all_documents)."""
     boundary = boundary or Path(root).resolve()
     onerror = errors.append if errors is not None else None
     for dirpath, dirnames, filenames in os.walk(root, onerror=onerror, followlinks=False):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".")
+                             and not (skip is not None and skip(Path(dirpath) / d)))
         for name in sorted(filenames):
             if name.startswith((".", "~$")) or name.lower() in ("thumbs.db", "desktop.ini"):
                 continue
@@ -479,7 +483,12 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
     (:func:`real_folder`), its documents are stored under the printable one. Files whose name (or a
     folder name inside the project) is no valid UTF-8 cannot be stored: they are skipped before they
     are read – counted in ``skipped`` and ``bad_names``, named in ``bad_name_examples`` and warned
-    about once."""
+    about once.
+
+    A site (Bauvorhaben, ``project["kind"]``) holds the files of its folders outside every project:
+    ``project["exclude"]`` names the registered folders inside them (its orders and their further
+    folders, other projects, the folders of other sites), which are never entered – their files belong
+    to those projects, never twice to the site."""
     stored_root = Path(project["path"])
     further = project.get("further")
     if further is None:
@@ -505,20 +514,25 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
         _index_folder(conn, project, state, stats, llm=llm, stored=stored, root=root,
                       prefix=folder_prefix(stored_root, stored),
                       boundary=Path(projects_dir).resolve() if projects_dir else root.resolve(),
-                      profile=profile, now=now, seen=seen, bad=bad, unlisted=unlisted)
+                      profile=profile, now=now, seen=seen, bad=bad, unlisted=unlisted,
+                      exclude=frozenset(project.get("exclude") or ()))
     if not reachable:  # nothing could be read: change nothing
         return stats
+    handover = project.get("handover") or ()
     if bad:
         stats["bad_names"] = len(bad)
         stats["bad_name_examples"] = bad[:MAX_BAD_EXAMPLES]
-        warn_once(log, "Projekt %s: %d Datei(en) nicht gelesen – der Name hat eine falsche Zeichenkodierung "
-                       "(z. B. %s) – %s", project["number"], len(bad), ", ".join(bad[:3]), ENCODING_HINT)
+        warn_once(log, "%s %s: %d Datei(en) nicht gelesen – der Name hat eine falsche Zeichenkodierung "
+                       "(z. B. %s) – %s", _what(project), project["number"], len(bad), ", ".join(bad[:3]),
+                  ENCODING_HINT)
     kept = 0
     for key, row in state.by_path.items():
         if key in seen:
             continue
         if any(Path(key).is_relative_to(d) for d in unlisted):
             continue  # folder could not be listed this time – not proof that the file is gone
+        if handover and _read_by(Path(key), handover) and _still_there(key):
+            continue  # another site reads this file now: it takes the document over (_adopt), unread
         if bad and not key.isascii():
             kept += 1  # maybe the same file, listed under a name in a wrong encoding (share mounted
             continue  # without iocharset) – removing it would mean reading it all again after a fix
@@ -526,22 +540,33 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
         conn.execute("DELETE FROM documents WHERE id = ?", (row["id"],))
         stats["removed"] += 1
     if kept:
-        warn_once(log, "Projekt %s: %d Dokument(e) mit Umlauten im Namen nicht gefunden, aber behalten – "
+        warn_once(log, "%s %s: %d Dokument(e) mit Umlauten im Namen nicht gefunden, aber behalten – "
                        "vermutlich dieselben Dateien unter falscher Zeichenkodierung (%s)",
-                  project["number"], kept, ENCODING_HINT)
+                  _what(project), project["number"], kept, ENCODING_HINT)
     conn.commit()
     return stats
 
 
+def _what(project: dict) -> str:
+    return "Bauvorhaben" if project.get("kind") == BAUVORHABEN else "Projekt"
+
+
 def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState, stats: dict, *, llm,
                   stored: Path, root: Path, prefix: str, boundary: Path, profile: str, now: str, seen: set[str],
-                  bad: list[str], unlisted: list[Path]) -> None:
+                  bad: list[str], unlisted: list[Path], exclude: frozenset[str] = frozenset()) -> None:
     """The files of one folder of a project (``stored`` as registered, ``root`` its real path): new and
     changed ones are extracted and written, every file found is added to ``seen``; folders inside that
-    could not be listed are added to ``unlisted``, names in a wrong encoding to ``bad``."""
+    could not be listed are added to ``unlisted``, names in a wrong encoding to ``bad``. Subfolders
+    registered as ``exclude`` (stored form) are not entered – compared in the stored form, so a folder
+    whose name is no valid UTF-8 is recognised as well."""
     walk_errors: list[OSError] = []
+    skip = None
+    if exclude:
+        def skip(folder: Path) -> bool:
+            return printable(str(stored / folder.relative_to(root))) in exclude
+    site = project.get("kind") == BAUVORHABEN
     if is_inside(root, boundary):
-        files = _project_files(root, boundary, walk_errors)
+        files = _project_files(root, boundary, walk_errors, skip=skip)
     else:
         warn_once(log, "Projektordner liegt außerhalb von PROJECTS_DIR und wird nicht gelesen: %s",
                   printable(str(root)))
@@ -567,6 +592,22 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
         if row is None and (row := state.relocate(conn, key, shown, rel)) is not None:
             conn.commit()
             stats["moved"] += 1
+        if row is None and (owner := _owner(conn, key, project["number"])) is not None:
+            if owner["kind"] == BAUVORHABEN:
+                # a site's file that is this project's now (an order folder appeared, a copied site turned
+                # into a further folder of another site): moved over with its sections, not read again
+                row = _adopt(conn, owner["id"], project, shown)
+                state.by_path[key] = row
+                conn.commit()
+                stats["moved"] += 1
+            elif site:
+                # a file a project holds is never taken over by a site (an exclusion missed: read it once,
+                # for the project, not back and forth on every pass)
+                warn_once(log, "Datei %s gehört zum Projekt %s – nicht auch dem Bauvorhaben %s zugeordnet",
+                          key, owner["project"], project["number"])
+                seen.discard(key)
+                stats["skipped"] += 1
+                continue
         if row is not None and row["rel_path"] != shown:  # the project's primary folder changed
             conn.execute("UPDATE documents SET rel_path = ? WHERE id = ?", (shown, row["id"]))
             conn.commit()
@@ -610,6 +651,47 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
                 unlisted.append(Path(printable(os.fsdecode(e.filename))))
 
 
+def _owner(conn: sqlite3.Connection, path: str, number: str) -> sqlite3.Row | None:
+    """The document of the file ``path`` held by an active project or site (or one in its grace
+    period) other than ``number`` – its ``id``, ``project`` and the owner's ``kind`` – or None."""
+    return conn.execute(
+        "SELECT d.id, d.project, p.kind FROM documents d JOIN projects p ON p.number = d.project WHERE d.path = ? "
+        "AND d.mail_id IS NULL AND d.project != ? AND (p.active = 1 OR p.missing_since IS NOT NULL)",
+        (path, number)).fetchone()
+
+
+def _adopt(conn: sqlite3.Connection, doc_id: int, project: dict, rel_path: str) -> dict:
+    """Move a document with its sections to ``project`` (named ``rel_path`` there): sections and vectors
+    stay, the full-text rows are written again with the new project in their title. Returns the
+    document as _ProjectState knows it; whether the file changed is checked afterwards, as for every
+    file."""
+    number, name = project["number"], project.get("name")
+    conn.execute("UPDATE documents SET project = ?, rel_path = ? WHERE id = ?", (number, rel_path, doc_id))
+    conn.execute("UPDATE chunks SET project = ? WHERE doc_id = ?", (number, doc_id))
+    for r in conn.execute("SELECT c.id, c.heading, c.text, d.filename FROM chunks c JOIN documents d ON d.id = "
+                          "c.doc_id WHERE c.doc_id = ?", (doc_id,)).fetchall():
+        conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (r["id"],))  # hidden (site inactive) or old title
+        add_fts(conn, r["id"], fts_title(r["filename"], number, name, r["heading"]), r["text"])
+    return dict(conn.execute(
+        "SELECT id, path, rel_path, size, mtime, sha256, incomplete, extract_profile, retry_after FROM documents "
+        "WHERE id = ?", (doc_id,)).fetchone())
+
+
+def _read_by(path: Path, areas) -> bool:
+    """Does ``path`` lie in one of ``areas`` – (folders, exclusions) of a site: inside one of its folders,
+    in none of its exclusions?"""
+    return any(any(path.is_relative_to(f) for f in folders) and not any(path.is_relative_to(e) for e in ex)
+               for folders, ex in areas)
+
+
+def _still_there(path: str) -> bool:
+    real = real_folder(Path(path).parent)
+    try:
+        return real is not None and (real / Path(path).name).is_file()
+    except OSError:
+        return False
+
+
 EML_TEXT_META = "eml_text_charset"  # meta: .eml documents with replacement characters were marked once
 
 
@@ -632,6 +714,36 @@ def mark_garbled_eml_documents(conn: sqlite3.Connection) -> int:
     return n
 
 
+def site_exclusions(conn: sqlite3.Connection, further: dict[str, list[str]] | None = None) -> dict[str, set[str]]:
+    """Per site (Bauvorhaben): the registered folders that lie strictly inside one of its folders – the
+    primary and further folders of every project and every other site that is active or in its grace
+    period (its orders, a project of no site such as a date folder 230512_… inside 1827_…, a copied site
+    1073_…/1071_… of another site). Their files are never the site's. A project in its grace period counts
+    only while it still holds documents: once they are removed its folder is the site's again (an order
+    that left the register – PROJECT_FOLDER_DEPTH lowered – is read as files of its site, as on a fresh
+    start). Stored form; found by walking up from each folder, not by comparing every pair."""
+    further = further_folders(conn) if further is None else further
+    rows = conn.execute(
+        "SELECT number, path, kind FROM projects p WHERE active = 1 OR (missing_since IS NOT NULL AND EXISTS "
+        "(SELECT 1 FROM documents d WHERE d.project = p.number AND d.mail_id IS NULL))").fetchall()
+    site_of: dict[str, str] = {}  # folder of a site → its number
+    for r in rows:
+        if r["kind"] == BAUVORHABEN:
+            for f in (r["path"], *further.get(r["number"], ())):
+                site_of[f] = r["number"]
+    out: dict[str, set[str]] = {}
+    if not site_of:
+        return out
+    for r in rows:
+        for f in (r["path"], *further.get(r["number"], ())):
+            above = os.path.dirname(f)
+            while above and above != os.path.dirname(above):
+                if (site := site_of.get(above)) is not None and site != r["number"]:
+                    out.setdefault(site, set()).add(f)
+                above = os.path.dirname(above)
+    return out
+
+
 def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Path | str | None = None) -> dict:
     """Index the files of all active projects (files of unknown projects leave the index first).
     ``projects_dir`` is the boundary for links (default: each project folder itself). A project whose
@@ -641,10 +753,19 @@ def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Pat
     total: dict = {"removed": purge_inactive_documents(conn), "bad_names": 0, "bad_name_examples": []}
     conn.commit()
     mark_garbled_eml_documents(conn)
-    projects = [dict(r) for r in conn.execute("SELECT number, name, path FROM projects WHERE active = 1")]
+    projects = [dict(r) for r in conn.execute("SELECT number, name, path, kind FROM projects WHERE active = 1")]
+    projects.sort(key=lambda p: p["kind"] == BAUVORHABEN)  # projects first: a site never holds their files
     further = further_folders(conn)
+    excluded = site_exclusions(conn, further)
+    # what each site reads: its folders without its exclusions – a file of one site that lies there now
+    # is handed over to that site (index_project_documents), whichever of the two is read first
+    areas = [(p["number"], [Path(f) for f in (p["path"], *further.get(p["number"], ()))],
+              [Path(e) for e in excluded.get(p["number"], ())]) for p in projects if p["kind"] == BAUVORHABEN]
     for p in projects:
         p["further"] = further.get(p["number"], [])
+        if p["kind"] == BAUVORHABEN:
+            p["exclude"] = excluded.get(p["number"], set())
+            p["handover"] = [(folders, ex) for n, folders, ex in areas if n != p["number"]]
         try:
             stats = index_project_documents(conn, p, llm=llm, projects_dir=projects_dir)
         except UnicodeError as exc:

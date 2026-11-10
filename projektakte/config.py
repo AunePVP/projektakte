@@ -84,6 +84,43 @@ def _project_folder_depth(env: Mapping[str, str], auto: bool, warnings: list[str
     return value
 
 
+PROJECT_PARENT_DIGITS_MAX = 10
+
+
+def _all_digit_lengths(pattern: str) -> set[int]:
+    """The lengths (1 … 12) of all-digit numbers ``pattern`` accepts, tried with a few samples."""
+    try:
+        rx = re.compile(f"(?:{pattern})", re.IGNORECASE)
+    except (re.error, RecursionError, OverflowError):
+        return set()
+    samples = ("1" * 12, "123456789012", "987654321098", "246802468024", "0" * 12)
+    return {n for n in range(1, 13) if any(rx.fullmatch(s[:n]) for s in samples)}
+
+
+def _project_parent_digits(env: Mapping[str, str], pattern: str, warnings: list[str]) -> int:
+    """PROJECT_PARENT_DIGITS: the number of digits of a site (Bauvorhaben) number above the orders
+    (4 for orders 101500 in sites 1015), 0 = off. Only meaningful for all-digit project numbers longer
+    than that – checked here for a fixed pattern (with ``auto`` the folder scan checks every number)."""
+    raw = (env.get("PROJECT_PARENT_DIGITS") or "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if not 0 <= value <= PROJECT_PARENT_DIGITS_MAX:
+        warnings.append(f"PROJECT_PARENT_DIGITS={raw} ist ungültig (erlaubt: 0 bis {PROJECT_PARENT_DIGITS_MAX}, "
+                        "z. B. 4) – Bauvorhaben werden nicht gebildet")
+        return 0
+    if value and pattern != AUTO and not pattern_problem(pattern) \
+            and not any(n > value for n in _all_digit_lengths(pattern)):
+        warnings.append(f"PROJECT_PARENT_DIGITS={raw} passt nicht zu PROJECT_NUMBER_PATTERN={pattern}: Bauvorhaben "
+                        f"gibt es nur über rein numerischen Projektnummern mit mehr als {value} Ziffern – "
+                        "Bauvorhaben werden nicht gebildet")
+        return 0
+    return value
+
+
 def _bool(value: str | None, default: bool = False) -> bool:
     if value is None or value.strip() == "":
         return default
@@ -248,6 +285,9 @@ class Settings:
     # None: the depth found by the automatic detection (PROJECT_NUMBER_PATTERN=auto, see structure.py –
     # with auto a number set here is not used, the confirmed proposal's depth is)
     project_folder_depth: int | None = DEFAULT_PROJECT_FOLDER_DEPTH
+    # digits of a site (Bauvorhaben) number above the orders (PROJECT_PARENT_DIGITS, registry.bauvorhaben);
+    # 0 = off: every project stands on its own
+    project_parent_digits: int = 0
 
     @property
     def project_pattern_auto(self) -> bool:
@@ -321,6 +361,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         mail_dir=Path(e.get("MAIL_DIR") or default_mails),
         project_number_pattern=pattern,
         project_folder_depth=folder_depth,
+        project_parent_digits=_project_parent_digits(e, pattern, warnings),
         demo_mode=demo_mode,
         ai_mode=(e.get("AI_MODE") or "real").strip().lower(),
         llm_url=(e.get("LLM_URL") or "http://192.168.178.62:8000/v1").rstrip("/"),

@@ -12,7 +12,8 @@ from . import db, inbox as inbox_queries, structure
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .ask import ask as answer_question
 from .search import hybrid_search
-from .registry import get_project, list_projects, project_folders
+from .db import BAUVORHABEN
+from .registry import children, get_project, list_projects, project_folders
 
 log = logging.getLogger("projektakte.api")
 router = APIRouter(prefix="/api")
@@ -32,11 +33,20 @@ def _rel(path: str, root: Path) -> str:
 
 @router.get("/projects")
 def projects(request: Request, q: str = "") -> dict:
+    """Projects and sites as a flat list (``kind``; an order names its site in ``parent``, a site lists
+    its orders in ``children``)."""
     s = _settings(request)
     with db.session(s.db_path) as conn:
         items = list_projects(conn, q)
+        kids: dict[str, list[str]] = {}
+        if any(p["kind"] == BAUVORHABEN for p in items):
+            for c in list_projects(conn):
+                if c["parent"]:
+                    kids.setdefault(c["parent"], []).append(c["number"])
     for p in items:
         p["path"] = _rel(p["path"], s.projects_dir)
+        if p["kind"] == BAUVORHABEN:
+            p["children"] = sorted(kids.get(p["number"], []))
     return {"count": len(items), "projects": items}
 
 
@@ -46,9 +56,16 @@ def project(request: Request, number: str) -> dict:
     with db.session(s.db_path) as conn:
         p = get_project(conn, number)
         folders = project_folders(conn, number) if p else []
+        site = get_project(conn, p["parent"]) if p and p["parent"] else None
+        kids = children(conn, p["number"]) if p and p["kind"] == BAUVORHABEN else []
     if not p:
         raise HTTPException(404, f"Projekt {number} nicht gefunden")
     p["path"] = _rel(p["path"], s.projects_dir)
+    # an order: its site (Bauvorhaben); a site: its orders (Unterprojekte), which questions and searches
+    # about it cover – its documents (/documents) are only its own files outside them
+    p["parent_name"] = site["name"] if site else None
+    p["children"] = [{"number": c["number"], "name": c["name"], "path": _rel(c["path"], s.projects_dir)}
+                     for c in kids]
     # every folder of the project (several folders with its number are one project), the primary first
     p["folders"] = [_rel(f, s.projects_dir) for f in folders]
     return p
@@ -222,7 +239,8 @@ def status(request: Request) -> dict:
     with db.session(s.db_path) as conn:
         one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
         counts = {
-            "projects": one("SELECT COUNT(*) FROM projects WHERE active = 1"),
+            "projects": one("SELECT COUNT(*) FROM projects WHERE active = 1 AND kind = 'projekt'"),
+            "bauvorhaben": one("SELECT COUNT(*) FROM projects WHERE active = 1 AND kind = 'bauvorhaben'"),
             "documents": one("SELECT COUNT(*) FROM documents WHERE mail_id IS NULL"),
             "documents_skipped": one("SELECT COUNT(*) FROM documents WHERE status != 'ok'"),
             "mails": one("SELECT COUNT(*) FROM mails WHERE deleted = 0"),

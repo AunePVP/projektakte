@@ -84,7 +84,10 @@ nur mit `PROJEKTAKTE_INTEGRATION=1` (siehe docs/ki-dienste.md).
 
 ## Oberfläche
 
-- **Projekte** – Liste mit Filter (Nummer/Name) und Suche über alle Projekte.
+- **Projekte** – Liste mit Filter (Nummer/Name) und Suche über alle Projekte; mit
+  `PROJECT_PARENT_DIGITS` die Unterprojekte eingerückt unter ihrem Bauvorhaben. „Letzte Aktivität“ ist das
+  neueste Dokument- oder Mail-Datum, das nicht in der Zukunft liegt (ein Datum aus dem Text wie ein
+  geplanter Termin „29.06.2030“ zählt nicht).
 - **Projektseite** – Fragefeld (Antwort mit nummerierten, verlinkten Quellen), Zeitachse aus
   Dokumenten und Mails, Dokumente (mit Hinweis auf übersprungene Scans), Anhänge aus Mails, Mails
   mit Zuordnungsart.
@@ -293,6 +296,29 @@ gelesen; das Protokoll nennt ihn. Dateien weiterer Ordner erscheinen mit dem Ord
 Projektseite zeigt alle Ordner. Wird ein weiterer Ordner nicht mehr gefunden, verlassen seine Dateien den
 Index wie verschwundene Dateien; ein umbenannter Ordner wird verschoben, nicht neu gelesen.
 
+**Bauvorhaben und Unterprojekte** (`PROJECT_PARENT_DIGITS`, z. B. `4`): Die Aufträge eines Bauvorhabens
+(`1/10/1015_Altstadt/101500_…`, `101501_…`, auch `1015_Altstadt/1015_PDF_…/101504_…` in einem Zwischenordner)
+sind dessen Unterprojekte. Bauvorhaben ist der äußerste Ordner über einem Auftrag, dessen Name mit genau so
+vielen Ziffern beginnt und dessen Nummer die Auftragsnummer fortsetzt – Sammelordner `1`, `10` haben andere
+Stellenzahlen, der Zwischenordner `1015_PDF_…` liegt im Bauvorhaben. Name ist, was nach der Nummer steht. Der
+Auftrag `101500` ist ein Auftrag, nie das Bauvorhaben `1015` (Nummern werden immer ganz verglichen). Mehrere
+Ordner mit derselben Bauvorhaben-Nummer (eine Kopie `1073_Turnhalle/1071_Schule`) sind ein Bauvorhaben. Ein
+Bauvorhaben gibt es nur, solange ein Auftrag darin liegt. Zum Bauvorhaben gehören die Dateien in seinen Ordnern
+außerhalb jedes Projektordners (`1015-Plaene-Aufzug/…`, Dateien direkt im Bauvorhaben, Dateien im
+Zwischenordner außerhalb des Auftrags; auch Ordner, die kein Projekt sind, etwa ein Datumsordner mit fremder
+Nummer); die Dateien der Aufträge werden nie doppelt gelesen. Eine Frage oder Suche zum Bauvorhaben umfasst
+seine eigenen Dateien und alle Unterprojekte samt Mails, eine zum Auftrag nur den Auftrag (nie Geschwister
+oder das Bauvorhaben). Die Projektliste zeigt die Unterprojekte eingerückt unter ihrem Bauvorhaben (Dokumente,
+Mails und letzte Aktivität des Bauvorhabens zählen alle Unterprojekte mit), die Projektseite eines Auftrags
+verlinkt sein Bauvorhaben. Mails werden über die Nummer und den Inhalt nur Aufträgen zugeordnet; ein Mensch
+darf eine Mail auch einem Bauvorhaben zuordnen (Eingang, Mail-Seite, plMail). Einschalten liest nichts neu
+außer den Dateien der Bauvorhaben; Ausschalten blendet die Bauvorhaben mit derselben Frist wie fehlende
+Projekte aus (eine Sammelzeile im Protokoll). Ein nicht lesbarer Ordner im Bauvorhaben (etwa der
+Zwischenordner mit dem einzigen Auftrag) lässt Bauvorhaben und Ordner unverändert. Wechselt eine Datei vom
+Bauvorhaben zu einem Auftrag oder zu einem anderen Bauvorhaben, zieht ihr Dokument um, ohne neu gelesen zu
+werden; ein Auftrag, der das Register verlassen hat (`PROJECT_FOLDER_DEPTH` verkleinert), gibt seinen Ordner
+nach der Frist an sein Bauvorhaben ab.
+
 Unterstützte Formate: TXT,
 Markdown, CSV, PDF (pypdf, je Seite), DOCX (python-docx, mit Überschriften und Tabellen), EML und
 OpenDocument samt den alten OpenOffice-1.x-Formaten (`.odt`/`.ott`, `.ods`/`.ots`, `.odp`/`.otp`,
@@ -432,13 +458,13 @@ zugeordnet oder vorgeschlagen, 8 von 8 inhaltlichen Vorschlägen richtig.
 | `GET /health/deps` | Zustand der KI-Dienste und von plMail (erreichbar, Format, Antwortzeit) |
 | `GET /api/status` | Indexierungsstand (Phase, letzter Lauf, Fehler) und Zahlen |
 | `POST /api/reindex` | Indexierung sofort anstoßen |
-| `GET /api/projects?q=` | Projektliste, optional gefiltert nach Nummer/Name |
-| `GET /api/projects/{nummer}` | ein Projekt, mit `folders` (alle Ordner der Nummer, Hauptordner zuerst) |
-| `GET /api/projects/{nummer}/documents` | Dokumente eines Projekts mit Status (ok/übersprungen/Fehler) |
+| `GET /api/projects?q=` | Projektliste, optional gefiltert nach Nummer/Name; je Eintrag `kind` (`projekt`/`bauvorhaben`), `parent` (Bauvorhaben eines Auftrags), bei Bauvorhaben `children` (Nummern der Unterprojekte) |
+| `GET /api/projects/{nummer}` | ein Projekt oder Bauvorhaben, mit `folders` (alle Ordner der Nummer, Hauptordner zuerst), `kind`, `parent`, `parent_name` und `children` (`number`, `name`, `path`) |
+| `GET /api/projects/{nummer}/documents` | Dokumente eines Projekts mit Status (ok/übersprungen/Fehler); bei einem Bauvorhaben nur seine eigenen Dateien außerhalb der Unterprojekte |
 | `GET /api/documents/{id}` | ein Dokument mit seinen Abschnitten (Seite, Überschrift, Text) |
-| `GET /api/mails?project=&status=&q=` | Mails (neueste zuerst), filterbar |
+| `GET /api/mails?project=&status=&q=` | Mails (neueste zuerst), filterbar; `project` genau diese Nummer (bei einem Bauvorhaben nur die ihm selbst zugeordneten Mails) |
 | `GET /api/mails/{id}` | eine Mail mit Text und Anhängen |
-| `GET /api/search?q=&project=&k=` | Hybride Suche (Volltext + Vektor, Reranker), Treffer mit Quelle |
+| `GET /api/search?q=&project=&k=` | Hybride Suche (Volltext + Vektor, Reranker), Treffer mit Quelle (`parent`, `parent_name`: Bauvorhaben des Treffers); `project` = Bauvorhaben sucht in allen Unterprojekten |
 | `POST /api/ask` | Frage beantworten: `{"question": "…", "project": "BS-…"}` (Projekt optional) → Antwort, `found`, zitierte Quellen |
 | `GET /api/inbox?limit=&offset=&status=` | Zuordnungs-Eingang: Mails ohne sichere Zuordnung, mit Vorschlag und Begründung (seitenweise, `total`) |
 | `GET /api/integration/info`, `GET /api/integration/projects`, `POST /api/integration/suggest`, `POST /api/integration/notify` | für plMail (Bearer `INTEGRATION_TOKEN`), siehe docs/plmail-integration.md |
@@ -479,6 +505,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `MAIL_DIR` | `$DATA_DIR/mails` (mit `DEMO_MODE=1`: `$DATA_DIR/demo/mails`) | Ordner mit `.eml`-Dateien (read-only) |
 | `PROJECT_NUMBER_PATTERN` | `BS-\d{4}-\d{4}` | Regulärer Ausdruck für Projektnummern; `auto` = Vorschlag, gilt erst nach Bestätigung auf der Statusseite |
 | `PROJECT_FOLDER_DEPTH` | `2` | Ebene der Projektordner: 1 = direkt in `PROJECTS_DIR`, 2 = auch in Jahresordnern, 3 = Kunde/Jahr/Projekt (bis 6); bei `auto` immer aus dem bestätigten Vorschlag (eine eingestellte Ebene wird dann nicht verwendet, Warnung beim Start) |
+| `PROJECT_PARENT_DIGITS` | `0` (aus) | Ziffern der Bauvorhaben-Nummer über den Aufträgen (im Büro `4`: Aufträge `101500` … im Ordner `1015_<Name>`). Die Aufträge werden Unterprojekte ihres Bauvorhabens (siehe „Bauvorhaben und Unterprojekte“). Nur für rein numerische Projektnummern mit mehr Ziffern, sonst aus mit Warnung beim Start |
 | `DEMO_MODE` | `0` | `1` = Demo-Datensatz verwenden (und beim Start erzeugen, falls er fehlt) |
 | `AI_MODE` | `real` | `fake` = Fake-KI-Dienste im selben Prozess starten, URLs werden ignoriert |
 | `LLM_URL` | `http://192.168.178.62:8000/v1` | Sprachmodell (OpenAI-kompatibel) |

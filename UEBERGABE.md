@@ -22,7 +22,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
-- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.860 Tests, etwa 80 s). Docker-Probelauf:
+- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.890 Tests, etwa 80 s). Docker-Probelauf:
   `sh scripts/docker-smoke.sh`.
 
 ## 3. Stand in Zahlen
@@ -283,13 +283,19 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
   1. `ablage_pruefen.py … --tiefe 6` auf der echten Freigabe laufen lassen, die Liste „Nummer passt
      nicht zum Bauvorhaben“ ansehen, dann in `projektakte.env` fest `PROJECT_NUMBER_PATTERN=\d{6}` und
      `PROJECT_FOLDER_DEPTH=6` setzen (mit `auto` gilt die Ebene des bestätigten Vorschlags, nicht 6).
-  2. Bauvorhaben-Ebene (Entscheidung nach den Zahlen von Schritt 1): Fragen über alle Aufträge eines
-     Bauvorhabens, Dateien direkt im Bauvorhaben-Ordner diesem zuordnen.
+  2. **Erledigt:** Bauvorhaben-Ebene – in `projektakte.env` `PROJECT_PARENT_DIGITS=4` setzen. Dann sind die
+     Aufträge Unterprojekte ihres Bauvorhabens (`1015_…/101500_…` … `101504_…`, auch im Zwischenordner
+     `1015_PDF_…`), Fragen zum Bauvorhaben umfassen alle Aufträge, die Dateien im Bauvorhaben-Ordner
+     außerhalb der Aufträge gehören dem Bauvorhaben (README, „Bauvorhaben und Unterprojekte“). Vorher
+     zählen: `ablage_pruefen.py /mnt/projekt --tiefe 6 --bauvorhaben 4` (die 34.540 Dateien außerhalb von
+     Aufträgen werden dann großteils gelesen; Datumsordner mit fremder Nummer im Bauvorhaben erscheinen
+     dann als Hinweis `fremde_nummer_bauvorhaben`, ihre Dateien liest das Bauvorhaben).
   3. Später: Normen-/Regelwerksordner auf oberster Ebene (`@-Normen`, `ASR`, `AHO …`) als eigene
      durchsuchbare Bibliothek.
-- **Offene Entscheidung:** Projekt = Auftrag (6-stellig, so wie die Ablage gegliedert ist) oder
-  Bauvorhaben (4-stellig, alle Aufträge zusammen)? Bei 4-stellig würden Mails, die nur die 6-stellige
-  Nummer nennen, nicht mehr automatisch über die Nummer zugeordnet.
+- **Entschieden: beides.** Projekt = Auftrag (6-stellig, Mails werden weiter über die Nummer zugeordnet),
+  darüber das Bauvorhaben (4-stellig) mit den Aufträgen als Unterprojekten (`PROJECT_PARENT_DIGITS=4`). Der
+  Auftrag `101500` bleibt ein Auftrag, er stößt nicht mit dem Bauvorhaben `1015` zusammen. Mails werden nie
+  automatisch einem Bauvorhaben zugeordnet, von Hand schon.
 - **Dateitypen:** Nach `.odt` sind die größten nicht gelesenen Typen `.dwg` (Pläne), `.bak`, `.zip`,
   `.dxf` und `.xlsx` (siehe Abschnitt 8, Punkt 3) – genaue Zahlen nennt die Ablage-Prüfung.
 
@@ -302,7 +308,8 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
    jede Ablage eindeutig – in Prüfungen mit über 150 nachgebauten Ablagen war der Vorschlag meist
    richtig, sonst kein Vorschlag mit Begründung oder ein falscher, der an den Beispielen auffällt.
    Deshalb immer die Beispiele ansehen, bevor man „Übernehmen“ drückt. Mehrere Ordner mit derselben
-   Nummer werden zusammen gelesen (Abschnitt 7a); offen ist nur noch die Bauvorhaben-Ebene.
+   Nummer werden zusammen gelesen (Abschnitt 7a); die Bauvorhaben-Ebene ist gebaut
+   (`PROJECT_PARENT_DIGITS=4`, Abschnitt 7a) und muss auf der echten Freigabe angesehen werden.
 3. **Nicht gelesene Dateitypen:** `.doc`, `.xls`/`.xlsx`, `.msg` (Outlook), `.pptx`, `.dwg`/`.dxf`
    (`.odt`/`.ods`/`.odp` werden seit diesem Stand gelesen). Ablage-Prüfung und Strukturbefehl zeigen, wie
    viele davon in euren Projekten liegen; nach dem ersten Lauf ist `.xlsx` (702) der nächste Kandidat,

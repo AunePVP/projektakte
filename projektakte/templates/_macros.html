@@ -5,14 +5,14 @@
 
 {% macro project_options(projects, selected='', empty_label='Projekt wählen …') -%}
 <option value="">{{ empty_label }}</option>
-{% for p in projects %}<option value="{{ p.number }}"{% if p.number == selected %} selected{% endif %}>{{ p.number }} {{ p.name }}</option>
+{% for p in projects %}<option value="{{ p.number }}"{% if p.number == selected %} selected{% endif %}>{% if p.depth %}&emsp;{% endif %}{{ p.number }} {{ p.name }}{% if p.kind == 'bauvorhaben' %} (Bauvorhaben, mit Unterprojekten){% endif %}</option>
 {% endfor %}
 {%- endmacro %}
 
 {#- One list of all projects per page; every inbox card's project field refers to it (list="project-options"). -#}
 {% macro project_datalist(projects) -%}
 <datalist id="project-options">
-{% for p in projects %}<option value="{{ p.number }}">{{ p.number }} {{ p.name }}</option>
+{% for p in projects %}<option value="{{ p.number }}">{{ p.number }} {{ p.name }}{% if p.kind == 'bauvorhaben' %} (Bauvorhaben){% endif %}</option>
 {% endfor %}</datalist>
 {%- endmacro %}
 
