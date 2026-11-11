@@ -575,7 +575,9 @@ def vector_content(kb: int, k: int = 0) -> bytes:
 def test_vector_drawings_are_blank_pages_and_use_no_content_bound(monkeypatch):
     """CAD plans with their text as outlines: no image the model could read. Before, a page with more
     content than the page bound ended as 'Seiteninhalt zu umfangreich' (incomplete), and such pages used up
-    the document's content bound so that scans after them went unread."""
+    the document's content bound so that scans after them went unread. (Without PDFium; with it such pages
+    are rendered, see test_vektorseiten.py.)"""
+    monkeypatch.setattr(extract_mod, "_pdfium", lambda: None)
     monkeypatch.setattr(extract_mod, "MAX_PAGE_CONTENT_BYTES", 400_000)
     monkeypatch.setattr(extract_mod, "MAX_DOC_CONTENT_BYTES", 1_000_000)
     doc = Doc()
@@ -601,6 +603,9 @@ def test_large_content_with_an_inline_image_is_still_walked(monkeypatch):
     inline = b"q 60 0 0 40 50 50 cm BI /W 60 /H 40 /CS /G /BPC 8 ID " + small.tobytes() + b" EI Q\n"
     doc = Doc()
     doc.page(vector_content(500) + inline, {}, compress=True)
+    r = extract(Path("Inline.pdf"), doc.build(), llm=Vision())
+    assert r.status == "ok"  # rendered by PDFium and read whole
+    monkeypatch.setattr(extract_mod, "_pdfium", lambda: None)
     r = extract(Path("Inline.pdf"), doc.build(), llm=Vision())
     assert r.status == "skipped" and "Seiteninhalt zu umfangreich" in r.message  # not known to be blank
 

@@ -21,6 +21,7 @@ import re
 import shutil
 import struct
 import subprocess
+import unicodedata
 import zlib
 import zipfile
 from collections.abc import Callable
@@ -458,7 +459,7 @@ def _pdf_pages(data: bytes, llm, name: str, *, vision: bool | None = None, defer
     if reader is None:
         return Extracted([], status="skipped", message=PDF_ENCRYPTED_TEXT)
     vision = (llm is not None and getattr(llm, "vision", False)) if vision is None else vision
-    doc = _DocState()
+    doc = _DocState(source=data)
     if recheck and not any(_may_be_scan(page, doc) for page in reader.pages):
         return Extracted([], status=UNCHANGED)
     pages = []
@@ -477,7 +478,7 @@ def _pdf_pages(data: bytes, llm, name: str, *, vision: bool | None = None, defer
             text = ""
         if key is not None:
             texts[key] = text
-        if len(text.strip()) < 20:
+        if len(text.strip()) < 20 or _garbled(text):
             empty_pages.append((i, page))
         else:
             pages.append(Page(i, text))
@@ -570,6 +571,14 @@ def _vision_later(pages, empty_pages, layer_scans, name: str, doc: _DocState, oc
     if pages:
         return Extracted(pages, message=message, incomplete=incomplete, retry=retry, vision_pages=later)
     return Extracted([], status="skipped", message=message, incomplete=incomplete, retry=retry, vision_pages=later)
+
+
+def _garbled(text: str) -> bool:
+    """Is a page's text mostly characters no reader can use – replacement, private-use or control characters
+    (fonts without a usable character map)? Then the page counts as one without a text layer."""
+    chars = [c for c in text if not c.isspace()]
+    odd = sum(1 for c in chars if c == "\ufffd" or unicodedata.category(c) in ("Cc", "Co", "Cn", "Cs"))
+    return odd * 2 > len(chars)
 
 
 def _may_be_scan(page, doc: _DocState) -> bool:
@@ -1219,6 +1228,96 @@ def _header(stream) -> tuple[tuple[int, int], str] | None:
         _forget_decoded(stream)
 
 
+# -- rendering pages without images ------------------------------------------------------------------------
+# A page without a text layer that draws no image is not necessarily blank: printed codes and CAD plans draw
+# their text as outlines, and fonts without a usable character map give pypdf no text. PDFium (pypdfium2)
+# renders such a page; the rendered page is read like a scan page (Tesseract, then the model).
+RENDER_DPI = 300
+RENDER_SECONDS = 20.0  # wall time for rendering one page; progressive rendering is abandoned beyond
+RENDER_BLANK_LEVEL = 200  # a rendered page without any pixel darker than this (0 black … 255 white) is blank
+RENDER_PROBE_PIXELS = 1_000_000  # size of a render that only tells whether a page is blank (nothing read now)
+_RENDER_FAILED = "Seite nicht darstellbar"
+_pdfium_warned = False
+
+
+def _pdfium():
+    """The pypdfium2 module, None if it is not installed (said once)."""
+    global _pdfium_warned
+    try:
+        import pypdfium2
+    except ImportError:
+        if not _pdfium_warned:
+            _pdfium_warned = True
+            log.warning("pypdfium2 nicht installiert – PDF-Seiten mit Text als Kurven werden nicht gelesen")
+        return None
+    return pypdfium2
+
+
+@dataclass
+class _Rendered:
+    data: bytes | None = None
+    mime: str | None = None
+    blank: bool = False
+    problem: str | None = None  # why it could not be rendered (time bound, broken page, document bounds)
+    doc_limit: bool = False
+
+
+def _render_page(doc: _DocState, number: int, max_pixels: int) -> _Rendered | None:
+    """Page ``number`` rendered in grey at RENDER_DPI (scaled down to ``max_pixels``, large plans at a lower
+    resolution) as PNG, or blank if nothing on it is darker than RENDER_BLANK_LEVEL. None without PDFium.
+    Charged to the document's MAX_DOC_PIXELS; rendering stops after RENDER_SECONDS."""
+    if doc.source is None:
+        return None
+    pdfium = _pdfium()
+    if pdfium is None:
+        return None
+    import ctypes
+    import time
+
+    raw = pdfium.raw
+    page = None
+    try:
+        if doc.pdfium is None:
+            doc.pdfium = pdfium.PdfDocument(doc.source)
+        page = doc.pdfium[number - 1]
+        w_pt, h_pt = page.get_size()  # in points, as displayed (rotation applied)
+        scale = RENDER_DPI / 72
+        if w_pt * h_pt * scale * scale > max_pixels:
+            scale = (max_pixels / (w_pt * h_pt)) ** 0.5
+        width, height = max(1, int(w_pt * scale)), max(1, int(h_pt * scale))
+        if doc.decoded_pixels + width * height > MAX_DOC_PIXELS:
+            return _Rendered(problem=f"Dokument zu umfangreich ({_doc_bounds()})", doc_limit=True)
+        doc.decoded_pixels += width * height
+        bitmap = pdfium.PdfBitmap.new_native(width, height, raw.FPDFBitmap_Gray)
+        raw.FPDFBitmap_FillRect(bitmap, 0, 0, width, height, 0xFFFFFFFF)
+        deadline = time.monotonic() + RENDER_SECONDS
+        need_pause = raw.IFSDK_PAUSE._fields_[1][1](lambda _pause: time.monotonic() > deadline)
+        pause = raw.IFSDK_PAUSE(version=1, NeedToPauseNow=need_pause)
+        flags = raw.FPDF_ANNOT | raw.FPDF_GRAYSCALE
+        status = raw.FPDF_RenderPageBitmap_Start(bitmap, page, 0, 0, width, height, 0, flags, ctypes.byref(pause))
+        while status == raw.FPDF_RENDER_TOBECONTINUED and time.monotonic() <= deadline:
+            status = raw.FPDF_RenderPage_Continue(page, ctypes.byref(pause))
+        raw.FPDF_RenderPage_Close(page)
+        _progress()
+        if status != raw.FPDF_RENDER_DONE:
+            late = status == raw.FPDF_RENDER_TOBECONTINUED
+            return _Rendered(problem=f"Seite zu aufwendig (über {RENDER_SECONDS:.0f} s zum Zeichnen)" if late
+                             else _RENDER_FAILED)
+        img = bitmap.to_pil()
+        if img.getextrema()[0] > RENDER_BLANK_LEVEL:
+            return _Rendered(blank=True)
+        data, mime = _encode(img)
+        return _Rendered(data, mime)
+    except MemoryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 – a page PDFium cannot open or render
+        log.debug("Seite %d nicht darstellbar (%s)", number, exc)
+        return _Rendered(problem=_RENDER_FAILED)
+    finally:
+        if page is not None:
+            page.close()
+
+
 @dataclass
 class _DocState:
     """What the scan pages of one document share: each image (PDF object) is measured, decoded and read
@@ -1235,6 +1334,9 @@ class _DocState:
     content_bytes: int = 0  # decoded content parsed for all pages
     searched_bytes: int = 0  # decoded content searched for inline images (_can_draw_images)
     warned: bool = False  # the document bounds were reported
+    source: bytes | None = None  # the file, for rendering pages that draw no image (_render_page)
+    pdfium: object = None  # the file opened by PDFium, once per document
+    blank: set = field(default_factory=set)  # _text_key of pages rendered blank
 
     def charge(self, image: _PageImage) -> None:
         self.decoded_pixels += _decode_charge(image)
@@ -1761,9 +1863,18 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
             else:
                 result.undecodable += 1
             continue
-        if drawn.truncated:
+        rendered = None
+        if not drawn.images and not base:  # outlined text or a blank page: rendered (if PDFium is there)
+            rendered = _rendered_job(page, i, key, name, doc, full=reading)
+            if isinstance(rendered, _Rendered):
+                if rendered.doc_limit:
+                    result.doc_limit += 1
+                elif rendered.problem:
+                    result.too_complex += 1
+                continue  # blank, or not readable
+        if rendered is None and drawn.truncated:
             log.warning("%s Seite %d: Seiteninhalt nicht vollständig durchsucht (%s)", name, i, _page_bounds())
-        if not drawn.images:
+        if rendered is None and not drawn.images:
             if base:
                 result.pages.append(Page(i, base))
             elif drawn.truncated:  # no image found before the bound – the page is not known to be blank
@@ -1772,7 +1883,9 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
         result.with_images.append(i)
         if not reading:
             continue
-        if compose or base:  # one page image: the model sees the whole page next to its text
+        if rendered is not None:
+            out = _PageOutcome(jobs=[rendered])
+        elif compose or base:  # one page image: the model sees the whole page next to its text
             out = _page_payloads(decoder, drawn, name, i, result, doc, 1)
         else:
             out = _page_payloads(decoder, drawn, name, i, result, doc)
@@ -1843,6 +1956,28 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
     return result
 
 
+def _rendered_job(page, number: int, key, name: str, doc: _DocState, *, full: bool):
+    """A page without text layer and images, rendered (_render_page): a _Job with the page image (``full``;
+    otherwise only a small render that tells whether it is blank, with an empty job), a _Rendered if it
+    is blank or could not be rendered, None without PDFium (the page counts as blank, as before)."""
+    job_key = ("render", key if key is not None else number)
+    if key is not None and key in doc.blank:
+        return _Rendered(blank=True)
+    if job_key in doc.transcripts:  # the same content read on an earlier page
+        return _Job(job_key, text=doc.transcripts[job_key])
+    rendered = _render_page(doc, number, MAX_IMAGE_PIXELS if full else RENDER_PROBE_PIXELS)
+    if rendered is None:
+        return None
+    if rendered.blank:
+        if key is not None:
+            doc.blank.add(key)
+        return rendered
+    if rendered.problem:
+        log.warning("%s Seite %d: %s", name, number, rendered.problem)
+        return rendered
+    return _Job(job_key, data=rendered.data, mime=rendered.mime)
+
+
 @dataclass
 class PageImages:
     """The image(s) of one PDF page for the model in the phase "Bildauswertung" (see page_images): usually
@@ -1864,7 +1999,7 @@ def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
         reader = _open_pdf(data)
         if reader is None:
             return [PageImages(n, problem=PDF_ENCRYPTED_TEXT) for n in numbers]
-        doc, decoder = _DocState(), _Decoder()
+        doc, decoder = _DocState(source=data), _Decoder()
         out_pages = []
         count = len(reader.pages)
         for n in numbers:
@@ -1898,6 +2033,11 @@ def _images_of(page, number: int, name: str, doc: _DocState, decoder) -> PageIma
         log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, number, exc)
         return PageImages(number, problem=f"Bilder nicht lesbar: {_decode_problem(exc)}", retry=True)
     if not drawn.images:
+        rendered = _rendered_job(page, number, _text_key(page), name, doc, full=True)
+        if isinstance(rendered, _Job) and rendered.data is not None:
+            return PageImages(number, [(rendered.mime, rendered.data)])
+        if isinstance(rendered, _Rendered) and rendered.problem:
+            return PageImages(number, problem=rendered.problem)
         return PageImages(number, problem="kein Bild auf der Seite")
     out = _page_payloads(decoder, drawn, name, number, result, doc, 1)
     images = [(job.mime, job.data) for job in out.jobs if job.data is not None]

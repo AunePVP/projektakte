@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from projektakte import db
+from projektakte import extract as extract_mod
 from projektakte.ai.llm import LLMClient
 from projektakte.chunking import chunk_pages
 from projektakte.config import load_settings
@@ -182,7 +183,8 @@ def test_utf16_detection_does_not_misfire_on_binary_like_text():
 
 
 # -- BUG-5 / spec-03: incomplete extraction is marked so it can be redone -----------------------------
-def test_pdf_scan_pages_are_marked_incomplete_without_vision():
+def test_pdf_scan_pages_are_marked_incomplete_without_vision(monkeypatch):
+    monkeypatch.setattr(extract_mod, "_pdfium", lambda: None)  # without PDFium: pages are not rendered
     data = pdf_bytes(["Seite eins mit Text über Rauchableitung.", "\f", "x", "\f", "Seite drei: Außentreppe."])
     r = extract(Path("a.pdf"), data)
     assert r.status == "ok" and [p.number for p in r.pages] == [1, 3]

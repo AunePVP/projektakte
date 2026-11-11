@@ -5,6 +5,14 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **PDF-Seiten mit Text als Kurven werden gelesen:** Seiten ohne Textebene und ohne Bild (gedruckte Vorschriften
+  aus PDF-Druckertreibern, CAD-Pläne mit Text als Umrissen, Schriften ohne Zeichenzuordnung) galten als leer
+  („kein Text gefunden“). Jetzt zeichnet PDFium (neue Abhängigkeit `pypdfium2`) die Seite in Graustufen (300 dpi,
+  große Pläne kleiner, höchstens 16 Megapixel, höchstens 20 s je Seite) und sie geht wie ein Scan an Tesseract und
+  in die Bildauswertung. Wirklich leere Seiten (nichts dunkler als hellgrau) bleiben leer. Textebenen aus fast nur
+  Ersatz-, Steuer- oder Privatzeichen gelten als fehlend. DB-Migration 15: PDF-Dateien mit „kein Text gefunden“ und
+  vollständige PDF-Dateien mit einer Seite ohne Abschnitte vor der letzten Textseite werden einmal neu gelesen
+  (auch Mail-Anhänge). Ohne `pypdfium2` bleibt alles wie bisher.
 - **Dokumentarten:** Jedes Dokument (auch Mail-Anhänge) bekommt eine Dokumentart – Brandschutzkonzept,
   Brandschutznachweis, Baugenehmigung, Prüfbericht, Stellungnahme, Gutachten, Flucht- und Rettungsplan, Protokoll,
   Angebot, Rechnung, Leistungsverzeichnis, Schreiben, Foto … –, bestimmt aus dem Titelbereich der ersten Seite, der

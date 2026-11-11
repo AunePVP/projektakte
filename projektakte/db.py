@@ -231,6 +231,17 @@ MIGRATIONS: list[str] = [
     CREATE INDEX documents_doc_type_todo ON documents(id) WHERE doc_type_hash IS NULL;
     CREATE INDEX documents_doc_type_ai ON documents(id) WHERE doc_type_ai = 'offen';
     """,
+    # 15 – PDF pages without a text layer and without images (text as outlines, fonts without a usable
+    #      character map) are rendered and read (extract._render_page); before, they counted as blank. PDFs
+    #      read as "empty", and complete ones with a page without sections before their last page with text,
+    #      are read once more (an unknown profile makes them due, see documents.reprocess_due) – project
+    #      files and mail attachments alike. Run once: a page that stays blank is not read again and again.
+    """
+    UPDATE documents SET incomplete = 1, extract_profile = '', retry_after = NULL
+    WHERE ext = '.pdf' AND (status = 'empty'
+       OR (status = 'ok' AND incomplete = 0
+           AND pages > (SELECT COUNT(DISTINCT c.page) FROM chunks c WHERE c.doc_id = documents.id)));
+    """,
 ]
 
 # projects.kind

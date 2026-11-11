@@ -789,6 +789,27 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
 - *Fotos in `VISION_SKIP_FOLDERS`*: weder Modell noch Tesseract (Baustellenfotos ergeben keinen Text, nur
   Zeichenmüll; Tesseract-Text mit weniger als drei Wörtern wird ohnehin verworfen).
 
+**Seiten mit Text als Kurven (PDFium)**
+- *Warum*: Ein Auszug einer gedruckten Bauordnung aus einem PDF-Druckertreiber hat keine Schrift und kein Bild,
+  nur rund 45.000 Pfadbefehle je Seite (jeder Buchstabe ein Umriss) – gespeichert als „kein Text gefunden“, obwohl
+  der Browser ihn lesbar zeigt. Ohne Textebene und ohne Bild ging eine Seite weder an Tesseract noch an das Modell.
+- *PDFium über `pypdfium2`*: echter Renderer, Lizenz Apache-2.0/BSD-3, fertige Wheels für x86_64 und aarch64 ohne
+  weitere Abhängigkeiten; Poppler/Ghostscript als Programm wären größer und brächten GPL bzw. AGPL. Gezeichnet wird
+  nur, was sonst als leer gälte (keine Bilder, auch nach abgebrochener Inhaltsprüfung), im Leseprozess unter seinen
+  Grenzen: Graustufen, 300 dpi, höchstens `MAX_IMAGE_PIXELS`, angerechnet auf `MAX_DOC_PIXELS`; fortschreitend
+  gezeichnet und nach `RENDER_SECONDS` (20 s) abgebrochen („Seiteninhalt zu umfangreich“). Gemessen: 0,04 s Zeichnen,
+  1,1 s mit PNG-Kodierung je
+  A4-Seite mit 1,3 MB Pfaden.
+- *Leer*: Erst das gezeichnete Bild entscheidet (kein Pixel dunkler als 200 von 255) – billig und ohne eigene
+  Inhaltsanalyse. Ohne Lesen (kein Modell, kein Tesseract) wird nur klein (1 Megapixel) geprüft.
+- *Unbrauchbare Textebene*: nur der eindeutige Fall (mehr als die Hälfte Ersatz-, Steuer- oder Privatzeichen).
+  Falsch zugeordnete, aber „normale“ Buchstaben sind billig nicht erkennbar und bleiben, wie sie sind.
+- *Seiten mit kleinem Bild* (Logo) und Text als Kurven werden weiter nur mit ihren Bildern gelesen – bewusst
+  nicht geändert, weil das die geprüfte Scan-Erkennung berührt.
+- *Bestand*: Migration 15 statt Versionssprung – ein Versionssprung liest nur unvollständige Dokumente. Markiert
+  werden PDF-Dateien „leer“ und vollständige, bei denen vor der letzten Textseite eine Seite ohne Abschnitte liegt
+  (`documents.pages` ist die letzte Seite mit Text; Lücken am Ende sieht die Abfrage nicht).
+
 **Reihenfolge beim Einlesen (Statusseite „Reihenfolge“)**
 - *Warum*: Der erste Lauf über die ganze Freigabe dauert Tage. Das Büro will bestimmen, was zuerst lesbar ist
   („erst alle Projekte aus Ordner 3, dann aus 2“), einzelne Projekte vorziehen und sehen, was fertig ist.

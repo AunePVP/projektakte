@@ -428,8 +428,9 @@ dekodiert. Vor dem Dekodieren gelten Grenzen nach der echten Bildgröße aus dem
 Angabe im PDF): je Bild höchstens 450 MB entpackte Daten (ein A0-Plan mit 300 dpi in Farbe, 418 MB, passt), je Seite höchstens 200 verschiedene Bilder und 150 Megapixel, je Dokument höchstens 500
 Bildauswertungen und 4000 Megapixel; der Seiteninhalt wird begrenzt durchlaufen (2000 Positionen,
 1000 Formulare, 1 Mio. Operationen, 4 MB je Seite, 32 MB je Dokument). Was darüber liegt, wird mit
-Hinweis ausgelassen und nicht wiederholt. Reine Vektorseiten (CAD-Pläne mit Text als Kurven) gelten als
-Seiten ohne Text.
+Hinweis ausgelassen und nicht wiederholt. Seiten ohne Textebene und ohne Bild (Text als Kurven, z. B. aus
+PDF-Druckertreibern oder CAD-Plänen) zeichnet PDFium (`pypdfium2`) in Graustufen mit 300 dpi (höchstens 16
+Megapixel, 20 s je Seite); sie werden wie Scans gelesen, ganz weiße Seiten bleiben leer.
 
 **Scans in zwei Stufen (Bildauswertung):** Eine PDF-Seite gilt als Scan, wenn sie keine Textebene hat
 und ein Bild zeigt – oder wenn sie eine Textebene (OCR) hat und ihre Bilder zusammen mindestens 1
