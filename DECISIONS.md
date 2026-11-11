@@ -888,3 +888,22 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
 - *Grenzen*: Mails selbst (nicht als Datei) öffnen weiter ihre eigene Seite. Ob der PDF-Betrachter im Rahmen
   erscheint, hängt vom Browser ab (Chromium, Firefox, Edge ja; manche Handy-Browser zeigen PDF in Rahmen nicht –
   auf schmalen Bildschirmen steht darum unter dem Rahmen ein Link „in neuem Fenster öffnen“).
+
+## Große Planscans: 450 MB je Bild statt pypdfs 75 MB
+
+Im ersten Lauf auf echten Daten scheiterten Planmappen (A1, Farbe, 300 dpi: 70 Megapixel, 209 MB Rohdaten) an
+pypdfs eigener Grenze von 75 MB je entpacktem Bild bzw. Bildpuffer („LimitReachedError: Requested image buffer
+size … exceeds limit 75000000“). Diese Grenze ist ein Schutz für Programme ohne eigene Grenzen; Projektakte liest
+PDF-Dateien im Leseprozess mit Speicher- und Zeitgrenze und prüft vorher Pixel je Seite (`MAX_PAGE_PIXELS`) und
+je Dokument.
+- *`PDF_IMAGE_BYTES` = 450 MB* für alle Entpack- und Puffergrenzen von pypdf (Flate, LZW, RunLength, JBIG2,
+  Bildpuffer): ein A0-Plan mit 300 dpi in Farbe (140 MP, 418 MB) passt. Gemessen unter 2 GB Adressraum (Grenze
+  des Leseprozesses): A1 Farbe 0,5 GB Spitze und 4 s, A0 Farbe 1 GB und 7 s, A0 Grau 0,3 GB. Wer
+  `EXTRACT_MEMORY_MB` kleiner setzt, bekommt für solche Pläne wie bisher „zu groß“ mit dem Hinweis auf die Grenze.
+- *Einmal neu lesen (Migration 12)* statt `EXTRACT_VERSION` zu erhöhen: Eine Erhöhung würde alle unvollständigen
+  Dokumente neu lesen und alle vollständigen PDF-Dateien erneut auf Scan-Seiten prüfen lassen. Die Migration
+  markiert nur Dokumente, deren Bilder an der Daten- oder Speichergrenze scheiterten; sie läuft genau einmal, eine
+  Datei jenseits der neuen Grenze wird also nicht in jedem Lauf wieder gelesen.
+- *Protokoll*: „Bild nicht lesbar“ je Dokument und Ursache nur einmal (Streifenscans mit JBIG2 ohne `jbig2dec`
+  schrieben eine Zeile je Streifen); der Fortschritt nennt die Seitennummer im PDF und die laufende Nummer unter
+  den Scan-Seiten („Seite 22 (2 von 5)“) – vorher passten die beiden Zählungen nicht zusammen.

@@ -238,7 +238,7 @@ MAX_DOC_CONTENT_BYTES = 32_000_000
 # large JPEGs and JPEG 2000 images are decoded at reduced scale (never far beyond the MAX_IMAGE_PIXELS
 # they are sent at), this limit no longer bounds their memory but still the CPU time (every coefficient
 # is read); for the formats that can only be decoded in full (Flate, CCITT, JBIG2) it bounds the memory
-# of one page (about 150 MB bilevel/grey; pypdf itself refuses raw samples above 75 MB, 25 MP in colour).
+# of one page (about 150 MB bilevel/grey; pypdf refuses decoded data above PDF_IMAGE_BYTES).
 MAX_PAGE_PIXELS = 150_000_000
 # Bounds per document: the same image (PDF object) is decoded and sent once per document and its
 # transcript reused on every page that draws it; beyond these, pages are left out with a note. 500 model
@@ -248,7 +248,7 @@ MAX_DOC_PIXELS = 4_000_000_000
 # Each decoding is charged at least this many pixels against MAX_DOC_PIXELS (a decoding has a fixed
 # cost, JBIG2 even starts a program): bounds documents made of thousands of tiny images. Decoded data
 # beyond what the image's size needs (raw samples that inflate far beyond /Width × /Height, which pypdf
-# decompresses all the same, up to 75 MB) is charged on top, one byte as one pixel: the charge follows the
+# decompresses all the same, up to PDF_IMAGE_BYTES) is charged on top, one byte as one pixel: the charge follows the
 # work, not the declaration.
 _MIN_DECODE_CHARGE = 250_000
 _BYTES_PER_PIXEL = 4  # decoded data an image may plausibly need per pixel (8-bit CMYK) before it is excess
@@ -407,12 +407,27 @@ def html_to_text(html: str) -> str:
 # Tokens pypdf parses in one content stream (its default, 2 million, cuts off the labels of large CAD
 # plans); measured: 10 million take about 28 s and 1.2 GB – within the extraction worker's limits.
 PDF_STREAM_TOKENS = 8_000_000
+# Decoded data pypdf may produce for one image or stream (its default, 75 MB, refuses colour scans above
+# 25 MP – an A1 plan at 300 dpi in colour has 70 MP, 209 MB). 450 MB keeps an A0 plan at 300 dpi in colour
+# (140 MP, 418 MB) readable; measured under the worker's 2 GB address space limit: about 1 GB peak, 7 s.
+# MAX_PAGE_PIXELS still bounds what a page may decode, and the worker's memory limit what it may hold.
+PDF_IMAGE_BYTES = 450_000_000
+
+
+def _pdf_limits():
+    """pypdf's configuration for reading PDF files here (PDF_STREAM_TOKENS, PDF_IMAGE_BYTES)."""
+    from pypdf import apply_configuration
+
+    n = PDF_IMAGE_BYTES
+    return apply_configuration(
+        stream_parsing_work_maximum_count=PDF_STREAM_TOKENS,
+        zlib_maximum_output_length=n, array_based_stream_maximum_output_length=n,
+        lzw_maximum_output_length=n, run_length_maximum_output_length=n, jbig2_maximum_output_length=n,
+        image_maximum_buffer_size=n, stream_decoding_work_maximum_length=max(n, 300_000_000))
 
 
 def _pdf(data: bytes, llm, name: str, **kw) -> Extracted:
-    from pypdf import apply_configuration
-
-    with apply_configuration(stream_parsing_work_maximum_count=PDF_STREAM_TOKENS):
+    with _pdf_limits():
         return _pdf_pages(data, llm, name, **kw)
 
 
@@ -1723,8 +1738,8 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
     every = 1 if total <= 50 else 10  # (the worker forwards at most 200 log records per file)
     for n, (i, page) in enumerate(empty_pages, start=1):
         _check_page()
-        if reading and n > 1 and (n % every == 0 or n == total):
-            log.info("%s: %s – Seite %d von %d", what, name, n, total)
+        if reading and (n == 1 or n % every == 0 or n == total):
+            log.info("%s: %s – Seite %d (%d von %d)", what, name, i, n, total)
         key = _text_key(page)  # pages with the same content and resources draw the same
         drawn = doc.drawings.get(key) if key is not None else None
         base = bases.get(i, "")
@@ -1845,9 +1860,7 @@ def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
     indexing pass in the extraction worker, under its limits (the model is called by the app, see
     vision.py). The same bounds as when the pages are read (MAX_PAGE_*, MAX_DOC_PIXELS for the pages of
     one call)."""
-    from pypdf import apply_configuration
-
-    with apply_configuration(stream_parsing_work_maximum_count=PDF_STREAM_TOKENS):
+    with _pdf_limits():
         reader = _open_pdf(data)
         if reader is None:
             return [PageImages(n, problem=PDF_ENCRYPTED_TEXT) for n in numbers]
@@ -1954,8 +1967,10 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
                 doc.too_big.add(image.ident)
                 out.too_big += 1
                 return None
-            log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, exc)
-            problem = doc.failed[image.ident] = _decode_problem(exc)
+            problem = _decode_problem(exc)
+            if problem not in doc.failed.values():  # once per document and cause (strip scans: dozens)
+                log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, exc)
+            doc.failed[image.ident] = problem
             result.decode_error = result.decode_error or problem
             out.undecodable += 1
             return None
@@ -2007,8 +2022,10 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
                 doc.too_big.add(image.ident)
                 out.too_big += 1
                 continue
-            log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, exc)
-            problem = doc.failed[image.ident] = _decode_problem(exc)
+            problem = _decode_problem(exc)
+            if problem not in doc.failed.values():  # once per document and cause (strip scans: dozens)
+                log.warning("%s Seite %d: Bild nicht lesbar (%s)", name, number, exc)
+            doc.failed[image.ident] = problem
             result.decode_error = result.decode_error or problem
             out.undecodable += 1
             continue

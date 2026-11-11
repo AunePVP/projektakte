@@ -616,9 +616,11 @@ def test_an_image_without_size_is_named_as_such_in_the_note():
     assert r.message == "1 Seite(n) nur teilweise gelesen (1 Bild(er) ohne Größenangabe nicht ausgewertet)"
 
 
-def test_image_over_pypdfs_data_limit_is_too_big_and_not_retried():
-    """An indexed 1-bit A0 plan expands to 139 MB, beyond pypdf's 75 MB: before, 'nicht lesbar' with a retry
-    every few hours; the file will not change."""
+def test_image_over_pypdfs_data_limit_is_too_big_and_not_retried(monkeypatch):
+    """An indexed 1-bit A0 plan expands to 139 MB, here beyond pypdf's data limit (PDF_IMAGE_BYTES lowered;
+    450 MB reads it, see test_grosse_plaene.py): before, 'nicht lesbar' with a retry every few hours; the
+    file will not change."""
+    monkeypatch.setattr(extract_mod, "PDF_IMAGE_BYTES", 75_000_000)
     w, h = 9933, 14043
     doc = Doc()
     img = doc.stream(b"/Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace [/Indexed /DeviceRGB 1 "

@@ -161,8 +161,14 @@ Roadmap-Schritt.
 - `VISION_SKIP_FOLDERS` (z. B. `Bilder`): Fotos in Ordnern wie `263900-Bilder` gehen nicht an die Bildauswertung;
   ohne die Einstellung werden sie später nachgelesen.
 - Protokoll: je gelesener Datei eine Zeile „Gelesen: <Datei> – ok (Bildauswertung), 3 Seite(n), 7 Abschnitt(e), 12,3 s“.
-- 2025 Tests (2020 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`,
-  `tests/test_index_reihenfolge.py` und `tests/test_dokument_betrachter.py`.
+- **Große Planscans:** Farbscans über 25 Megapixel (z. B. A1 mit 300 dpi) wurden mit „Bild zu groß zum Lesen
+  (LimitReachedError …)“ abgelehnt – pypdf entpackt standardmäßig höchstens 75 MB je Bild. Jetzt bis 450 MB
+  (A0 mit 300 dpi in Farbe; gemessen etwa 1 GB Speicher, 7 s, unter der Grenze des Leseprozesses). Dokumente,
+  die an der alten Grenze scheiterten, werden einmal neu gelesen (Migration 12).
+- Protokoll: „Bild nicht lesbar“ steht je Dokument und Ursache nur noch einmal (Streifenscans mit JBIG2 ohne
+  `jbig2dec` meldeten es je Streifen); der Fortschritt nennt die echte Seitennummer („Seite 22 (2 von 5)“).
+- 2029 Tests (2024 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`,
+  `tests/test_index_reihenfolge.py`, `tests/test_dokument_betrachter.py` und `tests/test_grosse_plaene.py`.
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

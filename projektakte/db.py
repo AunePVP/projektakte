@@ -198,6 +198,16 @@ MIGRATIONS: list[str] = [
         enabled   INTEGER NOT NULL DEFAULT 1
     );
     """,
+    # 12 – pypdf may decode up to 450 MB per image now instead of 75 MB (extract.PDF_IMAGE_BYTES: colour
+    #      scans of large plans): documents whose page images were too big for the old limit are read once
+    #      more (an unknown profile makes them due, see documents.reprocess_due). Run once: a file beyond the
+    #      new limit keeps its note and is not read again and again.
+    """
+    UPDATE documents SET incomplete = 1, extract_profile = '', retry_after = NULL
+    WHERE message LIKE '%zu groß zum Lesen (Speicher- oder Datengrenze überschritten)%'
+       OR vision_note LIKE '%zu groß zum Lesen (Speicher- oder Datengrenze überschritten)%'
+       OR id IN (SELECT doc_id FROM page_texts WHERE note LIKE '%zu groß zum Lesen%');
+    """,
 ]
 
 # projects.kind

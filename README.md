@@ -396,7 +396,7 @@ werden zu einem Seitenbild zusammengesetzt; JBIG2 über `jbig2dec`, das im Docke
 ist). Ein Bild (ein PDF-Objekt, auch unter mehreren Namen oder auf mehreren Seiten) wird je Dokument
 nur einmal dekodiert und gesendet; große JPEG- und JPEG-2000-Bilder werden gleich verkleinert
 dekodiert. Vor dem Dekodieren gelten Grenzen nach der echten Bildgröße aus dem Bildkopf (nicht nur der
-Angabe im PDF): je Seite höchstens 200 verschiedene Bilder und 150 Megapixel, je Dokument höchstens 500
+Angabe im PDF): je Bild höchstens 450 MB entpackte Daten (ein A0-Plan mit 300 dpi in Farbe, 418 MB, passt), je Seite höchstens 200 verschiedene Bilder und 150 Megapixel, je Dokument höchstens 500
 Bildauswertungen und 4000 Megapixel; der Seiteninhalt wird begrenzt durchlaufen (2000 Positionen,
 1000 Formulare, 1 Mio. Operationen, 4 MB je Seite, 32 MB je Dokument). Was darüber liegt, wird mit
 Hinweis ausgelassen und nicht wiederholt. Reine Vektorseiten (CAD-Pläne mit Text als Kurven) gelten als
