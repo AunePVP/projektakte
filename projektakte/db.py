@@ -214,6 +214,23 @@ MIGRATIONS: list[str] = [
     """
     CREATE INDEX IF NOT EXISTS chunks_without_vector ON chunks(id) WHERE embedding IS NULL;
     """,
+    # 14 – document type (dokumentarten.py): what a document is (Brandschutzkonzept, Prüfbericht, … – free text,
+    #      ``doc_type_key`` folded for search), how it was found (``doc_type_method``: inhalt, dateiname, dateityp,
+    #      ki) with which confidence, the title line that named it, the hash of the beginning of the text it was
+    #      taken from (NULL: not typed yet – existing documents are typed in the background) and whether the
+    #      language model is to be asked (``doc_type_ai``: offen, fertig, unklar).
+    """
+    ALTER TABLE documents ADD COLUMN doc_type TEXT;
+    ALTER TABLE documents ADD COLUMN doc_type_key TEXT;
+    ALTER TABLE documents ADD COLUMN doc_type_method TEXT;
+    ALTER TABLE documents ADD COLUMN doc_type_confidence REAL;
+    ALTER TABLE documents ADD COLUMN doc_type_title TEXT;
+    ALTER TABLE documents ADD COLUMN doc_type_hash TEXT;
+    ALTER TABLE documents ADD COLUMN doc_type_ai TEXT;
+    CREATE INDEX documents_doc_type ON documents(doc_type_key, doc_date);
+    CREATE INDEX documents_doc_type_todo ON documents(id) WHERE doc_type_hash IS NULL;
+    CREATE INDEX documents_doc_type_ai ON documents(id) WHERE doc_type_ai = 'offen';
+    """,
 ]
 
 # projects.kind

@@ -82,6 +82,9 @@ p.pill, dd.pill { display: block; white-space: normal; border-radius: var(--radi
 .pill.suggested { background: #e6effa; color: var(--info); }
 .pill.warn, .pill.unassigned { background: #fdf0dc; color: var(--warn); }
 .pill.busy { background: #e6effa; color: var(--info); }
+.pill.doc-type { background: #f1ecf8; color: #4b3a6b; }
+.pill.doc-type.match { background: #e6effa; color: var(--info); font-weight: 600; }
+.search-info { margin: .3rem 0; }
 .warn-text { color: var(--warn); }
 .tabs { display: flex; flex-wrap: wrap; gap: .3rem; border-bottom: 1px solid var(--line); margin: .8rem 0; }
 .tabs a { padding: .35rem .8rem; }

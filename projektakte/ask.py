@@ -30,11 +30,11 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 
-from . import db
+from . import db, dokumentarten
 from .ai import AIServiceError
 from .ai.http import seconds_text
-from .search import (BUDGET_RERANK_NOTE, BUDGET_VECTOR_NOTE, Hit, hybrid_search, load_hits, merge_adjacent,
-                     time_left)
+from .search import (BUDGET_RERANK_NOTE, BUDGET_VECTOR_NOTE, TYPES_CANDIDATES, Hit, hybrid_search, load_hits,
+                     merge_adjacent, time_left)
 from .textutil import (
     SUMMARY_WORDS,
     content_terms,
@@ -592,9 +592,10 @@ def ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, project
     left (the search then falls back to the full text / its own order), and without time for the
     model the found passages come back with a note on the budget.
     ``ai`` None (no AI services at all): full-text search only, the passages come back unanswered."""
-    result = _ask(conn, ai, vector_key, question, project=project, top_k=top_k, context_chars=context_chars,
-                  min_rerank=min_rerank, rerank_top_k=rerank_top_k, synonyms_file=synonyms_file,
-                  deadline_s=deadline_s)
+    with dokumentarten.QUESTIONS:  # the model is not asked about document types meanwhile
+        result = _ask(conn, ai, vector_key, question, project=project, top_k=top_k, context_chars=context_chars,
+                      min_rerank=min_rerank, rerank_top_k=rerank_top_k, synonyms_file=synonyms_file,
+                      deadline_s=deadline_s)
     notes = list(dict.fromkeys(result.notes))  # the same note from several searches once
     parts = [_BUDGET_PARTS[n] for n in notes if n in _BUDGET_PARTS]
     result.notes = [n for n in notes if n not in _BUDGET_PARTS]
@@ -621,7 +622,8 @@ def _ask(conn: sqlite3.Connection, ai, vector_key: str, question: str, *, projec
     summary = is_summary_question(question) and not across_projects
     candidates = max(rerank_top_k, ENUMERATION_RERANK_TOP_K) if across_projects else rerank_top_k
     res = hybrid_search(conn, ai, vector_key, question, project=project, k=candidates,
-                        rerank_top_k=candidates, synonyms_file=synonyms_file, deadline=search_deadline)
+                        rerank_top_k=candidates, synonyms_file=synonyms_file, deadline=search_deadline,
+                        doc_types=TYPES_CANDIDATES)
     result = AskResult(question=question, project=project, answer="", found=False, status="not_found",
                        notes=list(res.notes))
     hits = res.hits

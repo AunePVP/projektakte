@@ -1013,3 +1013,80 @@ ans Ende.
   einer Runde (mit ihren gleichzeitigen Stapeln) je Abschnitt, Restzeit = Abschnitte ohne Vektor × Ø, nach 100.
 - *Deutsch gerundet*: „2 Std. 14 Min.“ für Verstrichenes, „≈ 2 Std. 15 Min.“, „≈ 3 Tage“, „≈ 4 Wochen“ für
   Schätzungen (auf 5 Minuten, Stunden, halbe Tage gerundet) – eine Schätzung soll nicht genauer aussehen, als sie ist.
+
+## Dokumentarten und Tippfehler in der Suche
+
+Wunsch des Büros: „Brandschutzkonzept“ soll die Brandschutzkonzepte ganz oben finden, auch wenn die Datei anders
+heißt; andere Dokumente ebenso; vertippte Suchwörter sollen trotzdem finden; die Arten dürfen nicht starr sein.
+
+- *Art aus dem Inhalt, der Dateiname nur als Hinweis* (`dokumentarten.detect`): Im Büro heißen Dateien `Scan_0815.pdf`,
+  `Dok_17_final.pdf` oder sogar falsch (`Brandschutzkonzept_alt.pdf` mit einer Stellungnahme darin). Was ein Dokument
+  ist, steht auf der ersten Seite – so liest es auch ein Mensch. Gelesen werden die ersten 25 Zeilen (höchstens
+  2.000 Zeichen); eine Zeile *beginnt* mit der Art (nach Adjektiven wie „Brandschutztechnische“ und Zusätzen wie
+  „Entwurf des …“). Ein Wort mitten im Satz („gemäß Brandschutzkonzept“) zählt nicht, sonst wäre jede Notiz ein
+  Konzept. Briefkopfzeilen (GmbH, Tel., www, @) werden übersprungen, ein „Betreff:“ eines Briefes macht ein
+  „Schreiben“ (ein Anschreiben zum Konzept ist kein Konzept). Der Dateiname entscheidet nur, wenn der Inhalt nichts
+  sagt – mit geringer Sicherheit (0,45), die nie als „klar“ gilt; stimmen Name und Inhalt überein, steigt sie leicht.
+- *Nicht starr*: Die Startliste (`SEED`) bildet Namen, Abkürzungen und Zusammensetzungen auf eine Art ab
+  (BS-Konzept, Abschlagsrechnung → Rechnung, Fluchtwegplan → Flucht- und Rettungsplan). Ein Titelwort, das auf einen
+  bekannten Kopf endet (-berechnung, -nachweis, -protokoll, -plan, -gutachten …), aber in keiner Liste steht, wird
+  als eigene Art gespeichert („Löschwasserberechnung“, Einzahl, Schlüssel gefaltet). Gespeichert wird freier Text,
+  keine Aufzählung; die Suche kennt alle im Index vorkommenden Arten (gruppiert aus `documents`, 30 s gemerkt). Eigene
+  Namen über die vorhandene `SYNONYMS_FILE` („A = B“-Gruppen), keine zweite Konfiguration.
+- *Sprachmodell nur bei Unklarem, im Hintergrund*: Die Regeln kosten Mikrosekunden und laufen beim Schreiben der
+  Abschnitte (`documents.write_chunks` – neue, neu gelesene Dateien, Anhänge, nach der Bildauswertung). Nur wenn
+  danach keine klare Art feststeht und genug Text da ist, fragt der Thread `DokumentartWorker` das Modell: die ersten
+  1.500 Zeichen und den Dateinamen, Antwort als JSON mit `"sicher"`; „unklar“, `null` oder `"sicher": false` lassen
+  die schwache Vermutung stehen (lieber nichts als falsch). Ein Modell für jedes Dokument wäre bei ~200.000 Dateien
+  tagelange Last auf dem KI-Server, der schon Bildauswertung (3 Plätze) und Fragen bedient; die Regeln treffen die
+  üblichen Titelseiten. Darum: ein Aufruf nach dem anderen, `max_tokens` 80, und nie, solange eine Frage läuft
+  (`QUESTIONS`-Zähler in `ask.ask`) – eine Frage wartet höchstens auf einen kurzen Klassifizierungsaufruf. Mit der
+  Fake-KI wird nie gefragt (`DOKUMENTART_KI=auto`): sie müsste sich eine Art ausdenken.
+- *Neu bestimmen nur bei geändertem Text*: Gespeichert wird ein Hash des Textanfangs samt Dateiname. Gleicher
+  Anfang → die Art bleibt (auch eine vom Modell). Ersetzt die Bildauswertung den Tesseract-Text, ändert sich der
+  Anfang, die Art wird neu bestimmt und das Modell ggf. erneut gefragt.
+- *Nachtragen ohne Neu-Einlesen*: Migration 14 fügt nur Spalten und Indizes hinzu; `doc_type_hash IS NULL` heißt
+  „noch nicht bestimmt“. Der Thread nimmt je Runde 200 solche Dokumente in einer kurzen Schreibtransaktion (die ersten
+  8 Abschnitte genügen); ohne Anwendung macht es `python -m projektakte.index` am Ende des Laufs. Fortschritt auf der
+  Statusseite (Teilindex, das Zählen kostet nichts).
+- *Kein zusätzliches FTS-Feld*: Erwogen war, die Art bzw. den Titel als weitere, höher gewichtete FTS-Spalte zu
+  führen. Die Titelspalte enthält Dateiname und Überschriften schon mit Gewicht 2. Die Art als Spalte von `documents`
+  (indiziert mit dem Datum) braucht beim Nachtragen und bei jeder neuen Modellantwort nur ein UPDATE je Dokument statt
+  das Neuschreiben aller FTS-Zeilen seiner Abschnitte (bei Millionen Abschnitten Stunden), und die Rangfolge „Art zuerst,
+  neueste zuerst“ ist eine Sortierung, keine BM25-Gewichtung, die man gegen Erwähnungen austarieren müsste.
+- *Rangfolge in der Suche* (`search.type_ranking`, `_types_first`): Nennt die Anfrage eine Art (Einzahl/Mehrzahl über den
+  Wortstamm, Zusammensetzung „Kitabrandschutzkonzept“, Alias, Tippfehler bis Abstand 2, Familie „Protokolle“ →
+  alle *-protokoll-Arten), kommen zuerst die Dokumente dieser Art (je ein Treffer, neueste zuerst, schwache Vermutungen
+  hinter sicheren), dann verwandte Arten (Brandschutznachweis ↔ Brandschutzkonzept – andere Büros nennen dasselbe so),
+  dann die übrigen Treffer in ihrer Reihenfolge. Mit weiteren Wörtern („Brandschutzkonzept Kita“) stehen die Dokumente
+  der Art vorn, in denen diese Wörter vorkommen (Volltext auf diese Dokumente beschränkt); die anderen derselben Art
+  kommen ans Ende statt wegzufallen. Nichts wird gefiltert. Treffer der Art gelten auf der Suchseite immer als
+  „passend“, auch wenn der Reranker die Titelseite niedrig bewertet. „Mail“ und kleingeschriebenes „schreiben“/„bild“
+  sind in Anfragen keine Art (Mails findet die Suche als Mails, „schreiben“ ist meist ein Verb). Nur die Familien der
+  Startliste (Plan, Protokoll, Bericht, Bescheid … und „Konzept“) zählen – „Nachweis der Feuerwiderstandsdauer“ ist
+  keine Suche nach Brandschutznachweisen.
+- *Bei Fragen nur Kandidaten*: Für `ask` würde „Art zuerst“ die Titelseiten vor die Fundstelle schieben. Dort gehen nur die
+  besten Abschnitte der Dokumente dieser Art zusätzlich (höchstens 6) an den Reranker; er entscheidet. Eigener
+  Evaluationssatz und zurückgehaltener Prüfsatz blieben unverändert (103/103; 31/40 bestanden, 19/28 beantwortbar, 12/12
+  Absagen, 0 erfundene).
+- *Tippfehler gegen den echten Wortschatz* (`tippfehler.py`): Korrigiert wird nur ein Wort, das im Index nichts (oder
+  höchstens 2 Abschnitte, dann nur zu einem mindestens 10-mal häufigeren Wort) findet – richtig geschriebene seltene
+  Wörter bleiben unangetastet, Wörter mit Ziffern und unter 6 Buchstaben ebenso. Der Kandidat muss im Index stehen
+  (mindestens 2 Abschnitte), Abstand 1 ab 6 und 2 ab 9 Buchstaben (Damerau/OSA: vertauschte Nachbarn = 1), bei
+  Gleichstand das häufigere Wort. Ein unbekanntes Wort wird im Volltext *zusätzlich* gesucht, für Reranker und Vektoren
+  ersetzt; ein seltenes nur zusätzlich. Die Suchseite nennt es („meinten Sie …? Danach wurde gesucht.“) mit Link.
+- *Schnell bei Millionen Wörtern*: `fts5vocab` liest den ganzen Index – das geht nicht bei jeder Suche. Der Wortschatz
+  wird einmal gelesen (temporäre fts5vocab-Tabelle, `ORDER BY doc DESC LIMIT 400000` – SQLite sortiert dabei nur die
+  Spitze), nach Länge gruppiert, je Wort ein Buchstaben-Histogramm (uint8, NumPy, für 1 Mio. Wörter ~3 s). Eine Suche
+  vergleicht nur Wörter passender Länge, deren Histogramm höchstens 2 × Abstand abweicht (eine Änderung ändert höchstens
+  zwei Zähler), und misst die wenigen übrigen genau. Gemessen: 1,5 Mio. verschiedene Wörter im Index, Wortschatz
+  lesen 3,1 s, Korrektur von zwei Wörtern 13 ms; 1 Mio. Wörter im Speicher: 15–17 ms je Wort, rund 85 MB (bei der
+  Obergrenze 400.000 etwa ein Drittel). Kleine Indizes (unter 50.000 Abschnitten) werden beim ersten Suchen sofort
+  gelesen, große im Hintergrund (bis dahin keine Korrektur); neu gelesen höchstens alle 10 Minuten, wenn neue
+  Abschnitte dazukamen. Ein Trigramm- oder SymSpell-Index wäre schneller, kostet bei Millionen Wörtern aber ein
+  Vielfaches an Speicher; die Messung zeigt, dass es nicht nötig ist.
+- *Synonyme*: Die eingebaute Liste kennt jetzt Fluchtplan = Fluchtwegplan = Flucht- und Rettungsplan …, Prüfbericht =
+  Prüfungsbericht, Übereinstimmungserklärung = Übereinstimmungsbestätigung, Feuerwehrplan = Feuerwehreinsatzplan,
+  Aktenvermerk = Aktennotiz. Nicht aufgenommen: Brandschutzkonzept = Brandschutznachweis als Synonym – die Wörter
+  stehen in Texten für verschiedene Dokumente; die Suche behandelt sie als *verwandte Arten* (gleich danach) und die
+  Vektoren finden „BS-Nachweis“ zu „Brandschutzkonzept“ über die Bedeutung.

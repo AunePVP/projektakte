@@ -5,6 +5,26 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Dokumentarten:** Jedes Dokument (auch Mail-Anhänge) bekommt eine Dokumentart – Brandschutzkonzept,
+  Brandschutznachweis, Baugenehmigung, Prüfbericht, Stellungnahme, Gutachten, Flucht- und Rettungsplan, Protokoll,
+  Angebot, Rechnung, Leistungsverzeichnis, Schreiben, Foto … –, bestimmt aus dem Titelbereich der ersten Seite, der
+  Dateiname nur als schwacher Hinweis. Nicht starr: unbekannte Arten wie „Löschwasserberechnung“ werden als freier
+  Text gespeichert. Unklare Dokumente bestimmt im Hintergrund das Sprachmodell (neue Einstellung `DOKUMENTART_KI`,
+  `auto` = nur mit den echten Diensten; ein Aufruf nach dem anderen, nie neben einer Frage; „unklar“ ist erlaubt).
+  Geänderter Text (z. B. nach der Bildauswertung) → neu bestimmt. Schon eingelesene Dokumente werden im Hintergrund
+  nachgetragen, Fortschritt auf der Statusseite. Etikett an Suchtreffern, in der Ordneransicht, im Betrachter und auf
+  der Dokumentseite. DB-Migration 14 (Spalten und Indizes in `documents`, nur hinzugefügt).
+- **Suche nach Dokumentart:** Nennt die Suche eine Dokumentart – in jeder Form („Brandschutzkonzepte“, „BS-Konzept“,
+  „Brandschutzkozept“, „Protokolle“) –, stehen die Dokumente dieser Art oben, die neuesten zuerst, dann verwandte
+  Arten (Brandschutznachweis), dann alles andere; nichts wird weggelassen. „Brandschutzkonzept Kita“ verbindet Art und
+  weitere Wörter. Bei Fragen gehen die passenden Abschnitte dieser Dokumente zusätzlich an den Reranker.
+  `GET /api/search` liefert `doc_types`, `corrections` und je Treffer `doc_type`/`type_match`.
+- **Tippfehler:** Ein Suchwort, das nichts findet („Branschutzkonzept“, „Rettungswek“), wird auch als nächstliegendes
+  häufiges Wort des Index gesucht; die Suchseite sagt „meinten Sie …?“. Wortschatz bis 400.000 Wörter im Speicher,
+  im Hintergrund gelesen; wenige Millisekunden je Suche.
+- Synonyme: Fluchtplan = Fluchtwegplan = Flucht- und Rettungsplan, Prüfbericht = Prüfungsbericht,
+  Übereinstimmungserklärung = Übereinstimmungsbestätigung, Feuerwehrplan = Feuerwehreinsatzplan, Aktenvermerk =
+  Aktennotiz.
 - **Bildauswertung und Embeddings laufen neben dem Einlesen:** In der Anwendung liest das Bildmodell die
   Scan-Seiten ab dem Start in einem eigenen Thread, während der Lauf noch Dateien liest und Tesseract arbeitet –
   nicht mehr erst am Ende jedes Laufs. Höchstens `VISION_CONCURRENCY` (3) Aufrufe gleichzeitig, ein Platz des
@@ -201,9 +221,9 @@ Roadmap-Schritt.
   die an der alten Grenze scheiterten, werden einmal neu gelesen (Migration 12).
 - Protokoll: „Bild nicht lesbar“ steht je Dokument und Ursache nur noch einmal (Streifenscans mit JBIG2 ohne
   `jbig2dec` meldeten es je Streifen); der Fortschritt nennt die echte Seitennummer („Seite 22 (2 von 5)“).
-- 2048 Tests (2043 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`,
-  `tests/test_index_reihenfolge.py`, `tests/test_dokument_betrachter.py`, `tests/test_grosse_plaene.py` und
-  `tests/test_bildauswertung_parallel.py`.
+- 2127 Tests (2122 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`,
+  `tests/test_index_reihenfolge.py`, `tests/test_dokument_betrachter.py`, `tests/test_grosse_plaene.py`,
+  `tests/test_bildauswertung_parallel.py`, `tests/test_dokumentarten.py` und `tests/test_tippfehler.py`.
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

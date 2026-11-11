@@ -7,6 +7,7 @@
 <dl class="meta">
   <dt>Pfad</dt><dd>{{ d.rel_path|path }}</dd>
   {% if mail %}<dt>Anhang von</dt><dd><a href="/mails/{{ mail.id }}">{{ mail.subject }}</a> ({{ mail.date|de_date(true) }})</dd>{% endif %}
+  {% if doc_type_of(d) %}<dt>Dokumentart</dt><dd><span class="pill doc-type">{{ doc_type_of(d) }}</span>{% if doc_type_note(d) %} <span class="muted small">{{ doc_type_note(d) }}</span>{% endif %}</dd>{% endif %}
   <dt>Datum</dt><dd>{{ d.doc_date|de_date }}</dd>
   <dt>Größe</dt><dd>{{ d.size|filesize }}{% if d.pages %} · {{ d.pages|plural('Seite', 'Seiten') }}{% endif %}</dd>
   <dt>Status</dt><dd>{% if d.status == 'ok' %}indexiert{% if d.method == 'vision' %} (per Bildauswertung){% endif %}{% else %}<span class="pill warn">{{ DOC_STATUS.get(d.status, d.status) }}</span> {{ d.message or '' }}{% endif %}</dd>

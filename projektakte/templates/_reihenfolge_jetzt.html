@@ -40,4 +40,13 @@
     {%- if e.error %} <span class="warn">· Fehler: {{ e.error }}</span>{% endif %}
   </div>
   {% endif %}
+  {% if now.doctypes and (now.doctypes.busy or now.doctypes.error) %}{% set d = now.doctypes %}
+  <div class="rf-bg small">
+    <span class="pill">Dokumentarten</span>
+    {% if d.todo %}{{ d.todo|plural('Dokument', 'Dokumente') }} noch ohne Dokumentart (werden nach und nach erkannt{% if d.typed %}, {{ d.typed|de_num }} erledigt{% endif %}){% endif %}
+    {%- if d.todo and d.ai_open %} · {% endif %}
+    {%- if d.ai_open %}{{ d.ai_open|plural('unklares Dokument', 'unklare Dokumente') }} beim Sprachmodell (eins nach dem anderen, nie neben einer Frage){% if d.asked %} · {{ d.asked|de_num }} beantwortet{% endif %}{% endif %}
+    {%- if d.error %} <span class="warn">· Fehler: {{ d.error }}</span>{% endif %}
+  </div>
+  {% endif %}
 </div>

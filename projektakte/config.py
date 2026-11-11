@@ -201,6 +201,18 @@ def _embed_concurrency(env: Mapping[str, str], warnings: list[str]) -> int:
     return value
 
 
+def _dokumentart_ki(env: Mapping[str, str], warnings: list[str]) -> str:
+    """DOKUMENTART_KI: whether the language model is asked about documents whose type stayed unclear –
+    auto (default: with real AI services, not with the fake one), 1 or 0."""
+    raw = (env.get("DOKUMENTART_KI") or "").strip().lower()
+    if not raw or raw == "auto":
+        return "auto"
+    if raw in ("1", "0"):
+        return raw
+    warnings.append(f"DOKUMENTART_KI={raw} ist ungültig (auto, 1 oder 0) – es gilt auto")
+    return "auto"
+
+
 def _vision_pass_seconds(env: Mapping[str, str], warnings: list[str]) -> float:
     """VISION_PASS_SECONDS: time budget of the phase "Bildauswertung" per indexing pass; 0 = no limit."""
     raw = (env.get("VISION_PASS_SECONDS") or "").strip()
@@ -351,6 +363,9 @@ class Settings:
     vision_pass_seconds: float = 1800.0
     # background embedding (embed_worker.py): batches sent to the embedding service at a time
     embed_concurrency: int = 2
+    # document types (dokumentarten.py): ask the language model about unclear documents – auto (real AI
+    # services only), 1 (always), 0 (never)
+    dokumentart_ki: str = "auto"
     # levels below PROJECTS_DIR at which project folders are looked for (PROJECT_FOLDER_DEPTH);
     # None: the depth found by the automatic detection (PROJECT_NUMBER_PATTERN=auto, see structure.py –
     # with auto a number set here is not used, the confirmed proposal's depth is)
@@ -443,6 +458,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         vision_concurrency=_vision_concurrency(e, warnings),
         vision_pass_seconds=_vision_pass_seconds(e, warnings),
         embed_concurrency=_embed_concurrency(e, warnings),
+        dokumentart_ki=_dokumentart_ki(e, warnings),
         vision_skip_folders=tuple(w.strip() for w in (e.get("VISION_SKIP_FOLDERS") or "").split(",") if w.strip()),
         index_folder_order=tuple(dict.fromkeys(w.strip().strip("/") for w in (e.get("INDEX_FOLDER_ORDER") or "").split(",")
                                                if w.strip().strip("/"))),

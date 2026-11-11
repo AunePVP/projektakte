@@ -8,9 +8,10 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
 
-from . import db
-from .ai import AIServiceError
 import re
+
+from . import db, dokumentarten, tippfehler
+from .ai import AIServiceError
 
 from .textutil import (
     QUESTION_WORDS,
@@ -188,6 +189,8 @@ class Hit:
     project_kind: str | None = None  # "bauvorhaben" for a site's own files (db.BAUVORHABEN)
     parent: str | None = None  # the site (Bauvorhaben) of the hit's order, if any
     parent_name: str | None = None
+    doc_type: str | None = None  # what the document is (dokumentarten.py), if known well enough
+    type_match: str | None = None  # "art": of the type the query names, "verwandt": of a related type
 
     @property
     def local_date(self) -> date | None:
@@ -217,6 +220,8 @@ class SearchResult:
     hits: list[Hit] = field(default_factory=list)
     reranked: bool = False
     notes: list[str] = field(default_factory=list)
+    doc_types: list[str] = field(default_factory=list)  # document types the query names (ranked first)
+    corrections: list[tippfehler.Correction] = field(default_factory=list)  # typing errors searched as corrected
 
 
 def _de_date(iso: str | None) -> str:
@@ -227,7 +232,8 @@ def _de_date(iso: str | None) -> str:
 _HIT_SQL = """
 SELECT c.id, c.project, p.name AS project_name, c.doc_id, c.mail_id, c.page, c.heading, c.text, c.ord,
        d.filename, d.rel_path, d.doc_date, m.subject, m.date AS mail_date, m.sender_name, m.sender,
-       p.kind AS project_kind, p.parent AS parent, pp.name AS parent_name
+       p.kind AS project_kind, p.parent AS parent, pp.name AS parent_name,
+       d.doc_type, d.doc_type_confidence
 FROM chunks c
 LEFT JOIN documents d ON d.id = c.doc_id
 LEFT JOIN mails m ON m.id = c.mail_id
@@ -253,7 +259,8 @@ def load_hits(conn: sqlite3.Connection, ids: list[int]) -> dict[int, Hit]:
             title=title or "", doc_id=r["doc_id"], mail_id=r["mail_id"],
             rel_path=r["rel_path"] if kind == "document" else None, page=r["page"], heading=r["heading"],
             date=date, sender=(r["sender_name"] or r["sender"]) if r["mail_id"] else None, text=r["text"],
-            ord=r["ord"], project_kind=r["project_kind"], parent=r["parent"], parent_name=r["parent_name"])
+            ord=r["ord"], project_kind=r["project_kind"], parent=r["parent"], parent_name=r["parent_name"],
+            doc_type=r["doc_type"] if (r["doc_type_confidence"] or 0) >= dokumentarten.MIN_RANKED else None)
     return out
 
 
@@ -291,9 +298,17 @@ def _cut_by_budget(exc: Exception, used: float | None, own: float) -> bool:
     return used is not None and used < own and "Zeitüberschreitung" in str(exc)
 
 
+TYPE_CANDIDATES = 6  # sections of documents of the named type added to the reranker candidates (questions)
+# how the document types a query names are used (hybrid_search ``doc_types``)
+TYPES_TOP = "top"  # search page: documents of the type first, newest first, then everything else
+TYPES_CANDIDATES = "candidates"  # questions: their best sections join the reranker candidates
+TYPES_OFF = "off"
+
+
 def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, project: str | None = None,
                   k: int = 10, rerank_top_k: int = 30, use_reranker: bool = True,
-                  synonyms_file: str | None = None, deadline: float | None = None) -> SearchResult:
+                  synonyms_file: str | None = None, deadline: float | None = None,
+                  doc_types: str = TYPES_OFF, typos: bool = True) -> SearchResult:
     """Full text + vectors (RRF), then the reranker on the best candidates. Falls back gracefully:
     no embeddings → full text only; reranker down → order of the hybrid search.
 
@@ -302,23 +317,38 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
     invoice number) are also searched literally; those hits always reach the reranker, and for a query
     of reference codes alone they come first (a cross-encoder judges topics, not codes).
 
+    ``typos``: a word that finds (nearly) nothing is also searched as the closest frequent word of the index
+    (tippfehler.py, ``result.corrections``); the reranker and the vectors get the corrected query.
+    ``doc_types``: a document type named in the query ("Brandschutzkonzepte", "BS-Konzept",
+    "Brandschutzkozept") – TYPES_TOP ranks the documents of that type first (newest first; with further words
+    those matching them first), then those of related types, then everything else; nothing is left out.
+    TYPES_CANDIDATES only lets their best sections reach the reranker (questions).
+
     ``deadline`` (``time.monotonic()`` value): the AI calls get at most the remaining time; without
     time left the search falls back to full text / hybrid order instead of waiting."""
     result = SearchResult(query=query, project=project)
     # a site (Bauvorhaben) covers its orders, an order only itself (db.project_scope)
     scope = db.project_scope(conn, project) if project else None
     synonyms = load_synonyms(default_synonyms_file() if synonyms_file is None else synonyms_file)
+    fts_text = semantic = query
+    if typos:
+        result.corrections = tippfehler.corrections(conn, query)
+        fts_text = " ".join([query, *(c.word for c in result.corrections)])
+        semantic = tippfehler.corrected_query(query, result.corrections)
+    tq = dokumentarten.query_types(conn, semantic, synonyms) if doc_types != TYPES_OFF else None
+    if tq:
+        result.doc_types = tq.names
     identifiers = find_identifiers(query)
     literal = identifier_search(conn, identifiers, projects=scope, k=CANDIDATES) if identifiers else []
     codes_only = bool(identifiers) and not query_terms(strip_identifiers(query))
-    fts = fts_search(conn, query, projects=scope, k=CANDIDATES, expand=True, synonyms=synonyms)
+    fts = fts_search(conn, fts_text, projects=scope, k=CANDIDATES, expand=True, synonyms=synonyms)
     vec: list[tuple[int, float]] = []
     embed_timeout = time_left(deadline, ai.embed.timeout) if ai is not None else None
     if ai is not None and embed_timeout == 0:
         result.notes.append(BUDGET_VECTOR_NOTE)
     elif ai is not None:
         try:
-            qvec = ai.embed.embed_query(query, timeout=embed_timeout)
+            qvec = ai.embed.embed_query(semantic, timeout=embed_timeout)
             vec = VECTOR_INDEX.search(conn, vector_key, qvec, projects=scope, k=CANDIDATES)
         except AIServiceError as exc:
             log.warning("Vektorsuche nicht verfügbar, nur Volltext: %s", exc)
@@ -328,6 +358,7 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
     if literal:  # literal hits of a reference code first, so they always reach the reranker
         first = {cid for cid, _ in literal}
         fused = [x for x in fused if x[0] in first] + [x for x in fused if x[0] not in first]
+    typed = type_ranking(conn, tq, scope, synonyms, limit=max(k, TYPE_CANDIDATES)) if tq else []
     hits_by_id = load_hits(conn, [cid for cid, _ in fused[: max(rerank_top_k, k) * 2]])
     candidates: list[Hit] = []
     per_source: dict[tuple, int] = {}
@@ -343,12 +374,17 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
         candidates.append(h)
         if len(candidates) >= rerank_top_k:
             break
+    if typed and doc_types == TYPES_CANDIDATES:  # their best sections are judged by the reranker as well
+        have = {h.chunk_id for h in candidates}
+        extra = [t.chunk_id for t in typed if t.matches and t.chunk_id not in have][:TYPE_CANDIDATES]
+        extra_hits = load_hits(conn, extra)
+        candidates += [extra_hits[c] for c in extra if c in extra_hits]
     rerank_timeout = time_left(deadline, ai.rerank.timeout) if ai is not None else None
     if candidates and use_reranker and ai is not None and rerank_timeout == 0:
         result.notes.append(BUDGET_RERANK_NOTE)
     elif candidates and use_reranker and ai is not None:
         try:
-            scores = ai.rerank.rerank(query, [rerank_text(h) for h in candidates], timeout=rerank_timeout)
+            scores = ai.rerank.rerank(semantic, [rerank_text(h) for h in candidates], timeout=rerank_timeout)
             for h, s in zip(candidates, scores):
                 h.rerank = s
             order = sorted(range(len(candidates)), key=lambda i: (-scores[i], i))
@@ -360,8 +396,80 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
                                 else "Reranker nicht erreichbar – Reihenfolge der hybriden Suche")
     if codes_only:  # "BS-2024-0233", "63-0137/24": the documents that contain the code first
         candidates.sort(key=lambda h: not has_identifier(h, identifiers))
-    result.hits = _cap_per_source(candidates, MAX_PER_SOURCE)[:k]
+    hits = _cap_per_source(candidates, MAX_PER_SOURCE)
+    if typed and doc_types == TYPES_TOP:
+        hits = _types_first(conn, hits, typed)
+    result.hits = hits[:k]
     return result
+
+
+@dataclass
+class TypedDocument:
+    """A document of a type the query names (search.type_ranking)."""
+
+    doc_id: int
+    chunk_id: int  # its best section for the other words of the query, else its beginning
+    match: str  # "art" (the named type) or "verwandt" (a related type)
+    matches: bool  # the other words of the query occur in it (or there are none)
+
+
+def type_ranking(conn: sqlite3.Connection, tq: "dokumentarten.TypeQuery", scope: list[str] | None,
+                 synonyms: Synonyms | None, *, limit: int = 20) -> list[TypedDocument]:
+    """The documents of the types a query names, in the order they are shown first: the named type before
+    related ones, those matching the other words of the query before the rest, newest first within."""
+    exact = dokumentarten.type_documents(conn, tq.exact, projects=scope, limit=limit)
+    seen = {d[0] for d in exact}
+    related = [d for d in dokumentarten.type_documents(conn, tq.related, projects=scope, limit=limit)
+               if d[0] not in seen] if tq.related else []
+    docs = [(d, "art") for d in exact] + [(d, "verwandt") for d in related]
+    if not docs:
+        return []
+    best: dict[int, int] = {}
+    rest = fts_query(tq.rest, expand=True, synonyms=synonyms) if query_terms(tq.rest, synonyms) else None
+    if rest:
+        ids = ",".join(str(int(d[0])) for d, _ in docs)
+        cond, args = _in_projects(None, scope)
+        try:
+            for cid, doc_id in conn.execute(
+                    "SELECT c.id, c.doc_id FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid "
+                    f"WHERE chunks_fts MATCH ? AND c.doc_id IN ({ids}){cond} "
+                    "ORDER BY bm25(chunks_fts, 2.0, 1.0) LIMIT 500", [rest, *args]):
+                best.setdefault(doc_id, cid)
+        except sqlite3.OperationalError:
+            pass
+    out = [TypedDocument(d[0], best.get(d[0], d[1]), how, rest is None or d[0] in best) for d, how in docs]
+    # high-confidence types before weak guesses (a type from the file name alone), stable otherwise
+    conf = {d[0]: d[3] for d, _ in docs}
+    out.sort(key=lambda t: (not t.matches, t.match != "art", conf[t.doc_id] < dokumentarten.CLEAR))
+    return out
+
+
+def _types_first(conn: sqlite3.Connection, hits: list[Hit], typed: list[TypedDocument]) -> list[Hit]:
+    """The documents of the named type first (search page), then the other hits in their order, then the
+    documents of the type the other words of the query do not occur in. One hit per typed document."""
+    by_chunk = {h.chunk_id: h for h in hits}
+    missing = [t.chunk_id for t in typed if t.chunk_id not in by_chunk]
+    loaded = load_hits(conn, missing) if missing else {}
+    placed: set[int] = set()
+    first: list[Hit] = []
+    last: list[Hit] = []
+    other_docs = {h.doc_id for h in hits}
+    for t in typed:
+        h = by_chunk.get(t.chunk_id) or loaded.get(t.chunk_id)
+        if h is None:
+            continue
+        h.type_match = t.match
+        if t.matches:
+            first.append(h)
+            placed.add(t.doc_id)
+        elif t.doc_id not in other_docs:
+            last.append(h)
+    how = {t.doc_id: t.match for t in typed}
+    middle = [h for h in hits if h.doc_id not in placed or h.doc_id is None]
+    for h in middle:
+        if h.doc_id in how:
+            h.type_match = how[h.doc_id]
+    return first + middle + last
 
 
 def _cap_per_source(hits: list[Hit], cap: int) -> list[Hit]:

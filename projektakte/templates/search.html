@@ -10,13 +10,19 @@
 </form>
 {% if res %}
   {% for n in res.notes %}<p class="note warn">{{ n }}</p>{% endfor %}
+  {% if res.corrections %}
+  <p class="note info search-info">{% for c in res.corrections %}{% if c.unknown %}„{{ c.typed }}“ kommt nicht vor – meinten Sie <a href="{{ corrected_url }}">„{{ c.word }}“</a>? Danach wurde gesucht.{% else %}Gesucht wurde auch nach „{{ c.word }}“ (statt „{{ c.typed }}“).{% endif %}{{ ' ' if not loop.last }}{% endfor %}</p>
+  {% endif %}
+  {% if res.doc_types and res.hits|selectattr('type_match')|list %}
+  <p class="muted small search-info">Dokumentart erkannt: {% for n in res.doc_types %}<span class="pill doc-type match">{{ n }}</span>{{ ' ' if not loop.last }}{% endfor %} – Dokumente dieser Art stehen oben, die neuesten zuerst; Dokumente, die das Wort nur erwähnen, folgen.</p>
+  {% endif %}
   {% if named_projects %}
   <p class="project-links">{% for p in named_projects %}<a class="button secondary" href="/projekte/{{ p.number }}">Zum {{ 'Bauvorhaben' if p.kind == 'bauvorhaben' else 'Projekt' }} {{ p.number }} {{ p.name }}</a>{% endfor %}</p>
   {% endif %}
   {% if view.strong %}
-  <p class="muted small">{{ view.strong|length|plural('passender Treffer', 'passende Treffer') }}{% if res.reranked %}, nach Relevanz sortiert{% endif %}</p>
+  <p class="muted small">{{ view.strong|length|plural('passender Treffer', 'passende Treffer') }}{% if res.doc_types and view.strong|selectattr('type_match')|list %}, die gesuchte Dokumentart zuerst{% if res.reranked %}, sonst nach Relevanz sortiert{% endif %}{% elif res.reranked %}, nach Relevanz sortiert{% endif %}</p>
   <ol class="hits">
-  {% for h in view.strong %}{{ search_hit(h, q, show_project=show_project) }}{% endfor %}
+  {% for h in view.strong %}{{ search_hit(h, hq, show_project=show_project) }}{% endfor %}
   </ol>
   {% else %}
   {% if view.weak and view.show_weak %}
@@ -31,7 +37,7 @@
     <h2>Schwach passende Treffer</h2>
     <p class="muted small">Diese Stellen haben mit der Suche wahrscheinlich wenig zu tun. <a href="{{ strong_url }}">Wieder ausblenden</a></p>
     <ol class="hits weak">
-    {% for h in view.weak %}{{ search_hit(h, q, weak=true, show_project=show_project) }}{% endfor %}
+    {% for h in view.weak %}{{ search_hit(h, hq, weak=true, show_project=show_project) }}{% endfor %}
     </ol>
     {% else %}
     <p class="muted small">{{ view.weak|length|plural('schwach passender Treffer', 'schwach passende Treffer') }} ausgeblendet – <a href="{{ weak_url }}">trotzdem schwache Treffer zeigen</a></p>

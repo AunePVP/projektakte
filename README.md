@@ -520,6 +520,39 @@ UTF-8-Datei, deren Pfad `SYNONYMS_FILE` nennt (eine Gruppe je Zeile, `BMA = Bran
 in beide Richtungen, `EG -> Erdgeschoss` nur in eine, `#` für Kommentare; wird bei Änderung ohne
 Neustart neu gelesen).
 
+**Dokumentarten.** Jedes Dokument (auch Mail-Anhänge) bekommt beim Einlesen eine Dokumentart –
+Brandschutzkonzept, Brandschutznachweis, Baugenehmigung, Bescheid, Prüfbericht, Stellungnahme, Gutachten,
+Flucht- und Rettungsplan, Feuerwehrplan, Besprechungs-/Begehungs-/Abnahmeprotokoll, Angebot, Rechnung,
+Leistungsverzeichnis, Übereinstimmungserklärung, Schreiben, Foto … Sie kommt aus dem **Inhalt**: aus dem
+Titelbereich der ersten Seite (eine Zeile, die mit der Art beginnt – „Brandschutzkonzept“, „Brandschutztechnische
+Stellungnahme“, „Prüfbericht Nr. 1 zum Brandschutznachweis“, „Entwurf des Brandschutzkonzepts“), nicht aus einem
+Wort im Fließtext („gemäß Brandschutzkonzept …“). Der Dateiname ist nur ein schwacher Hinweis (`BSK_Kita_v3.pdf`),
+ein irreführender Name (`Brandschutzkonzept_alt.pdf` mit einer Stellungnahme darin) zählt nicht. Die Liste ist nur
+ein Anfang: Ein Titel wie „Löschwasserberechnung“ (endet auf eine bekannte Art: -berechnung, -nachweis, -protokoll,
+-plan …) wird als eigene Dokumentart gespeichert. Bleibt die Art unklar, fragt Projektakte im Hintergrund das
+Sprachmodell (`DOKUMENTART_KI`, nur mit den echten Diensten, ein Aufruf nach dem anderen, nie während eine Frage
+läuft); „unklar“ ist eine gültige Antwort. Ändert sich der Text (z. B. nach der Bildauswertung), wird neu
+bestimmt. Schon eingelesene Dokumente werden nach dem Update im Hintergrund nachgetragen (Statusseite, „Wird gerade
+gelesen“ → „Dokumentarten“). Die Art steht als kleines Etikett an Treffern, in der Ordneransicht, im Betrachter und
+auf der Dokumentseite (dort mit „aus dem Inhalt: „…““).
+
+Nennt eine Suche eine Dokumentart – auch in der Mehrzahl, als Zusammensetzung, abgekürzt oder vertippt
+(„Brandschutzkonzepte“, „BS-Konzept“, „Brandschutzkozept“, „Prüfberichte Hotel“, „Protokolle“ für alle
+Protokollarten) –, stehen die Dokumente dieser Art oben, **die neuesten zuerst**, dann verwandte Arten
+(Brandschutznachweis zu Brandschutzkonzept), dann alles andere. **Nichts wird weggelassen:** Dokumente, die das
+Wort nur erwähnen, und Dokumente mit unbekannter Art folgen wie bisher (Volltext und Vektoren).
+„Brandschutzkonzept Kita“ zeigt zuerst die Brandschutzkonzepte, in denen „Kita“ vorkommt. Eigene Namen für eine
+Art: eine Zeile in der `SYNONYMS_FILE` (`Löschwassernachweis = Löschwasserberechnung`). Bei Fragen zählt die
+Art nur als zusätzliche Kandidaten für den Reranker.
+
+**Tippfehler.** Findet ein Wort der Suche nichts (oder fast nichts), sucht Projektakte zusätzlich nach dem
+nächstliegenden häufigen Wort, das wirklich im Index steht (ab 6 Buchstaben ein Fehler, ab 9 Buchstaben zwei,
+vertauschte Nachbarn zählen als einer): „Branschutzkonzept“ → „Brandschutzkonzept“, „Rettungswek“ →
+„Rettungsweg“. Die Suchseite sagt es („… kommt nicht vor – meinten Sie „Brandschutzkonzept“? Danach wurde
+gesucht.“). Richtig geschriebene Wörter werden nie ersetzt. Der Wortschatz (bis 400.000 häufigste Wörter) wird
+einmal im Hintergrund gelesen und nach neuen Dokumenten höchstens alle 10 Minuten aufgefrischt; ein Nachschlagen
+dauert wenige Millisekunden.
+
 ### Fragen beantworten
 
 Die besten `ASK_TOP_K` (6) Treffer der Suche gehen – nummeriert und bis `ASK_CONTEXT_CHARS`
@@ -587,7 +620,7 @@ zugeordnet oder vorgeschlagen, 8 von 8 inhaltlichen Vorschlägen richtig.
 | `GET /api/documents/{id}` | ein Dokument mit seinen Abschnitten (Seite, Überschrift, Text) |
 | `GET /api/mails?project=&status=&q=` | Mails (neueste zuerst), filterbar; `project` genau diese Nummer (bei einem Bauvorhaben nur die ihm selbst zugeordneten Mails) |
 | `GET /api/mails/{id}` | eine Mail mit Text und Anhängen |
-| `GET /api/search?q=&project=&k=` | Hybride Suche (Volltext + Vektor, Reranker), Treffer mit Quelle (`parent`, `parent_name`: Bauvorhaben des Treffers); `project` = Bauvorhaben sucht in allen Unterprojekten |
+| `GET /api/search?q=&project=&k=` | Hybride Suche (Volltext + Vektor, Reranker), Treffer mit Quelle (`parent`, `parent_name`: Bauvorhaben des Treffers; `doc_type`: Dokumentart, `type_match`: `art`/`verwandt`, wenn die Suche eine Dokumentart nennt); `doc_types`: erkannte Dokumentarten, `corrections`: korrigierte Tippfehler; `project` = Bauvorhaben sucht in allen Unterprojekten |
 | `POST /api/ask` | Frage beantworten: `{"question": "…", "project": "BS-…"}` (Projekt optional) → Antwort, `found`, zitierte Quellen |
 | `GET /api/inbox?limit=&offset=&status=` | Zuordnungs-Eingang: Mails ohne sichere Zuordnung, mit Vorschlag und Begründung (seitenweise, `total`) |
 | `GET /api/integration/info`, `GET /api/integration/projects`, `POST /api/integration/suggest`, `POST /api/integration/notify` | für plMail (Bearer `INTEGRATION_TOKEN`), siehe docs/plmail-integration.md |
@@ -637,6 +670,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `VISION_CONCURRENCY` | `3` | Gleichzeitige Modellaufrufe der Bildauswertung (ab 1 = nacheinander); der KI-Server nimmt 4, einer bleibt für Fragen frei |
 | `VISION_PASS_SECONDS` | `1800` | Länge einer Runde der Bildauswertung in Sekunden; danach beginnt sofort die nächste (sie nimmt auch fehlgeschlagene Seiten, deren Wartezeit um ist). Ohne Anwendung (`python -m projektakte.index`): Zeitbudget der Phase am Ende des Laufs. `0` = bis nichts mehr aussteht |
 | `EMBED_CONCURRENCY` | `2` | Stapel (je 32 Abschnitte), die die Embeddings im Hintergrund gleichzeitig an den Embedding-Dienst schicken (1–8) |
+| `DOKUMENTART_KI` | `auto` | Sprachmodell nach der Dokumentart unklarer Dokumente fragen: `auto` = nur mit den echten KI-Diensten (nicht mit `AI_MODE=fake`), `1` = immer, `0` = nie. Ein Aufruf nach dem anderen, nie neben einer Frage (siehe „Suche“) |
 | `VISION_SKIP_FOLDERS` | leer | Ordnernamen, deren Fotos nicht an das Modell gehen, mit Komma getrennt; `Bilder` trifft auch `263900-Bilder`. Scans (PDF) werden weiter gelesen; ohne die Einstellung werden die Fotos beim nächsten Lauf nachgelesen |
 | `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | `120` / `800` | Sekunden / Antwortlänge |
 | `LLM_EXTRA_BODY` | – | JSON, das in jede Chat-Anfrage gemischt wird, z. B. `{"chat_template_kwargs":{"enable_thinking":false}}` |
@@ -743,6 +777,8 @@ in der WAL-Datei fehlen.
 | `projektakte/indexer.py`, `background.py` | Indexierungslauf, Hintergrund-Thread |
 | `projektakte/reihenfolge.py` | Reihenfolge der Projekte im Lauf, Fertig-Stand je Projekt, Vorziehen, ausgeschaltete Ordner, „Wird gerade gelesen“ |
 | `projektakte/embed_worker.py` | Embeddings im Hintergrund neben dem Einlesen |
+| `projektakte/dokumentarten.py` | Dokumentart je Dokument (Inhalt, Dateiname, Sprachmodell), Dokumentart in Suchanfragen |
+| `projektakte/tippfehler.py` | Tippfehler in Suchanfragen: Wortschatz des Index, nächstliegendes häufiges Wort |
 | `projektakte/zeiten.py` | Laufzeiten, gleitende Durchschnitte und grobe Schätzungen der Statusseite |
 | `projektakte/integration.py` | API für plMail |
 | `projektakte/auth.py`, `auth_web.py`, `passwords.py`, `passwd.py` | Benutzer, Sitzung, Anmeldebremse, Login/Logout, Passwort-Hashes |

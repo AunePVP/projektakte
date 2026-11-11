@@ -356,7 +356,13 @@ GarVO = GaVO = Garagenverordnung
 BeVO = BStättV = Beherbergungsstättenverordnung
 SchulbauR = SchulbauRL = MSchulbauR = Schulbaurichtlinie
 PrüfVO = PrüfVV = Prüfverordnung
-FwP = FWP = Feuerwehrplan
+FwP = FWP = Feuerwehrplan = Feuerwehreinsatzplan
+# Dokumentarten, die verschieden genannt werden (die Suche erkennt sie zusätzlich als Dokumentart, dokumentarten.py)
+Fluchtplan = Fluchtwegplan = Fluchtwegeplan = Rettungswegplan = Flucht- und Rettungsplan
+Prüfbericht = Prüfungsbericht
+Übereinstimmungserklärung = Übereinstimmungsbestätigung
+Brandschutzkonzept = Brandschutzkonzeption
+Aktenvermerk = Aktennotiz
 PrüfIng = Prüfingenieur
 HM = Handmelder = Handfeuermelder = Handtaster
 ÜH = Überflurhydrant

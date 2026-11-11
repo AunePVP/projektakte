@@ -4,7 +4,7 @@
 <div class="bt bt-art-{{ v.kind }}" data-bt-doc="{{ v.id }}"{% if v.chunk %} data-bt-ziel="bt-c{{ v.chunk }}"{% endif %}>
   <div class="bt-head">
     <div class="bt-titel">
-      <h2 id="bt-titel" tabindex="-1">{{ v.filename|path }}</h2>
+      <h2 id="bt-titel" tabindex="-1">{{ v.filename|path }}{% if v.doc_type %} <span class="pill doc-type" title="Dokumentart">{{ v.doc_type }}</span>{% endif %}</h2>
       <p class="muted small">{% if v.mail %}Anhang der Mail „{{ v.mail.subject or '(ohne Betreff)' }}“ vom {{ v.mail.date|de_date }}{% elif v.folder %}{{ v.folder|path }}{% endif %}{% if v.page and v.kind == 'pdf' %} · Seite {{ v.page }}{% endif %}</p>
     </div>
     <div class="bt-nav" data-bt-nav hidden>

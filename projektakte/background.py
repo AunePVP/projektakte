@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from . import demo, embed_worker, extract_worker, vision
+from . import demo, dokumentarten, embed_worker, extract_worker, vision
 from .ai.services import AIServices
 from .config import Settings
 from .demo_cleanup import demo_purge_note
@@ -44,6 +44,8 @@ class BackgroundIndexer:
         self.vision = vision.VisionWorker(settings, llm) if vision.VisionWorker.wanted(llm) else None
         embed = getattr(ai, "embed", None)
         self.embedder = embed_worker.EmbedWorker(settings, embed) if embed_worker.EmbedWorker.wanted(embed) else None
+        # document types: backfill of older documents and the model's opinion on unclear ones (dokumentarten.py)
+        self.doctypes = dokumentarten.DokumentartWorker(settings, llm)
         self.state: dict = {"running": False, "phase": "wartet", "runs": 0, "last_started": None,
                             "last_finished": None, "last_stats": None, "last_error": None,
                             "last_warnings": [], "next_run": None, "demo_generated": None}
@@ -59,6 +61,7 @@ class BackgroundIndexer:
             self.vision.start()
         if self.embedder is not None:
             self.embedder.start()
+        self.doctypes.start()
 
     def stop(self, timeout: float = 10.0) -> None:
         self._stop.set()
@@ -67,6 +70,7 @@ class BackgroundIndexer:
             self.vision.stop(timeout)
         if self.embedder is not None:
             self.embedder.stop(timeout)
+        self.doctypes.stop(timeout)
         # the extraction worker process ends with the app: a file being read is abandoned at once (it is
         # read again on the next start) instead of holding up the shutdown
         extract_worker.shutdown()
@@ -88,6 +92,7 @@ class BackgroundIndexer:
                            if self.vision is not None else None)
         state["embeddings"] = (embed_worker.LIVE.snapshot() | {"alive": self.embedder.alive}
                                if self.embedder is not None else None)
+        state["doc_types"] = dokumentarten.LIVE.snapshot() | {"alive": self.doctypes.alive}
         return state
 
     def _set(self, **kw) -> None:
@@ -99,7 +104,7 @@ class BackgroundIndexer:
         self._set(running=True, last_started=_now(), phase="startet")
         try:
             stats = run_index(self.settings, self.ai, progress=lambda phase: self._set(phase=phase),
-                              vision=self.vision is None, embeddings=self.embedder is None)
+                              vision=self.vision is None, embeddings=self.embedder is None, doc_types=False)
             warnings = run_warnings(stats)
             purged = demo_purge_note(stats.get("demo_purge"))
             for w in warnings:

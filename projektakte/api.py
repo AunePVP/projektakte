@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from . import db, inbox as inbox_queries, reihenfolge, structure, vision
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .ask import ask as answer_question
-from .search import hybrid_search
+from .search import TYPES_TOP, hybrid_search
 from .db import BAUVORHABEN
 from .registry import children, get_project, list_projects, project_folders
 
@@ -200,8 +200,10 @@ def search(request: Request, q: str, project: str | None = None, k: int = 10) ->
             project = p["number"]
         res = hybrid_search(conn, request.app.state.ai, str(s.db_path), q, project=project,
                             k=max(1, min(k, 50)), rerank_top_k=s.rerank_top_k,
-                            synonyms_file=s.synonyms_file)
+                            synonyms_file=s.synonyms_file, doc_types=TYPES_TOP)
     return {"query": res.query, "project": res.project, "reranked": res.reranked, "notes": res.notes,
+            "doc_types": res.doc_types,
+            "corrections": [{"typed": c.typed, "word": c.word, "unknown": c.unknown} for c in res.corrections],
             "hits": [h.to_dict() for h in res.hits]}
 
 

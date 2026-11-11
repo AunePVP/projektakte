@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 
-from . import db, documents, extract_worker, reihenfolge, structure
+from . import db, documents, dokumentarten, extract_worker, reihenfolge, structure
 from .ai.services import AIServices
 from .assign import assign_mails
 from .config import Settings
@@ -38,10 +38,12 @@ def plmail_client(settings: Settings) -> JMAPClient:
 
 
 def run_index(settings: Settings, ai: AIServices | None = None, progress=None, *, vision: bool = True,
-              embeddings: bool = True) -> dict:
+              embeddings: bool = True, doc_types: bool = True) -> dict:
     """One pass over all sources. ``progress(phase)`` is called with the current phase. ``vision`` False: no
     phase "Bildauswertung" (the app's background worker reads the scan pages meanwhile); ``embeddings`` False:
-    no phase "Embeddings" (the app's background embedding makes the vectors meanwhile, embed_worker.py)."""
+    no phase "Embeddings" (the app's background embedding makes the vectors meanwhile, embed_worker.py);
+    ``doc_types`` False: documents indexed before document types existed are typed by the app's worker
+    (dokumentarten.DokumentartWorker), not at the end of the pass."""
     def phase(name: str) -> None:
         reihenfolge.LIVE.set_phase(name)  # status page: "Wird gerade gelesen"
         if progress:
@@ -54,7 +56,7 @@ def run_index(settings: Settings, ai: AIServices | None = None, progress=None, *
     with _RUN_LOCK, extract_worker.isolation(settings), documents.vision_later():
         reihenfolge.LIVE.begin()
         try:
-            return _run(settings, ai, phase, vision, embeddings)
+            return _run(settings, ai, phase, vision, embeddings, doc_types)
         finally:
             reihenfolge.LIVE.end()
 
@@ -98,7 +100,8 @@ def _index_documents(conn, llm, settings: Settings) -> dict:
                            f"Zeichenkodierung (meist eine Freigabe ohne iocharset=utf8) – {ENCODING_HINT}"}
 
 
-def _run(settings: Settings, ai: AIServices | None, phase, vision: bool = True, embeddings: bool = True) -> dict:
+def _run(settings: Settings, ai: AIServices | None, phase, vision: bool = True, embeddings: bool = True,
+         doc_types: bool = True) -> dict:
     started = time.time()
     db.init_db(settings.db_path)
     stats: dict = {}
@@ -166,6 +169,10 @@ def _run(settings: Settings, ai: AIServices | None, phase, vision: bool = True, 
             stats["vision"] = run_vision(conn, llm, settings, progress=phase)
             if embeddings and ai is not None and (stats["vision"].get("pages") or stats["vision"].get("documents")):
                 stats["vision_embeddings"] = embed_pending(conn, ai.embed)  # the sections written anew
+        if doc_types:  # without the app: the documents indexed before types existed (deterministic, fast)
+            typed = dokumentarten.backfill_all(conn)
+            if typed:
+                stats["doc_types"] = {"typed": typed}
     stats["seconds"] = round(time.time() - started, 2)
     log.info("Indexierung fertig: %s", stats)
     return stats

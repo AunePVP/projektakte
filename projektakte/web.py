@@ -24,14 +24,15 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from markupsafe import Markup, escape
 
-from . import __version__, betrachter, db, embed_worker, inbox, reihenfolge, structure, vision, zeiten, zeitleiste
+from . import (__version__, betrachter, db, dokumentarten, embed_worker, inbox, reihenfolge, structure, tippfehler,
+               vision, zeiten, zeitleiste)
 from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .config import DEFAULT_PROJECT_NUMBER_PATTERN
 from .db import BAUVORHABEN
 from .extract import extraction_profile
 from .registry import as_tree, children, get_project, list_projects, number_regex, project_folders
-from .search import hybrid_search
+from .search import TYPES_TOP, hybrid_search
 from .webtext import (SNIPPET_CHARS, breakable_path, highlight, join_spaced_codes, matcher, parse_blocks, passage,
                       render_html, same_heading, snippet, trim_overlap)
 
@@ -234,7 +235,8 @@ def search_view(res, *, min_score: float, show_weak: bool, query: str = "", code
     if res.reranked:
         strong, weak = [], []
         for h in res.hits:
-            ok = (h.rerank or 0.0) >= min_score or (query and literal_identifier_hit(h, query, code_pattern))
+            ok = ((h.rerank or 0.0) >= min_score or bool(getattr(h, "type_match", None))
+                  or (query and literal_identifier_hit(h, query, code_pattern)))
             (strong if ok else weak).append(h)
     else:
         strong, weak = list(res.hits), []
@@ -634,9 +636,27 @@ def folder_view(docs: list[dict], folder: str) -> dict:
             "found": not folder or bool(folders or files)}
 
 
+def doc_type_of(d: dict) -> str | None:
+    """The document type shown for a document row (dokumentarten.py) – not a weak guess."""
+    return d.get("doc_type") if (d.get("doc_type_confidence") or 0) >= dokumentarten.MIN_RANKED else None
+
+
+def doc_type_note(d: dict) -> str | None:
+    """How the type of a document was found, for the document page ("aus dem Inhalt: „Brandschutzkonzept …“")."""
+    if not doc_type_of(d):
+        return None
+    how = dokumentarten.METHOD_LABELS.get(d.get("doc_type_method") or "", "")
+    title = d.get("doc_type_title")
+    return f"{how}: „{title}“" if how and title else how or None
+
+
+templates.env.globals.update(doc_type_of=doc_type_of, doc_type_note=doc_type_note)
+
+
 def _project_docs(conn, number: str) -> list[dict]:
     return [dict(r) for r in conn.execute(
-        "SELECT id, rel_path, filename, ext, size, doc_date, pages, status, message, method FROM documents "
+        "SELECT id, rel_path, filename, ext, size, doc_date, pages, status, message, method, "
+        f"CASE WHEN doc_type_confidence >= {dokumentarten.MIN_RANKED} THEN doc_type END AS doc_type FROM documents "
         "WHERE project = ? AND mail_id IS NULL ORDER BY rel_path", (number,))]
 
 
@@ -745,7 +765,8 @@ def search_page(request: Request, q: str = "", project: str = "", weak: str = ""
         number = p["number"] if p else ""
         if query:
             res = hybrid_search(conn, request.app.state.ai, str(s.db_path), query, project=number or None,
-                                k=SEARCH_HITS, rerank_top_k=s.rerank_top_k, synonyms_file=s.synonyms_file)
+                                k=SEARCH_HITS, rerank_top_k=s.rerank_top_k, synonyms_file=s.synonyms_file,
+                                doc_types=TYPES_TOP)
             named = projects_named_in(conn, query, code_pattern_of(request))
         projects = as_tree(list_projects(conn))
     if res is not None:
@@ -754,7 +775,10 @@ def search_page(request: Request, q: str = "", project: str = "", weak: str = ""
     return render(request, "search.html", q=query, project=number, projects=projects, res=res, view=view,
                   show_project=not number or (p or {}).get("kind") == BAUVORHABEN,
                   named_projects=named, all_projects_url=search_url(query, None, weak="1" if weak == "1" else ""),
-                  weak_url=search_url(query, number, weak="1"), strong_url=search_url(query, number))
+                  weak_url=search_url(query, number, weak="1"), strong_url=search_url(query, number),
+                  hq=" ".join([query, *(c.word for c in res.corrections)]) if res is not None else query,
+                  corrected_url=search_url(tippfehler.corrected_query(query, res.corrections), number)
+                  if res is not None and res.corrections else "")
 
 
 # ------------------------------------------------------------------------------------- inbox
@@ -1121,7 +1145,7 @@ def viewer_view(s, d: dict, *, page: int | None = None, chunk: int | None = None
     kind = betrachter.view_kind(d.get("ext") or Path(d.get("filename") or "").suffix)
     rel = d.get("rel_path") or ""
     folder = "" if d.get("mail_id") else str(PurePosixPath(rel).parent) if rel else ""
-    v = {"id": d["id"], "filename": d.get("filename") or rel, "folder": "" if folder == "." else folder,
+    v = {"id": d["id"], "filename": d.get("filename") or rel, "doc_type": doc_type_of(d), "folder": "" if folder == "." else folder,
          "mail": mail, "available": path is not None, "status": d.get("status"), "message": d.get("message"),
          "file_url": file_url(d["id"], d.get("filename")), "text_url": f"/dokumente/{d['id']}",
          "page": page, "chunk": chunk, "pages": 1, "note": "", "active": betrachter.is_active(d.get("ext"))}
@@ -1403,11 +1427,26 @@ def _rf_now(conn, view: reihenfolge.View | None, request: Request) -> dict:
     times = _rf_times(conn, snap, reading, queue_left)
     eye = _vision_now(request, conn)
     embed = _embed_now(request, conn)
-    background = bool(eye and eye["busy"]) or bool(embed and embed["busy"])
+    types = _doctypes_now(request, conn)
+    background = bool(eye and eye["busy"]) or bool(embed and embed["busy"]) or bool(types and types["busy"])
     return {"running": snap["running"], "phase": phase, "phase_detail": snap["phase"], "project": project,
             "seen": snap["seen"], "total": snap["total"], "upcoming": upcoming, "times": times, "vision": eye,
-            "embed": embed, "background": background, "active": snap["running"] or background,
+            "embed": embed, "doctypes": types, "background": background, "active": snap["running"] or background,
             "poll": RF_POLL_RUNNING if snap["running"] or background else RF_POLL_IDLE}
+
+
+def _doctypes_now(request: Request, conn) -> dict | None:
+    """The document types in the background (dokumentarten.DokumentartWorker), None without it: documents
+    still without a type (older ones, typed in batches) and unclear ones waiting for the language model."""
+    worker = getattr(getattr(request.app.state, "indexer", None), "doctypes", None)
+    if worker is None:
+        return None
+    live = dokumentarten.LIVE.snapshot()
+    counts = dokumentarten.counts(conn)
+    ai_open = counts["ai_open"] if live["ai"] else 0
+    return {"alive": worker.alive, "busy": bool(worker.alive and (counts["todo"] or ai_open)), "todo": counts["todo"],
+            "ai": live["ai"], "ai_open": ai_open, "typed": live["typed"], "asked": live["asked"],
+            "error": live["error"]}
 
 
 def _embed_now(request: Request, conn) -> dict | None:

@@ -24,7 +24,7 @@
     {% endfor %}
     {% for d in browser.files %}
     <tr>
-      <td><a href="/dokumente/{{ d.id }}" data-betrachter="{{ viewer_url(d.id) }}">{{ (d.filename or d.rel_path)|path }}</a></td>
+      <td><a href="/dokumente/{{ d.id }}" data-betrachter="{{ viewer_url(d.id) }}">{{ (d.filename or d.rel_path)|path }}</a>{% if d.doc_type %} <span class="pill doc-type" title="Dokumentart">{{ d.doc_type }}</span>{% endif %}</td>
       <td class="hide-sm">{{ d.ext[1:]|upper }}</td>
       <td class="date">{{ d.doc_date|de_date }}</td>
       <td>{% if d.status != 'ok' %}<span class="pill warn" title="{{ d.message or '' }}">{{ DOC_STATUS.get(d.status, d.status) }}</span>{% elif d.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>

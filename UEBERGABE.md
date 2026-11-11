@@ -22,7 +22,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
-- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 2.048 Tests, etwa 2–3 min). Docker-Probelauf:
+- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 2.127 Tests, etwa 3 min). Docker-Probelauf:
   `sh scripts/docker-smoke.sh`.
 
 ## 3. Stand in Zahlen
@@ -30,7 +30,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
 | Was | Ergebnis |
 |---|---|
 | Phase A (14 Roadmap-Schritte), Zuordnung in plMail, Nachbesserungen | fertig (ROADMAP 1–16a) |
-| Testsuite | grün (zuletzt 2043 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
+| Testsuite | grün (zuletzt 2122 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
 | Docker-Probelauf | grün |
 | Eigener Evaluationssatz mit Fake-KI | 103/103 |
 | Zurückgehaltener Prüfsatz (unabhängiger Autor) mit Fake-KI | 19/28 beantwortbare richtig (0,68), 12/12 Absagen, 0 erfundene Antworten |
@@ -56,7 +56,7 @@ Mails/plMail ──┼─► Indexer ─► Leseprozess ─► Abschnitte ─►
 | Einlesen | `registry.py` (Projektordner), `structure.py` (Nummernschema erkennen), `documents.py`, `extract.py` + `extract_worker.py` (eigener Leseprozess), `chunking.py`, `vectors.py`, `indexer.py`, `background.py`, `vision.py` + `embed_worker.py` (Bildauswertung und Embeddings nebenher), `reihenfolge.py`, `zeiten.py` |
 | Mails | `mails/` (`eml_source`, `jmap_source`, `store`, `model`) |
 | Zuordnung | `assign.py`, `inbox.py`, `integration.py` (API für plMail) |
-| Suche und Antworten | `search.py`, `ask.py`, `textutil.py` |
+| Suche und Antworten | `search.py`, `ask.py`, `textutil.py`, `dokumentarten.py`, `tippfehler.py` |
 | KI-Anbindung | `ai/` (`llm`, `embeddings`, `rerank`, `http`) |
 | Oberfläche | `web.py`, `webtext.py`, `templates/`, `api.py` |
 | Sicherheit | `auth.py`, `websecurity.py`, `logsetup.py` |
@@ -319,7 +319,7 @@ mindestens App + 2 × `EXTRACT_MEMORY_MB` (zwei Leseprozesse). Tesseract ohne Do
 an einigen Prüfprotokollen, Dauer je Seite (steht jetzt auf der Statusseite), ob Fragen während Bildauswertung und
 Einlesen schnell genug bleiben (sonst `VISION_CONCURRENCY=2`, `EMBED_CONCURRENCY=1`), ob der Embedding-Dienst
 `EMBED_CONCURRENCY=2` gut verträgt. Einzelheiten: README „Scans in zwei Stufen“ und „Nebeneinander“, DECISIONS
-„Scans in zwei Stufen“ und „Einlesen, Bildauswertung und Embeddings nebeneinander“. Letzte DB-Migration: 13.
+„Scans in zwei Stufen“ und „Einlesen, Bildauswertung und Embeddings nebeneinander“.
 
 ## 7c. Reihenfolge beim Einlesen
 
@@ -346,6 +346,20 @@ Bilder direkt, TIFF/BMP als Vorschau vom Server, Mails/Word/ODT/Text als gelesen
 Grenzen der Vorschau oben in `betrachter.py` (`MAX_PIXELS`, `MAX_DECODED_BYTES`, `PREVIEW_EDGE`). Zu prüfen im Büro:
 große Plan-TIFFs von der Freigabe (Dauer der Umwandlung, Lesbarkeit beim Zoomen) und der PDF-Betrachter des im
 Büro benutzten Browsers im Rahmen. Einzelheiten: README „Dokument-Betrachter“, DECISIONS „Dokument-Betrachter“.
+
+## 7e. Dokumentarten und Tippfehler in der Suche
+
+Jedes Dokument hat eine Dokumentart (`dokumentarten.py`): aus dem Titelbereich der ersten Seite, Dateiname nur als
+schwacher Hinweis, unbekannte Arten mit bekanntem Kopf („Löschwasserberechnung“) als freier Text; unklare fragt der
+Thread `DokumentartWorker` das Sprachmodell (`DOKUMENTART_KI=auto`: nur echte Dienste, einzeln, nie neben einer Frage).
+Migration 14 (Spalten `doc_type*` in `documents`); ältere Dokumente trägt derselbe Thread nach (Statusseite,
+„Dokumentarten“; ohne Anwendung `python -m projektakte.index`). Suche (`search.py`, `doc_types=TYPES_TOP` auf Suchseite
+und API, `TYPES_CANDIDATES` bei Fragen): genannte Art zuerst, neueste zuerst, dann verwandte Arten, dann alles andere –
+nichts wird gefiltert. Tippfehler (`tippfehler.py`): Wörter ohne Treffer werden gegen den Wortschatz des Index
+korrigiert („meinten Sie …?“). Zu prüfen im Büro: Trefferquote der Regeln auf echten Titelseiten (Dokumentseite zeigt
+„aus dem Inhalt: „…““), welche Arten das Modell vorschlägt (`SELECT doc_type, doc_type_method, COUNT(*) FROM documents
+GROUP BY 1, 2`), wie lange das Nachtragen und die Modellfragen bei der echten Ablage dauern, ob die Korrekturen passen.
+Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in der Suche“. Letzte DB-Migration: 14.
 
 ## 8. Offene Punkte, nach Wichtigkeit
 

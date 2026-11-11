@@ -54,8 +54,14 @@ def test_documents_too_big_for_the_old_limit_are_read_again_once(tmp_path, tesse
     dbp = tmp_path / "x.sqlite3"
     conn.execute("PRAGMA user_version = 11")
     conn.commit()
+    # migrations 12 and 13 once more (the later ones add columns, which exist already)
+    monkeypatch.setattr(db, "MIGRATIONS", db.MIGRATIONS[:13])
     db.init_db(dbp)  # migration 12
-    assert conn.execute("PRAGMA user_version").fetchone()[0] >= 12
+    monkeypatch.undo()
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
+    conn.execute(f"PRAGMA user_version = {len(db.MIGRATIONS)}")
+    conn.commit()
+    monkeypatch.setattr(extract_mod, "PDF_IMAGE_BYTES", 450_000_000)
     assert _docs(conn)["Plan.pdf"]["extract_profile"] == ""
     _stage1(conn, root, llm)
     VisionPass(conn, llm, projects_dir=root).run()

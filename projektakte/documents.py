@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import extract_worker, reihenfolge
+from . import dokumentarten, extract_worker, reihenfolge
 from .vectors import CHUNKS_WAITING
 from .db import BAUVORHABEN
 from .chunking import Chunk, chunk_pages
@@ -272,6 +272,8 @@ def write_chunks(conn: sqlite3.Connection, doc_id: int, chunks: list[Chunk], *, 
         add_fts(conn, cid, fts_title(filename, project, project_name, c.heading), c.text)
     if chunks:
         CHUNKS_WAITING.set()
+    # what the document is (Brandschutzkonzept, Prüfbericht, …) – anew only when the beginning of its text changed
+    dokumentarten.classify_written(conn, doc_id, chunks, filename)
 
 
 def store_document(conn: sqlite3.Connection, *, path: str, rel_path: str, project: str | None,
