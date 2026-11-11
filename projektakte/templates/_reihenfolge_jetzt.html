@@ -1,18 +1,43 @@
-{#- Card "Wird gerade gelesen": refreshed by HTMX every few seconds while a pass runs, rarely otherwise. -#}
-<div id="rf-jetzt" class="rf-now" hx-get="/status/reihenfolge/jetzt" hx-trigger="every {{ now.poll }}s" hx-swap="outerHTML">
+{#- Card "Wird gerade gelesen" (inside #rf-jetzt, see _reihenfolge.html): only this part is replaced by HTMX –
+    every few seconds while the indexing pass, the Bildauswertung or the embedding runs, rarely otherwise; the
+    spinner next to it stays. Each activity running shows what it does; "Alles gelesen" only when none runs. -#}
+{%- set t = now.times -%}
+<div id="rf-jetzt-inhalt" class="rf-now-body{{ '' if now.active else ' idle' }}" hx-get="/status/reihenfolge/jetzt" hx-trigger="every {{ now.poll }}s" hx-swap="outerHTML">
   {% if now.running %}
-  <span class="rf-spin" aria-hidden="true"></span>
-  <div class="rf-now-body">
     {% if now.project %}
     <div><span class="rf-num">{{ now.project.number }}</span> {{ now.project.name }} <span class="small muted">· Ordner {{ now.project.folder_label }}</span></div>
     {% endif %}
     <div class="small muted rf-files">{% if now.project and now.total %}{{ now.seen|de_num }} von {{ now.total|plural('Datei', 'Dateien') }} · {% endif %}<span class="pill">{{ now.phase or 'startet' }}</span>{% if now.phase_detail != now.phase %} <span>{{ now.phase_detail[now.phase|length + 3:] }}</span>{% endif %}</div>
     {% if now.project and now.total %}<progress class="rf-bar run" max="{{ now.total }}" value="{{ now.seen }}">{{ now.seen }} von {{ now.total }}</progress>{% endif %}
+    <div class="small muted rf-times">Lauf seit {{ t.run_elapsed|dauer }}{% if t.project_elapsed is not none %} · Projekt seit {{ t.project_elapsed|dauer }}{% if t.project_eta is not none %} · noch {{ t.project_eta|etwa }}{% endif %}{% endif %}</div>
+    {% if t.files_read or t.files_unchanged %}<div class="small muted rf-times">{% if t.files_read %}Ø {{ t.per_file|je }} je gelesene Datei · {% endif %}{{ t.files_read|de_num }} gelesen, {{ t.files_unchanged|de_num }} unverändert oder nicht lesbar</div>{% endif %}
     {% if now.upcoming %}<div class="small muted rf-next">Danach: {% for n in now.upcoming %}<span class="rf-chip">{{ n }}</span>{{ ' ' if not loop.last }}{% endfor %}</div>{% endif %}
-  </div>
+  {% elif now.background %}
+  <p class="muted small">Dateien: der nächste Lauf folgt{% if now.upcoming %} – als Nächstes {% for n in now.upcoming %}<span class="rf-chip">{{ n }}</span>{{ ' ' if not loop.last }}{% endfor %}{% endif %}. Im Hintergrund läuft:</p>
   {% elif now.upcoming %}
   <p class="muted">Gerade läuft keine Indexierung. Als Nächstes: {% for n in now.upcoming %}<span class="rf-chip">{{ n }}</span>{{ ' ' if not loop.last }}{% endfor %}</p>
   {% else %}
   <p class="muted">Alles gelesen.</p>
+  {% endif %}
+  {% if t.queue_left %}<div class="small muted rf-times">Warteschlange: noch {{ t.queue_left|plural('Projekt', 'Projekte') }}{% if t.queue_eta is not none %} · grob {{ t.queue_eta|etwa }} (Ø {{ t.per_project|dauer }} je Projekt){% else %} · Schätzung nach den ersten {{ t.queue_min }} fertigen Projekten{% endif %}</div>{% endif %}
+  {% if now.vision %}{% set v = now.vision %}
+  <div class="rf-bg small">
+    <span class="pill">Bildauswertung</span>
+    {% if v.busy %}läuft, {{ v.in_flight or 0 }} von {{ v.concurrency }} gleichzeitig beim Modell{% if v.document %} · {{ v.document.name }}, Seite {{ v.document.page }}{% endif %}{% if v.project %} · <span class="rf-num">{{ v.project.number }}</span>{% endif %} · {{ v.pending|plural('Seite', 'Seiten') }} ausstehend
+      {%- if v.per_hour %} · Ø {{ v.per_page|je }} je Seite · {{ v.per_hour|round|int|de_num }} Seiten/Std. · fertig grob {{ v.eta|etwa }}{% elif v.per_page %} · Ø {{ v.per_page|je }} je Seite{% endif %}
+    {%- elif v.alive %}wartet – keine Seiten ausstehend{% else %}beendet{% endif %}
+    {%- if v.off_pages %} <span class="muted">· {{ v.off_pages|plural('Seite', 'Seiten') }} in ausgeschalteten Ordnern</span>{% endif %}
+    {%- if v.error %} <span class="warn">· Fehler: {{ v.error }}</span>{% endif %}
+  </div>
+  {% endif %}
+  {% if now.embed %}{% set e = now.embed %}
+  <div class="rf-bg small">
+    <span class="pill">Embeddings</span>
+    {% if e.busy %}laufen, {{ e.in_flight or 0 }} von {{ e.concurrency }} Stapeln beim Dienst · {{ e.done|de_num }} Abschnitte fertig, {{ e.pending|plural('Abschnitt', 'Abschnitte') }} ohne Vektor
+      {%- if e.current %} · zuletzt {% if e.current.project %}<span class="rf-num">{{ e.current.project }}</span> {% endif %}{{ e.current.file or 'Mail' }}{% endif %}
+      {%- if e.per_hour %} · {{ e.per_hour|round|int|de_num }} Abschnitte/Std. · fertig grob {{ e.eta|etwa }}{% endif %}
+    {%- elif e.alive %}warten – alle Abschnitte haben einen Vektor{% else %}beendet{% endif %}
+    {%- if e.error %} <span class="warn">· Fehler: {{ e.error }}</span>{% endif %}
+  </div>
   {% endif %}
 </div>

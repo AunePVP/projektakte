@@ -22,7 +22,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
-- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 2.029 Tests, etwa 2–3 min). Docker-Probelauf:
+- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 2.048 Tests, etwa 2–3 min). Docker-Probelauf:
   `sh scripts/docker-smoke.sh`.
 
 ## 3. Stand in Zahlen
@@ -30,7 +30,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
 | Was | Ergebnis |
 |---|---|
 | Phase A (14 Roadmap-Schritte), Zuordnung in plMail, Nachbesserungen | fertig (ROADMAP 1–16a) |
-| Testsuite | grün (zuletzt 2024 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
+| Testsuite | grün (zuletzt 2043 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
 | Docker-Probelauf | grün |
 | Eigener Evaluationssatz mit Fake-KI | 103/103 |
 | Zurückgehaltener Prüfsatz (unabhängiger Autor) mit Fake-KI | 19/28 beantwortbare richtig (0,68), 12/12 Absagen, 0 erfundene Antworten |
@@ -53,7 +53,7 @@ Mails/plMail ──┼─► Indexer ─► Leseprozess ─► Abschnitte ─►
 | Bereich | Module (`projektakte/`) |
 |---|---|
 | Start, Einstellungen | `main.py`, `config.py` (alles aus Umgebungsvariablen), `startup.py`, `db.py` |
-| Einlesen | `registry.py` (Projektordner), `structure.py` (Nummernschema erkennen), `documents.py`, `extract.py` + `extract_worker.py` (eigener Leseprozess), `chunking.py`, `vectors.py`, `indexer.py`, `background.py` |
+| Einlesen | `registry.py` (Projektordner), `structure.py` (Nummernschema erkennen), `documents.py`, `extract.py` + `extract_worker.py` (eigener Leseprozess), `chunking.py`, `vectors.py`, `indexer.py`, `background.py`, `vision.py` + `embed_worker.py` (Bildauswertung und Embeddings nebenher), `reihenfolge.py`, `zeiten.py` |
 | Mails | `mails/` (`eml_source`, `jmap_source`, `store`, `model`) |
 | Zuordnung | `assign.py`, `inbox.py`, `integration.py` (API für plMail) |
 | Suche und Antworten | `search.py`, `ask.py`, `textutil.py` |
@@ -306,19 +306,26 @@ Aufbau laut Beispiel aus dem Büro (Namen hier bewusst weggelassen):
 ## 7b. Scans: zwei Stufen (Bildauswertung)
 
 Beim Einlesen bekommen Scans sofort Text (OCR-Ebene oder Tesseract) und sind durchsuchbar; das Bildmodell
-liest die Seiten danach in der Phase „Bildauswertung“ am Ende jedes Laufs (Bild + Text, Handschrift als
-„[handschriftlich: …]“), neueste zuerst, `VISION_CONCURRENCY=3` gleichzeitig, `VISION_PASS_SECONDS=1800` je
-Lauf. Statusseite: „Bildauswertung – N Seiten in M Dokumenten ausstehend“. Grob gerechnet: 290.000
-Scan-Seiten × 50 s ÷ 3 ≈ 56 Tage Dauerbetrieb für den Altbestand; neue Dateien gehen vor. Tesseract ohne
-Docker: `sudo apt install tesseract-ocr tesseract-ocr-deu`. Zu messen mit der echten KI: Qualität der
-Handschrift-Vermerke an einigen Prüfprotokollen, Dauer je Seite, ob Fragen während der Bildauswertung
-schnell genug bleiben (sonst `VISION_CONCURRENCY=2`). Einzelheiten: README „Scans in zwei Stufen“,
-DECISIONS „Scans in zwei Stufen“.
+liest die Seiten (Bild + Text, Handschrift als „[handschriftlich: …]“) **in der Anwendung nebenher**, ab dem Start und
+während der Lauf noch liest (`vision.VisionWorker`, eigener Thread, eigener zweiter Leseprozess für die Seitenbilder),
+vorgezogene Projekte und Ordnerreihenfolge zuerst, darin neueste zuerst, `VISION_CONCURRENCY=3` gleichzeitig,
+Runden zu `VISION_PASS_SECONDS=1800`. Ebenso nebenher die Embeddings (`embed_worker.py`, `EMBED_CONCURRENCY=2`
+Stapel). Ohne Anwendung (`python -m projektakte.index`) bleiben beide Phasen am Ende des Laufs. Statusseite, Karte
+„Wird gerade gelesen“: Seiten beim Modell, ausstehende Seiten, Ø je Seite, Seiten/Std., Restzeit; Abschnitte ohne
+Vektor mit Rate und Restzeit. Grob gerechnet: 290.000 Scan-Seiten × 50 s ÷ 3 ≈ 56 Tage Dauerbetrieb für den
+Altbestand – jetzt ab dem ersten Tag statt nach dem ersten Lauf; neue Dateien gehen vor. Container-Speicher
+mindestens App + 2 × `EXTRACT_MEMORY_MB` (zwei Leseprozesse). Tesseract ohne Docker:
+`sudo apt install tesseract-ocr tesseract-ocr-deu`. Zu messen mit der echten KI: Qualität der Handschrift-Vermerke
+an einigen Prüfprotokollen, Dauer je Seite (steht jetzt auf der Statusseite), ob Fragen während Bildauswertung und
+Einlesen schnell genug bleiben (sonst `VISION_CONCURRENCY=2`, `EMBED_CONCURRENCY=1`), ob der Embedding-Dienst
+`EMBED_CONCURRENCY=2` gut verträgt. Einzelheiten: README „Scans in zwei Stufen“ und „Nebeneinander“, DECISIONS
+„Scans in zwei Stufen“ und „Einlesen, Bildauswertung und Embeddings nebeneinander“. Letzte DB-Migration: 13.
 
 ## 7c. Reihenfolge beim Einlesen
 
-Statusseite, Bereich unter „KI-Dienste“: Ordner-Reihenfolge (▲/▼, „aus“ = ans Ende), „Wird gerade gelesen“
-(aktualisiert sich selbst), Projektliste mit Warteschlange / Fertig / Alle, Suche nach Nummer, „Vorziehen“.
+Statusseite, Bereich unter „KI-Dienste“: Ordner-Reihenfolge (▲/▼, „aus“ = **wird nicht gelesen**, schon Gelesenes
+bleibt durchsuchbar), „Wird gerade gelesen“ (aktualisiert sich selbst, echte Dateizahl, Laufzeit, Ø je gelesene
+Datei, Restzeit des Projekts und grob der Warteschlange, dazu Bildauswertung und Embeddings), Projektliste mit Warteschlange / Fertig / Alle, Suche nach Nummer, „Vorziehen“.
 Für den Wunsch „erst Ordner 3, dann 2“: Ordner 3 nach oben, 2 darunter – oder vorab in `projektakte.env`
 `INDEX_FOLDER_ORDER=3,2` (gilt, bis jemand die Reihenfolge auf der Seite ändert). Jeder Lauf: vorgezogene →
 nicht fertige Ordner für Ordner (neueste Nummer zuerst) → fertige auf neue Dateien prüfen; die Bildauswertung

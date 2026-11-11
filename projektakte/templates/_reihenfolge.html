@@ -6,7 +6,7 @@
   <div class="grid">
     <section class="card" aria-labelledby="rf-h-ordner">
       <h2 id="rf-h-ordner">Reihenfolge der Ordner</h2>
-      <p class="small muted rf-lead">Projekte aus dem obersten Ordner werden zuerst gelesen. Ein ausgeschalteter Ordner kommt erst ganz am Ende.</p>
+      <p class="small muted rf-lead">Projekte aus dem obersten Ordner werden zuerst gelesen. Ein ausgeschalteter Ordner wird gar nicht gelesen – auch keine Bildauswertung; was schon gelesen ist, bleibt durchsuchbar. Mails sind davon nicht betroffen.</p>
       {% if rf.folders %}
       <ol class="rf-folders">
         {% for f in rf.folders %}
@@ -15,14 +15,14 @@
         <li class="{{ 'off' if not f.enabled }}">
           <span class="rf-rank">{{ f.rank if f.rank else '–' }}</span>
           <div class="rf-fbody">
-            <span class="rf-fname">{{ f.label }}</span> <span class="small muted">· {{ f.finished|de_num }} von {{ f.total|de_num }} {{ 'Projekt' if f.total == 1 else 'Projekten' }} fertig</span>
+            <span class="rf-fname">{{ f.label }}</span> <span class="small muted">· {{ f.finished|de_num }} von {{ f.total|de_num }} {{ 'Projekt' if f.total == 1 else 'Projekten' }} fertig</span>{% if not f.enabled %} <span class="rf-st off">aus – wird nicht gelesen</span>{% endif %}
             <progress class="rf-bar" max="{{ f.total or 1 }}" value="{{ f.finished }}">{{ f.finished }} von {{ f.total }}</progress>
           </div>
           <form method="post" action="/status/reihenfolge/ordner" hx-post="/status/reihenfolge/ordner" hx-target="#reihenfolge" hx-swap="outerHTML" class="rf-acts">
             <input type="hidden" name="ordner" value="{{ f.name }}"><input type="hidden" name="tab" value="{{ rf.tab }}"><input type="hidden" name="q" value="{{ rf.q }}">
             <button class="secondary rf-icon" name="aktion" value="hoch"{% if not prev or prev.enabled != f.enabled %} disabled{% endif %} aria-label="Ordner {{ f.label }} nach oben" title="nach oben">▲</button>
             <button class="secondary rf-icon" name="aktion" value="runter"{% if not nxt or nxt.enabled != f.enabled %} disabled{% endif %} aria-label="Ordner {{ f.label }} nach unten" title="nach unten">▼</button>
-            <button class="secondary rf-icon" name="aktion" value="{{ 'aus' if f.enabled else 'an' }}" aria-label="Ordner {{ f.label }} {{ 'ausschalten' if f.enabled else 'einschalten' }}">{{ 'aus' if f.enabled else 'an' }}</button>
+            <button class="secondary rf-icon" name="aktion" value="{{ 'aus' if f.enabled else 'an' }}" aria-label="Ordner {{ f.label }} {{ 'ausschalten (wird dann nicht gelesen)' if f.enabled else 'einschalten (wird wieder gelesen)' }}" title="{{ 'ausschalten: Ordner wird nicht gelesen' if f.enabled else 'einschalten: Ordner wird wieder gelesen' }}">{{ 'aus' if f.enabled else 'an' }}</button>
           </form>
         </li>
         {% endfor %}
@@ -40,7 +40,12 @@
     </section>
     <section class="card" aria-labelledby="rf-h-jetzt">
       <h2 id="rf-h-jetzt">Wird gerade gelesen</h2>
-      {% with now = rf.now %}{% include "_reihenfolge_jetzt.html" %}{% endwith %}
+      {#- the spinner stays outside the part HTMX replaces every few seconds, so its animation runs on; it comes
+          after that part in the page (shown first by CSS) and is hidden by the sibling selector while idle -#}
+      <div id="rf-jetzt" class="rf-now">
+        {% with now = rf.now %}{% include "_reihenfolge_jetzt.html" %}{% endwith %}
+        <span class="rf-spin" aria-hidden="true"></span>
+      </div>
     </section>
   </div>
   <section class="card" aria-labelledby="rf-h-projekte">
@@ -56,5 +61,5 @@
     </div>
     {% include "_reihenfolge_liste.html" %}
   </section>
-  <p class="small muted">So arbeitet jeder Lauf: zuerst die vorgezogenen Projekte, dann die noch nicht fertigen Ordner für Ordner, darin die neueste Nummer zuerst. Danach werden die fertigen Projekte in derselben Reihenfolge auf neue und geänderte Dateien geprüft – Mails und neue Dateien kommen also weiter in jedem Lauf dran. Die Bildauswertung folgt derselben Reihenfolge.</p>
+  <p class="small muted">So arbeitet jeder Lauf: zuerst die vorgezogenen Projekte, dann die noch nicht fertigen Ordner für Ordner, darin die neueste Nummer zuerst. Danach werden die fertigen Projekte in derselben Reihenfolge auf neue und geänderte Dateien geprüft – Mails und neue Dateien kommen also weiter in jedem Lauf dran. Ausgeschaltete Ordner werden übersprungen. Die Bildauswertung läuft nebenher und folgt derselben Reihenfolge.</p>
 </div>

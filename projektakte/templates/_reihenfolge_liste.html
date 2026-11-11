@@ -20,7 +20,8 @@
       <td class="num hide-sm">{{ p.files|de_num }}</td>
       <td>{% if p.state == 'run' %}<span class="rf-st"><span class="rf-spin sm" aria-hidden="true"></span>wird gelesen</span>
         {%- elif p.state == 'pin' %}<span class="rf-st pin">vorgezogen</span>
-        {%- elif p.state == 'done' %}{% if p.skipped %}<span class="rf-st warn" title="Dateien oder Ordner, die nicht gelesen werden konnten (Fehler, zu groß, Name mit falscher Zeichenkodierung)">fertig, {{ p.skipped|de_num }} übersprungen</span>{% else %}<span class="rf-st ok">✓ fertig</span>{% endif %} <span class="small muted">{{ p.done_at|de_date(true) }}</span>
+        {%- elif p.state == 'done' %}{% if p.skipped %}<span class="rf-st warn" title="Dateien oder Ordner, die nicht gelesen werden konnten (Fehler, zu groß, Name mit falscher Zeichenkodierung)">fertig, {{ p.skipped|de_num }} übersprungen</span>{% else %}<span class="rf-st ok">✓ fertig</span>{% endif %} <span class="small muted">{{ p.done_at|de_date(true) }}{% if p.off %} · Ordner aus{% endif %}</span>
+        {%- elif p.state == 'off' %}<span class="rf-st off" title="Der Ordner ist ausgeschaltet: das Projekt wird nicht gelesen. Schon Gelesenes bleibt durchsuchbar.">Ordner ausgeschaltet</span>
         {%- else %}<span class="rf-st wait">wartet</span>{% endif %}</td>
       <td>{% if p.state in ('wait', 'pin') %}
         <form method="post" action="/status/reihenfolge/{{ 'zurueck' if p.state == 'pin' else 'vorziehen' }}" hx-post="/status/reihenfolge/{{ 'zurueck' if p.state == 'pin' else 'vorziehen' }}" hx-target="#reihenfolge" hx-swap="outerHTML">
@@ -33,12 +34,14 @@
   </table>
   </div>
   {% if rf.total > rf.shown %}<p class="small muted rf-hint">{{ rf.shown|de_num }} von {{ rf.total|de_num }} angezeigt – Nummer eingeben, um ein bestimmtes Projekt zu finden.</p>{% endif %}
+  {% if rf.off_count and rf.tab == 'warteschlange' %}<p class="small muted rf-hint">{{ rf.off_count|plural('Projekt', 'Projekte') }} in ausgeschalteten Ordnern {{ 'wird' if rf.off_count == 1 else 'werden' }} nicht gelesen (Reiter „Alle“).</p>{% endif %}
   {% elif rf.q %}
   <p class="empty">Keine Projektnummer mit „{{ rf.q }}“{% if rf.tab != 'alle' %} in diesem Reiter{% endif %}.</p>
   {% elif rf.tab == 'fertig' %}
   <p class="empty">Noch kein Projekt fertig gelesen.</p>
   {% elif rf.tab == 'warteschlange' %}
-  <p class="empty">Die Warteschlange ist leer – alle Projekte sind gelesen.</p>
+  <p class="empty">Die Warteschlange ist leer – {{ 'alle Projekte in eingeschalteten Ordnern sind gelesen' if rf.off_count else 'alle Projekte sind gelesen' }}.</p>
+  {% if rf.off_count %}<p class="small muted rf-hint">{{ rf.off_count|plural('Projekt', 'Projekte') }} in ausgeschalteten Ordnern {{ 'wird' if rf.off_count == 1 else 'werden' }} nicht gelesen.</p>{% endif %}
   {% else %}
   <p class="empty">Noch keine Projekte.</p>
   {% endif %}

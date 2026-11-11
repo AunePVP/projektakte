@@ -43,9 +43,10 @@ services:
         ipv4_address: 172.31.250.20
     # no "ports:": the application is only reachable through Caddy
     # A memory limit, if set, must hold the app (vector index with VECTOR_SEARCH=kompakt ≈ sections ×
-    # dimensions / 8 bytes, e.g. 1 000 000 × 2560 / 8 ≈ 0.33 GB; with "matrix" × 32 of that) plus the
-    # reading process (EXTRACT_MEMORY_MB, 2 GB):
-    # mem_limit: 4g
+    # dimensions / 8 bytes, e.g. 1 000 000 × 2560 / 8 ≈ 0.33 GB; with "matrix" × 32 of that) plus two
+    # reading processes (EXTRACT_MEMORY_MB, 2 GB each: one for the documents pass, one preparing the page
+    # images of the Bildauswertung running beside it; idle each about 50 MB):
+    # mem_limit: 6g
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "5"}   # keep the log short (it contains user names)

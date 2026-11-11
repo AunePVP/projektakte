@@ -64,13 +64,51 @@ def check_fingerprint(conn: sqlite3.Connection, client: EmbeddingClient) -> bool
 # makes every search process reload the whole matrix once).
 PUBLISH_INTERVAL_S = 300.0
 _PENDING_SQL = (
-    "SELECT c.id, c.heading, c.text, d.filename, p.name AS project_name FROM chunks c "
+    "SELECT c.id, c.heading, c.text, c.project, d.filename, p.name AS project_name FROM chunks c "
     "LEFT JOIN documents d ON d.id = c.doc_id LEFT JOIN projects p ON p.number = c.project "
     "WHERE c.embedding IS NULL AND c.id > ? ORDER BY c.id LIMIT ?")
 
 
+# A vector is stored only for the section it was made from: a document written anew meanwhile (the
+# documents pass, the Bildauswertung) deletes its sections, and SQLite may give a new one the same id.
+STORE_SQL = "UPDATE chunks SET embedding = ? WHERE id = ? AND embedding IS NULL AND text = ?"
+EMBED_LOCK = threading.Lock()  # one embedding loop at a time in this process (no section embedded twice)
+# Set when sections are written (documents.write_chunks): wakes the background embedding (embed_worker.py).
+CHUNKS_WAITING = threading.Event()
+
+
+def pending_rows(conn: sqlite3.Connection, after: int, size: int) -> list[sqlite3.Row]:
+    """Sections without a vector after the id ``after``, in id order (the partial index of migration 13)."""
+    return conn.execute(_PENDING_SQL, (after, size)).fetchall()
+
+
+def store_vectors(conn: sqlite3.Connection, rows, vecs) -> int:
+    """Store the vectors of ``rows`` (no commit); returns how many sections still had that text."""
+    n = 0
+    for v, r in zip(vecs, rows):
+        n += conn.execute(STORE_SQL, (to_blob(v), r["id"], r["text"])).rowcount
+    return n
+
+
+def bump_generation(conn: sqlite3.Connection) -> None:
+    """New vectors become searchable (every search process reloads the matrix once)."""
+    _bump_generation(conn)
+
+
+def count_pending(conn: sqlite3.Connection) -> int:
+    return _count_pending(conn)
+
+
 def embed_pending(conn: sqlite3.Connection, client: EmbeddingClient, limit: int | None = None, *,
                   publish_interval: float = PUBLISH_INTERVAL_S) -> dict:
+    """Embed all chunks without a vector (see :func:`_embed_pending`); waits while the background embedding
+    of the app embeds a batch, so no section is embedded twice."""
+    with EMBED_LOCK:
+        return _embed_pending(conn, client, limit, publish_interval=publish_interval)
+
+
+def _embed_pending(conn: sqlite3.Connection, client: EmbeddingClient, limit: int | None = None, *,
+                   publish_interval: float = PUBLISH_INTERVAL_S) -> dict:
     """Embed all chunks without a vector, in batches; commits after every batch (no transaction is
     open while the embedding service works). The embedding generation – which makes searches reload
     the matrix – is bumped once at the end, and during long passes at most every
@@ -100,8 +138,7 @@ def embed_pending(conn: sqlite3.Connection, client: EmbeddingClient, limit: int 
             stats["error"] = str(exc)
             log.warning("Embeddings abgebrochen: %s", exc)
             break
-        conn.executemany("UPDATE chunks SET embedding = ? WHERE id = ?",
-                         [(to_blob(v), r["id"]) for v, r in zip(vecs, part)])
+        store_vectors(conn, part, vecs)
         stats["embedded"] += len(part)
         unpublished += len(part)
         if time.monotonic() - published_at >= publish_interval:

@@ -34,6 +34,8 @@ see :func:`isolation`), :func:`documents.prepare_document` hands these files to 
   reading untrusted files without the limits is what the isolation exists to prevent.
 
 One file at a time: indexing runs in one background thread, and calls from other threads wait. The
+Bildauswertung, which runs beside the documents pass in the app, has a worker process of its own
+(:func:`own_worker`): a scan read by Tesseract can hold this one for minutes, and the model would wait. The
 vision model is rebuilt in the worker from the configuration of the app's LLMClient; with another model
 object (test stubs) or isolation switched off, files are extracted in the app process as before.
 
@@ -672,6 +674,18 @@ def current() -> ExtractWorker | None:
     return _active
 
 
+def own_worker(settings) -> ExtractWorker | None:
+    """A second worker process of its own (the Bildauswertung running beside the documents pass, see
+    vision.VisionWorker), with the same limits; None if the settings switch isolation off (or the system
+    cannot do it): then it prepares in its own process, like a pass without isolation. The caller closes it."""
+    if not bool(getattr(settings, "extract_isolation", False)) or not SUPPORTED:
+        return None
+    return ExtractWorker(Limits.of(settings))
+
+
+_PASS = object()  # the ``worker`` argument below: the worker of the running pass
+
+
 def _takes(worker: ExtractWorker | None, filename: str, llm) -> bool:
     """Does the worker read this file? PDF, Word, OpenDocument, mail – formats whose structure is parsed – and,
     while Tesseract is installed, images (Tesseract parses them), with a model it can rebuild."""
@@ -680,11 +694,11 @@ def _takes(worker: ExtractWorker | None, filename: str, llm) -> bool:
     return worker is not None and parsed and portable(llm)
 
 
-def extract_file(filename: str, data: bytes, llm, extract, **flags):
-    """Extract one file: in the worker of the running pass if there is one and it takes the file (see
-    _takes), else in this process with ``extract`` (the caller's, so tests can replace it). ``flags`` (those
-    of extract.extract that are set) are passed on."""
-    worker = _active
+def extract_file(filename: str, data: bytes, llm, extract, *, worker=_PASS, **flags):
+    """Extract one file: in the worker of the running pass (or ``worker``) if there is one and it takes the
+    file (see _takes), else in this process with ``extract`` (the caller's, so tests can replace it).
+    ``flags`` (those of extract.extract that are set) are passed on."""
+    worker = _active if worker is _PASS else worker
     # only flags that are set (callers and tests may replace ``extract`` with a narrower function)
     flags = {k: v for k, v in flags.items() if v or (k == "ocr" and v is not None)}
     if _takes(worker, filename, llm):
@@ -692,10 +706,10 @@ def extract_file(filename: str, data: bytes, llm, extract, **flags):
     return extract(Path(filename), data, llm=llm, **flags)
 
 
-def page_images(filename: str, data: bytes, pages: list[int], prepare) -> list[PageImages]:
-    """The page images of a PDF for the model: in the worker of the running pass if there is one, else in
-    this process with ``prepare`` (extract.page_images, the caller's)."""
-    worker = _active
+def page_images(filename: str, data: bytes, pages: list[int], prepare, *, worker=_PASS) -> list[PageImages]:
+    """The page images of a PDF for the model: in the worker of the running pass (or ``worker``) if there is
+    one, else in this process with ``prepare`` (extract.page_images, the caller's)."""
+    worker = _active if worker is _PASS else worker
     if worker is not None and Path(filename).suffix.lower() == ".pdf":
         return worker.page_images(filename, data, pages)
     return prepare(data, pages, Path(filename).name)

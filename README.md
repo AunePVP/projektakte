@@ -113,14 +113,31 @@ nur mit `PROJEKTAKTE_INTEGRATION=1` (siehe docs/ki-dienste.md).
 - **Status** – Indexierung (mit Warnungen, z. B. fehlendes Laufwerk), Bestand und Zustand der
   KI-Dienste (im Fake-Modus „simuliert“) und von plMail. Darunter die **Reihenfolge beim Einlesen**:
   - *Reihenfolge der Ordner*: die obersten Ordner unter `PROJECTS_DIR`, in denen Projekte liegen, je mit „N von
-    M Projekten fertig“ und Balken. ▲/▼ verschiebt einen Ordner, „aus“ schaltet ihn ab – seine Projekte kommen
-    dann erst ganz am Ende (sie werden weiter gelesen). Beispiel „erst alle Projekte aus Ordner 3, dann aus 2“:
+    M Projekten fertig“ und Balken. ▲/▼ verschiebt einen Ordner, „aus“ schaltet ihn ab: **„aus – wird nicht
+    gelesen“** – keine neuen oder geänderten Dateien, kein Tesseract, keine Bildauswertung für seine Dateien; ein
+    Projekt daraus, das gerade gelesen wird, hört nach der aktuellen Datei auf. Schon Gelesenes bleibt im Index
+    und durchsuchbar (nichts wird gelöscht, die Projekte bleiben im Register), Mails und ihre Anhänge sind nicht
+    betroffen. Seine Projekte stehen nicht in der Warteschlange, im Reiter „Alle“ mit „Ordner ausgeschaltet“;
+    vorziehen lässt sich ein solches Projekt nicht (erst den Ordner einschalten). „an“ stellt den Ordner wieder
+    hinter die eingeschalteten. Beispiel „erst alle Projekte aus Ordner 3, dann aus 2“:
     Ordner 3 nach oben, Ordner 2 direkt darunter. Die Einstellung gilt sofort, steht in der Datenbank und
     überdauert Neustarts; „Auf Standard zurücksetzen“ gilt wieder `INDEX_FOLDER_ORDER`.
-  - *Wird gerade gelesen*: Projekt, „x von y Dateien“, Phase, Balken und die nächsten drei Nummern; aktualisiert
-    sich alle 4 Sekunden, solange ein Lauf läuft (sonst alle 30 Sekunden).
+  - *Wird gerade gelesen*: jede laufende Tätigkeit für sich. Der Lauf: Projekt, „x von y Dateien“ (Datei für
+    Datei gezählt), Phase, Balken, die nächsten drei Nummern, „Lauf seit …“, „Projekt seit … · noch ≈ …“ (sobald
+    20 Dateien des Projekts durch sind), „Ø … je gelesene Datei · N gelesen, M unverändert oder nicht lesbar“ und
+    „Warteschlange: noch N Projekte · grob ≈ …“ (Durchschnitt je Projekt der Warteschlange, erst nach 5 fertigen
+    Projekten und 20 gelesenen Dateien). Die *Bildauswertung*: wie viele Seiten gerade beim Modell sind, Datei und
+    Seite, ausstehende Seiten, Ø Sekunden je Seite, Seiten je Stunde und „fertig grob ≈ …“ (bei der eingestellten
+    Gleichzeitigkeit, nach 10 Seiten). Die *Embeddings*: Stapel beim Dienst, fertige Abschnitte, Abschnitte ohne
+    Vektor, Projekt und Datei des letzten Stapels, Abschnitte je Stunde und „fertig grob ≈ …“. „Alles gelesen“
+    steht nur, wenn nichts davon läuft. Die Durchschnitte sind gleitend (die letzten etwa 50 Werte zählen) und
+    stehen in der Datenbank, die Schätzungen gelten also auch nach einem Neustart. Aktualisiert sich alle 4
+    Sekunden, solange etwas läuft (sonst alle 30 Sekunden); das Ladesymbol wird dabei nicht ersetzt und dreht
+    gleichmäßig weiter. Die Karte „Indexierung“ nennt im Zustand beide bzw. alle drei Tätigkeiten
+    („läuft (Dokumente) · Bildauswertung läuft, 3 gleichzeitig · Embeddings laufen“).
   - *Projekte* mit den Reitern Warteschlange / Fertig / Alle: Platz, Nummer, Projekt, Ordner, Dateien, Stand
-    („wartet“, „vorgezogen“, „wird gelesen“, „✓ fertig“ bzw. „fertig, N übersprungen“ mit Zeitpunkt).
+    („wartet“, „vorgezogen“, „wird gelesen“, „Ordner ausgeschaltet“, „✓ fertig“ bzw. „fertig, N übersprungen“
+    mit Zeitpunkt).
     „Vorziehen“ setzt ein wartendes Projekt direkt hinter das laufende (mehrere in der Reihenfolge des
     Vorziehens), „zurück“ hebt das auf; fertig gelesen, ist es nicht mehr vorgezogen. Das Suchfeld filtert nach
     einem Teil der Projektnummer über alle Projekte. Höchstens 50 Zeilen („50 von 3.353 angezeigt“).
@@ -334,7 +351,19 @@ aktuellen Leseprofil vollständig durchgegangen. Eine neue oder geänderte Datei
 Warteschlange, bis sie gelesen ist – ein Neustart mitten im Lauf macht dort weiter, wo er war. Ein anderes
 Modell oder `LLM_VISION=1` stellt alle Projekte wieder an (gelesen werden dann nur unvollständige Dateien).
 Änderungen auf der Statusseite gelten im laufenden Lauf für alle Projekte, die er noch nicht angefangen hat.
-Die Bildauswertung folgt derselben Reihenfolge (vorgezogene, dann Ordner; darin neueste Dokumente zuerst).
+Projekte ausgeschalteter Ordner liest kein Lauf (Statusseite, „aus – wird nicht gelesen“). Die Bildauswertung
+folgt derselben Reihenfolge (vorgezogene, dann Ordner; darin neueste Dokumente zuerst).
+
+**Nebeneinander:** In der Anwendung laufen drei Dinge gleichzeitig. Der Indexierungslauf (Projekte, Dokumente
+mit Tesseract, Mails, Zuordnung), daneben ab dem Start die *Bildauswertung* (eigener Thread, höchstens
+`VISION_CONCURRENCY` Modellaufrufe, eigener Leseprozess für die Seitenbilder) und die *Embeddings* (eigener
+Thread, höchstens `EMBED_CONCURRENCY` Stapel zu je 32 Abschnitten gleichzeitig beim Embedding-Dienst). Das Modell
+und der Embedding-Dienst arbeiten also schon, während der erste Lauf tagelang die Freigabe liest; neue
+Abschnitte sind nach Sekunden auch über die Vektorsuche zu finden (spätestens alle 5 Minuten werden neue Vektoren
+für die Suche übernommen). Jeder hat seine eigene Datenbankverbindung und schreibt in kurzen Transaktionen. Ein
+Seitenergebnis oder Vektor wird nur gespeichert, wenn Datei bzw. Abschnitt noch dieselben sind – liest der Lauf
+eine geänderte Datei neu, gilt nur das Neue. Die Phasen „Embeddings“ und „Bildauswertung“ am Ende eines Laufs
+entfallen dann; `python -m projektakte.index` (ohne Anwendung) hat sie weiter.
 
 Projekte sind Ordner unter `PROJECTS_DIR`, deren Name mit einer Projektnummer beginnt
 (`PROJECT_NUMBER_PATTERN`), direkt oder tiefer, z. B. in Jahres- oder Kundenordnern
@@ -409,13 +438,14 @@ oder kleines Foto) gehen nie an das Modell. *Stufe 1* (beim Einlesen, schnell): 
 behalten ihren Text, Scans ohne Text liest Tesseract (`tesseract-ocr` + `tesseract-ocr-deu`, im
 Docker-Image enthalten; fehlt es, bleibt die Seite bis Stufe 2 ohne Text). Das Dokument ist sofort
 durchsuchbar und trägt „Bildauswertung ausstehend: N Seite(n)“. *Stufe 2* ist die eigene Phase
-„Bildauswertung“ am Ende jedes Laufs (nach Dokumenten, Mails und Embeddings): Das Modell bekommt das
+„Bildauswertung“, die in der Anwendung neben dem Einlesen läuft (siehe „Nebeneinander“; ohne Anwendung am Ende
+des Laufs): Das Modell bekommt das
 Seitenbild **und** den bisherigen Text und gibt die ganze Seite zurück – OCR-Fehler berichtigt,
 Handschrift als „[handschriftlich: …]“ und Stempel als „[Stempel: …]“ an der passenden Stelle, Pläne
 kurz beschrieben. Neueste Dokumente zuerst, höchstens `VISION_CONCURRENCY` Aufrufe gleichzeitig (3,
 damit einer der vier Plätze des KI-Servers für Fragen frei bleibt) und höchstens
-`VISION_PASS_SECONDS` je Lauf (1800 s); danach läuft der nächste Lauf (neue Dateien, Mails) und die
-Bildauswertung macht dort weiter. Gelesene Seiten ersetzen den Text der ersten Stufe, nur dieses
+`VISION_PASS_SECONDS` je Runde (1800 s); danach beginnt sofort die nächste Runde – sie nimmt auch
+fehlgeschlagene Seiten, deren Wartezeit um ist. Ausgeschaltete Ordner bekommen keine Bildauswertung. Gelesene Seiten ersetzen den Text der ersten Stufe, nur dieses
 Dokument bekommt neue Abschnitte und Vektoren. Mail-Anhänge gehen denselben Weg. Die Statusseite
 zeigt, wie viele Seiten und Dokumente noch warten; das Protokoll jede gelesene Seite. Ältere,
 vollständig gelesene PDF-Dateien (ohne Modell gelesen) prüft die Phase nebenbei auf gescannte Seiten
@@ -431,7 +461,8 @@ Sprachmodell zählt nicht) und `EXTRACT_WALL_SECONDS` (3600 s ohne Fortschritt).
 oder absichtlich aufgeblähte Datei kann so weder den Speicher der Anwendung füllen noch die
 Indexierung lange aufhalten: Sie wird als „Datei zu aufwendig zum Lesen“ bzw. „Datei zu groß zum
 Lesen“ vermerkt, der Leseprozess startet neu. Im Docker-Betrieb das Speicherlimit des Containers
-mindestens auf Anwendung + `EXTRACT_MEMORY_MB` setzen. Auch die Seitenbilder für die Bildauswertung
+mindestens auf Anwendung + 2 × `EXTRACT_MEMORY_MB` setzen (ein zweiter Leseprozess mit denselben Grenzen bereitet
+die Seitenbilder der nebenher laufenden Bildauswertung vor, leer etwa 50 MB). Auch die Seitenbilder für die Bildauswertung
 bereitet der Leseprozess vor (die Anwendung schickt nur die fertigen JPEG/PNG an das Modell), und
 Tesseract läuft als Programm des Leseprozesses mit dessen Speichergrenze (je Seite höchstens 60 s, Seitenbilder auf 9 Megapixel verkleinert).
 Textdateien liest die Anwendung selbst, Bilder ebenso, solange Tesseract nicht installiert ist; mit `APP_ENV=test` (Testsuite) ist der Leseprozess aus, `EXTRACT_ISOLATION=0/1` schaltet ihn
@@ -545,10 +576,10 @@ zugeordnet oder vorgeschlagen, 8 von 8 inhaltlichen Vorschlägen richtig.
 | `GET /health` | Lebenszeichen, ruft nie KI-Dienste auf (öffentlich) |
 | `GET /health/ready` | Bereitschaft für Monitoring/HEALTHCHECK: Datenbank, Indexierungs-Thread, Alter des letzten erfolgreichen Laufs, ausstehende Vektoren (öffentlich, ohne Inhalte; 503 = nicht bereit) |
 | `GET /health/deps` | Zustand der KI-Dienste und von plMail (erreichbar, Format, Antwortzeit) |
-| `GET /api/status` | Indexierungsstand (Phase, letzter Lauf, Fehler) und Zahlen |
+| `GET /api/status` | Indexierungsstand (Phase, letzter Lauf, Fehler; unter `indexing.vision` und `indexing.embeddings` die Hintergrund-Tätigkeiten) und Zahlen |
 | `POST /api/reindex` | Indexierung sofort anstoßen |
-| `GET /api/reihenfolge?tab=&q=&limit=` | Reihenfolge beim Einlesen: `folders` (Name, `enabled`, `rank`, `projects`, `done`), `current` (laufendes Projekt, Phase, `files_done`/`files_total`, `next`), `queue`/`done` (Anzahl) und `projects` des Reiters (`warteschlange`, `fertig`, `alle`; `q` = Teil der Nummer; `limit` höchstens 500) mit `position`, `state` (`run`, `pin`, `wait`, `done`), `done_at`, `skipped` |
-| `POST /api/reihenfolge/ordner` | Ordner-Reihenfolge: `{"order": ["3", "2"], "off": ["Archiv"]}` (nicht genannte Ordner danach wie bisher) oder `{"reset": true}` (zurück zu `INDEX_FOLDER_ORDER`) |
+| `GET /api/reihenfolge?tab=&q=&limit=` | Reihenfolge beim Einlesen: `folders` (Name, `enabled`, `rank`, `projects`, `done`), `current` (laufendes Projekt, Phase, `files_done`/`files_total`, `next`, Zeiten in Sekunden: `seconds_running`, `seconds_on_project`, `seconds_per_file_read`, `files_read`, `files_unchanged`, `eta_project_seconds`, `eta_queue_seconds`, `seconds_per_project`), `vision` und `embeddings` (Hintergrund: Stand, Rate, `eta`), `queue`/`done`/`switched_off` (Anzahl) und `projects` des Reiters (`warteschlange`, `fertig`, `alle`; `q` = Teil der Nummer; `limit` höchstens 500) mit `position`, `state` (`run`, `pin`, `wait`, `off`, `done`), `off`, `done_at`, `skipped` |
+| `POST /api/reihenfolge/ordner` | Ordner-Reihenfolge: `{"order": ["3", "2"], "off": ["Archiv"]}` (nicht genannte Ordner danach wie bisher; `off`: wird nicht gelesen) oder `{"reset": true}` (zurück zu `INDEX_FOLDER_ORDER`) |
 | `POST /api/reihenfolge/vorziehen`, `POST /api/reihenfolge/zurueck` | `{"number": "284201"}` vorziehen bzw. wieder an seinen Platz |
 | `GET /api/projects?q=` | Projektliste, optional gefiltert nach Nummer/Name; je Eintrag `kind` (`projekt`/`bauvorhaben`), `parent` (Bauvorhaben eines Auftrags), bei Bauvorhaben `children` (Nummern der Unterprojekte) |
 | `GET /api/projects/{nummer}` | ein Projekt oder Bauvorhaben, mit `folders` (alle Ordner der Nummer, Hauptordner zuerst), `kind`, `parent`, `parent_name` und `children` (`number`, `name`, `path`) |
@@ -604,7 +635,8 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_MODEL` | `qwen3.8-flash-next` | Modellname |
 | `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Scans, Pläne; Phase „Bildauswertung“) |
 | `VISION_CONCURRENCY` | `3` | Gleichzeitige Modellaufrufe der Bildauswertung (ab 1 = nacheinander); der KI-Server nimmt 4, einer bleibt für Fragen frei |
-| `VISION_PASS_SECONDS` | `1800` | Zeitbudget der Bildauswertung je Indexierungslauf in Sekunden, danach geht es im nächsten Lauf weiter; `0` = bis nichts mehr aussteht |
+| `VISION_PASS_SECONDS` | `1800` | Länge einer Runde der Bildauswertung in Sekunden; danach beginnt sofort die nächste (sie nimmt auch fehlgeschlagene Seiten, deren Wartezeit um ist). Ohne Anwendung (`python -m projektakte.index`): Zeitbudget der Phase am Ende des Laufs. `0` = bis nichts mehr aussteht |
+| `EMBED_CONCURRENCY` | `2` | Stapel (je 32 Abschnitte), die die Embeddings im Hintergrund gleichzeitig an den Embedding-Dienst schicken (1–8) |
 | `VISION_SKIP_FOLDERS` | leer | Ordnernamen, deren Fotos nicht an das Modell gehen, mit Komma getrennt; `Bilder` trifft auch `263900-Bilder`. Scans (PDF) werden weiter gelesen; ohne die Einstellung werden die Fotos beim nächsten Lauf nachgelesen |
 | `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | `120` / `800` | Sekunden / Antwortlänge |
 | `LLM_EXTRA_BODY` | – | JSON, das in jede Chat-Anfrage gemischt wird, z. B. `{"chat_template_kwargs":{"enable_thinking":false}}` |
@@ -709,7 +741,9 @@ in der WAL-Datei fehlen.
 | `projektakte/search.py`, `ask.py`, `textutil.py` | hybride Suche, Fragen beantworten, Synonyme/Wortformen |
 | `projektakte/evaluate.py` | Antwortqualität messen (`python -m projektakte.evaluate`) |
 | `projektakte/indexer.py`, `background.py` | Indexierungslauf, Hintergrund-Thread |
-| `projektakte/reihenfolge.py` | Reihenfolge der Projekte im Lauf, Fertig-Stand je Projekt, Vorziehen, „Wird gerade gelesen“ |
+| `projektakte/reihenfolge.py` | Reihenfolge der Projekte im Lauf, Fertig-Stand je Projekt, Vorziehen, ausgeschaltete Ordner, „Wird gerade gelesen“ |
+| `projektakte/embed_worker.py` | Embeddings im Hintergrund neben dem Einlesen |
+| `projektakte/zeiten.py` | Laufzeiten, gleitende Durchschnitte und grobe Schätzungen der Statusseite |
 | `projektakte/integration.py` | API für plMail |
 | `projektakte/auth.py`, `auth_web.py`, `passwords.py`, `passwd.py` | Benutzer, Sitzung, Anmeldebremse, Login/Logout, Passwort-Hashes |
 | `projektakte/websecurity.py`, `startup.py`, `logsetup.py` | Sicherheits-Header und Schutz vor fremden Formularen, Startprüfungen, Logformat |

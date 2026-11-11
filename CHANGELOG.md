@@ -5,6 +5,40 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Bildauswertung und Embeddings laufen neben dem Einlesen:** In der Anwendung liest das Bildmodell die
+  Scan-Seiten ab dem Start in einem eigenen Thread, während der Lauf noch Dateien liest und Tesseract arbeitet –
+  nicht mehr erst am Ende jedes Laufs. Höchstens `VISION_CONCURRENCY` (3) Aufrufe gleichzeitig, ein Platz des
+  KI-Servers bleibt für Fragen frei; Reihenfolge wie bisher (vorgezogene, Ordner, neueste zuerst). Die Seitenbilder
+  bereitet ein zweiter Leseprozess mit denselben Grenzen vor (leer etwa 50 MB; Container-Speicher mindestens App +
+  2 × `EXTRACT_MEMORY_MB`). `VISION_PASS_SECONDS` ist jetzt die Länge einer Runde, danach beginnt sofort die
+  nächste. Ebenso machen die Embeddings neue Abschnitte laufend zu Vektoren (eigener Thread, neue Einstellung
+  `EMBED_CONCURRENCY`, Standard 2 Stapel zu 32 Abschnitten gleichzeitig) – neue Dokumente und von der
+  Bildauswertung neu geschriebene sind nach kurzer Zeit auch über die Vektorsuche zu finden. Die Phasen
+  „Embeddings“ und „Bildauswertung“ am Ende des Laufs entfallen in der Anwendung (`python -m projektakte.index`
+  behält sie). Ergebnisse für eine inzwischen geänderte Datei bzw. einen neu geschriebenen Abschnitt werden
+  verworfen, nichts wird doppelt eingebettet. `LLM_VISION=0`: keine Bildauswertung. Beim Beenden bricht die
+  Bildauswertung sofort ab (Seiten unterwegs werden nach dem nächsten Start gelesen). DB-Migration 13 (Teilindex
+  für Abschnitte ohne Vektor, nur hinzugefügt).
+- **Ordner „aus“ wird nicht gelesen:** Ein ausgeschalteter oberster Ordner wird gar nicht mehr gelesen (vorher kam
+  er nur ans Ende): keine neuen oder geänderten Dateien, kein Tesseract, keine Bildauswertung; ein Projekt daraus,
+  das gerade gelesen wird, hört nach der aktuellen Datei auf. Schon Gelesenes bleibt im Index und durchsuchbar,
+  die Projekte bleiben im Register, Mails sind nicht betroffen. Anzeige „aus – wird nicht gelesen“, Projekte
+  „Ordner ausgeschaltet“ (nicht in der Warteschlange); vorziehen geht erst nach dem Einschalten. API:
+  `switched_off`, Zustand `off`.
+- **Statusseite „Wird gerade gelesen“:** „x von y Dateien“ zählt jede Datei (vorher nur in 25er-Schritten). Neu:
+  „Lauf seit“, „Projekt seit … · noch ≈ …“, „Ø … je gelesene Datei“ (nur wirklich gelesene, die unveränderten
+  daneben), „Warteschlange: noch N Projekte · grob ≈ …“; Bildauswertung mit Seiten beim Modell, Datei und Seite,
+  ausstehenden Seiten, Ø je Seite, Seiten je Stunde und Restzeit; Embeddings mit Stapeln beim Dienst, fertigen und
+  offenen Abschnitten, letzter Datei, Rate und Restzeit. Gleitende Durchschnitte in der Datenbank (gelten nach einem
+  Neustart weiter), Schätzungen erst mit genug Werten und grob gerundet („≈ 3 Tage“). Jede laufende Tätigkeit steht
+  da, „Alles gelesen“ nur, wenn nichts läuft. Zustand der Indexierung nennt alle („läuft (Dokumente) ·
+  Bildauswertung läuft, 3 gleichzeitig · Embeddings laufen“), „Abschnitte … ohne Vektor“ mit Rate und Restzeit.
+  `GET /api/reihenfolge` liefert die Zeiten (`current.seconds_*`, `eta_*`) sowie `vision` und `embeddings`.
+- **Ladesymbol:** dreht gleichmäßig weiter – die Abfrage alle 4 s ersetzt nur noch den Inhalt der Karte, nicht das
+  Symbol (vorher sprang es alle paar Sekunden auf den Anfang).
+- Beim allerersten Start konnten Indexierung und Hintergrund-Threads gleichzeitig die Datenbank anlegen
+  („table documents already exists“) – jetzt nacheinander.
+
 - **Dokument-Betrachter:** Dokumente öffnen im Fenster der Anwendung statt auf einer neuen Seite – aus der
   Ordneransicht, den Anhängen, der Karte der Zeitleiste, den Quellen einer Antwort, den Suchtreffern und den
   Anhängen einer Mail. Rechts über der Seite (Handy: bildschirmfüllend) mit Dateiname, Ordner, Schließen (✕/Esc),
@@ -167,8 +201,9 @@ Roadmap-Schritt.
   die an der alten Grenze scheiterten, werden einmal neu gelesen (Migration 12).
 - Protokoll: „Bild nicht lesbar“ steht je Dokument und Ursache nur noch einmal (Streifenscans mit JBIG2 ohne
   `jbig2dec` meldeten es je Streifen); der Fortschritt nennt die echte Seitennummer („Seite 22 (2 von 5)“).
-- 2029 Tests (2024 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`,
-  `tests/test_index_reihenfolge.py`, `tests/test_dokument_betrachter.py` und `tests/test_grosse_plaene.py`.
+- 2048 Tests (2043 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`,
+  `tests/test_index_reihenfolge.py`, `tests/test_dokument_betrachter.py`, `tests/test_grosse_plaene.py` und
+  `tests/test_bildauswertung_parallel.py`.
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

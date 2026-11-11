@@ -6,6 +6,7 @@ human decisions (mail assignments), which live in their own table.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -208,6 +209,11 @@ MIGRATIONS: list[str] = [
        OR vision_note LIKE '%zu groß zum Lesen (Speicher- oder Datengrenze überschritten)%'
        OR id IN (SELECT doc_id FROM page_texts WHERE note LIKE '%zu groß zum Lesen%');
     """,
+    # 13 – sections without a vector, found and counted through a partial index: the background embedding
+    #      (embed_worker.py) looks for them continuously, the status page counts them on every call.
+    """
+    CREATE INDEX IF NOT EXISTS chunks_without_vector ON chunks(id) WHERE embedding IS NULL;
+    """,
 ]
 
 # projects.kind
@@ -223,8 +229,16 @@ def connect(path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+_INIT_LOCK = threading.Lock()  # the indexer and the background workers may start at the same moment
+
+
 def init_db(path: Path | str) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with _INIT_LOCK:
+        _migrate(path)
+
+
+def _migrate(path: Path | str) -> None:
     conn = connect(path)
     try:
         conn.execute("PRAGMA journal_mode = WAL")

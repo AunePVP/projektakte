@@ -24,7 +24,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from markupsafe import Markup, escape
 
-from . import __version__, betrachter, db, inbox, reihenfolge, structure, zeitleiste
+from . import __version__, betrachter, db, embed_worker, inbox, reihenfolge, structure, vision, zeiten, zeitleiste
 from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .config import DEFAULT_PROJECT_NUMBER_PATTERN
@@ -295,6 +295,7 @@ def _passage_global(ctx, snippet_text: str | None, full_text: str | None, query:
     return passage(snippet_text, full_text, query, width, code_pattern_of(ctx.get("request")))
 
 
+templates.env.filters.update(dauer=zeiten.dauer, etwa=zeiten.etwa, je=zeiten.je)
 templates.env.filters.update(de_date=de_date, de_num=de_num, plural=plural, filesize=filesize,
                              cite_links=cite_links, highlight=_highlight_filter, snippet=_snippet_filter,
                              path=breakable_path)
@@ -1276,7 +1277,7 @@ def status_page(request: Request, tab: str = "", q: str = ""):
     st = api_status(request)
     with db.session(_settings(request).db_path) as conn:
         rf = reihenfolge_context(request, conn, tab, q)
-    return render(request, "status.html", st=st, rf=rf)
+    return render(request, "status.html", st=st, rf=rf, eye=rf["now"]["vision"], emb=rf["now"]["embed"])
 
 
 @router.get("/status/dienste", response_class=HTMLResponse)
@@ -1378,7 +1379,8 @@ def _rf_query(q: str) -> str:
 
 
 def _rf_now(conn, view: reihenfolge.View | None, request: Request) -> dict:
-    """The card "Wird gerade gelesen": the project of the running pass, its files, the phase, the next three."""
+    """The card "Wird gerade gelesen": the project of the running pass, its files, the phase, the next three,
+    the times and estimates (zeiten.py), and the Bildauswertung running beside it."""
     snap = reihenfolge.LIVE.snapshot()
     project = snap["project"]
     if project and not project.get("name"):  # Bildauswertung: only the number is known
@@ -1391,13 +1393,78 @@ def _rf_now(conn, view: reihenfolge.View | None, request: Request) -> dict:
         if stale and view is None:
             view = rf_view(request, conn)
         upcoming = reihenfolge.upcoming(snap, view if stale else None)
+        queue_left = snap["queue_left"]
     else:  # waiting: the head of the queue for the next pass
         view = view if view is not None else rf_view(request, conn)
         upcoming = [e["number"] for e in view.queue[:3]]
+        queue_left = len(view.queue)
     phase = (snap["phase"] or "").split(" – ")[0]
+    reading = snap["running"] and phase == "Dokumente" and bool(project)
+    times = _rf_times(conn, snap, reading, queue_left)
+    eye = _vision_now(request, conn)
+    embed = _embed_now(request, conn)
+    background = bool(eye and eye["busy"]) or bool(embed and embed["busy"])
     return {"running": snap["running"], "phase": phase, "phase_detail": snap["phase"], "project": project,
-            "seen": snap["seen"], "total": snap["total"], "upcoming": upcoming,
-            "poll": RF_POLL_RUNNING if snap["running"] else RF_POLL_IDLE}
+            "seen": snap["seen"], "total": snap["total"], "upcoming": upcoming, "times": times, "vision": eye,
+            "embed": embed, "background": background, "active": snap["running"] or background,
+            "poll": RF_POLL_RUNNING if snap["running"] or background else RF_POLL_IDLE}
+
+
+def _embed_now(request: Request, conn) -> dict | None:
+    """The background embedding (embed_worker.EmbedWorker), None without it: sections done and waiting, the
+    project and file of the current batch, rate and rough time left."""
+    worker = getattr(getattr(request.app.state, "indexer", None), "embedder", None)
+    if worker is None:
+        return None
+    live = embed_worker.LIVE.snapshot()
+    pending = live["pending"]
+    rate = zeiten.embed_rate(zeiten.read(conn, zeiten.EMBED_KEY), pending or 0)
+    current = live["current"]
+    if current and current.get("project"):
+        row = conn.execute("SELECT name FROM projects WHERE number = ?", (current["project"],)).fetchone()
+        current["name"] = row[0] if row else ""
+    return {"busy": bool(worker.alive and (live["busy"] or pending)), "alive": worker.alive,
+            "concurrency": live["concurrency"], "in_flight": live["in_flight"], "done": live["done"],
+            "pending": pending, "current": current, "error": live["error"], **rate}
+
+
+def _rf_times(conn, snap: dict, reading: bool, queue_left: int) -> dict:
+    """Elapsed times of the pass and the project, the average per file read, and the rough estimates."""
+    per_project = zeiten.read(conn, zeiten.PROJECT_KEY)
+    per_file = zeiten.read(conn, zeiten.FILE_KEY)
+    read, read_seconds = snap["run_read"], snap["run_read_seconds"]
+    project_eta = (zeiten.project_eta(snap["seen"], snap["total"], snap["project_elapsed"] or 0)
+                   if reading else None)
+    queue_eta = zeiten.queue_eta(queue_left, per_project, per_file)
+    if queue_eta is not None and project_eta is not None:
+        queue_eta += project_eta
+    return {"run_elapsed": snap["run_elapsed"] if snap["running"] else None,
+            "project_elapsed": snap["project_elapsed"] if reading else None,
+            "files_read": read, "files_unchanged": max(0, snap["run_seen"] - read),
+            "per_file": read_seconds / read if read else per_file.value,
+            "per_file_run": bool(read),
+            "project_eta": project_eta, "queue_left": queue_left, "queue_eta": queue_eta,
+            "per_project": per_project.value if per_project.samples >= zeiten.MIN_PROJECTS else None,
+            "queue_samples": per_project.samples, "queue_min": zeiten.MIN_PROJECTS}
+
+
+def _vision_now(request: Request, conn) -> dict | None:
+    """The Bildauswertung in the background (vision.VisionWorker), None without it (LLM_VISION=0, no app
+    worker): busy, calls at a time, its project, pages waiting, speed and the rough time left."""
+    worker = getattr(getattr(request.app.state, "indexer", None), "vision", None)
+    if worker is None:
+        return None
+    live = vision.LIVE.snapshot()
+    pending = live["pending_pages"]
+    rate = zeiten.vision_rate(zeiten.read(conn, zeiten.PAGE_KEY), live["concurrency"], pending or 0)
+    project = live["project"]
+    if project:
+        row = conn.execute("SELECT name FROM projects WHERE number = ?", (project["number"],)).fetchone()
+        project["name"] = row[0] if row else ""
+    return {"busy": bool(worker.alive and pending), "alive": worker.alive, "concurrency": live["concurrency"],
+            "project": project, "pending": pending, "off_pages": live["off_pages"], "pages": live["pages"],
+            "in_flight": live["in_flight"], "document": live["document"],
+            "error": worker.last_error, **rate}
 
 
 def _rf_match(number: str, q: str) -> tuple[str, str, str] | None:
@@ -1416,9 +1483,10 @@ def reihenfolge_context(request: Request, conn, tab: str = "", q: str = "", note
     running = now["project"]["number"] if now["running"] and now["project"] and now["phase"] == "Dokumente" else None
     queue = v.queue
     done = v.done
+    off = v.switched_off
     if running:  # the project being read leads the queue (also one already done that is checked again)
         queue = [e for e in queue if e["number"] == running] + [e for e in queue if e["number"] != running]
-    rows = {"warteschlange": queue, "fertig": done, "alle": queue + done}[tab]
+    rows = {"warteschlange": queue, "fertig": done, "alle": queue + off + done}[tab]
     if q:
         needle = q.casefold()
         rows = [e for e in rows if needle in e["number"].casefold()]
@@ -1433,15 +1501,16 @@ def reihenfolge_context(request: Request, conn, tab: str = "", q: str = "", note
     position = {e["number"]: i + 1 for i, e in enumerate(queue)}
     out = []
     for e in shown:
-        state = ("run" if e["number"] == running else "pin" if e["pinned"] is not None
-                 else "done" if e["done"] else "wait")
+        state = ("run" if e["number"] == running else "done" if e["done"] and e["pinned"] is None
+                 else "off" if e["off"] else "pin" if e["pinned"] is not None else "done" if e["done"] else "wait")
         out.append({"number": e["number"], "name": e["name"], "kind": e["kind"],
                     "folder": reihenfolge.folder_label(e["folder"]), "files": files.get(e["number"], 0),
-                    "state": state, "done_at": e["done_at"], "skipped": e["done_skipped"] or 0,
-                    "position": position.get(e["number"]) if not (e["done"] and e["pinned"] is None) else None,
+                    "state": state, "done_at": e["done_at"], "skipped": e["done_skipped"] or 0, "off": e["off"],
+                    "position": position.get(e["number"]),
                     "match": _rf_match(e["number"], q)})
     return {"tab": tab, "q": q, "rows": out, "total": len(rows), "shown": len(out), "queue_count": len(queue),
-            "done_count": len(done), "folders": v.folders, "customized": v.customized, "now": now, "note": note,
+            "done_count": len(done), "off_count": len(off), "folders": v.folders, "customized": v.customized,
+            "now": now, "note": note,
             "problem": problem, "default_order": list(getattr(_settings(request), "index_folder_order", ()))}
 
 
@@ -1512,7 +1581,8 @@ def rf_reset(request: Request, tab: str = Form(""), q: str = Form("")):
 
 @router.post("/status/reihenfolge/vorziehen")
 def rf_pin(request: Request, nummer: str = Form(""), tab: str = Form(""), q: str = Form("")):
-    return _rf_change(request, lambda conn, s: reihenfolge.pin(conn, nummer), tab, q)
+    return _rf_change(request, lambda conn, s: reihenfolge.pin(conn, nummer, s.projects_dir,
+                                                               getattr(s, "index_folder_order", ())), tab, q)
 
 
 @router.post("/status/reihenfolge/zurueck")

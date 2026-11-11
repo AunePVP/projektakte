@@ -1,7 +1,9 @@
 """Indexing pipeline: project register → documents → mails → embeddings → assignment → Bildauswertung.
 
 One call of :func:`run_index` processes everything that is new or changed; it is used by the
-background worker, the CLI (``python -m projektakte.index``) and the tests.
+background worker, the CLI (``python -m projektakte.index``) and the tests. In the app the Bildauswertung
+runs beside it in a thread of its own (vision.VisionWorker, ``vision=False`` here); the CLI and the tests
+keep it as the last phase of the pass.
 """
 from __future__ import annotations
 
@@ -35,8 +37,11 @@ def plmail_client(settings: Settings) -> JMAPClient:
                       page_size=settings.plmail_page_size)
 
 
-def run_index(settings: Settings, ai: AIServices | None = None, progress=None) -> dict:
-    """One pass over all sources. ``progress(phase)`` is called with the current phase."""
+def run_index(settings: Settings, ai: AIServices | None = None, progress=None, *, vision: bool = True,
+              embeddings: bool = True) -> dict:
+    """One pass over all sources. ``progress(phase)`` is called with the current phase. ``vision`` False: no
+    phase "Bildauswertung" (the app's background worker reads the scan pages meanwhile); ``embeddings`` False:
+    no phase "Embeddings" (the app's background embedding makes the vectors meanwhile, embed_worker.py)."""
     def phase(name: str) -> None:
         reihenfolge.LIVE.set_phase(name)  # status page: "Wird gerade gelesen"
         if progress:
@@ -49,7 +54,7 @@ def run_index(settings: Settings, ai: AIServices | None = None, progress=None) -
     with _RUN_LOCK, extract_worker.isolation(settings), documents.vision_later():
         reihenfolge.LIVE.begin()
         try:
-            return _run(settings, ai, phase)
+            return _run(settings, ai, phase, vision, embeddings)
         finally:
             reihenfolge.LIVE.end()
 
@@ -93,7 +98,7 @@ def _index_documents(conn, llm, settings: Settings) -> dict:
                            f"Zeichenkodierung (meist eine Freigabe ohne iocharset=utf8) – {ENCODING_HINT}"}
 
 
-def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
+def _run(settings: Settings, ai: AIServices | None, phase, vision: bool = True, embeddings: bool = True) -> dict:
     started = time.time()
     db.init_db(settings.db_path)
     stats: dict = {}
@@ -139,7 +144,9 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
         # attachment files no document uses any more (once a day; no import runs meanwhile)
         if (swept := sweep_cache(conn, settings.cache_dir)) is not None:
             stats["cache_sweep"] = {"removed": swept}
-        if ai is not None:
+        if ai is not None and not embeddings:
+            stats["embeddings"] = {"note": "laufen im Hintergrund"}
+        elif ai is not None:
             phase("Embeddings")
             stats["embeddings"] = embed_pending(conn, ai.embed)
         phase("Zuordnung")
@@ -152,11 +159,13 @@ def _run(settings: Settings, ai: AIServices | None, phase) -> dict:
                                                vector_key=str(settings.db_path),
                                                mode=settings.assign_mode,
                                                min_similarity=settings.assign_min_similarity)
-        # last: the model reads the scan pages within its time budget; the next pass goes on
-        phase("Bildauswertung")
-        stats["vision"] = run_vision(conn, llm, settings, progress=phase)
-        if ai is not None and (stats["vision"].get("pages") or stats["vision"].get("documents")):
-            stats["vision_embeddings"] = embed_pending(conn, ai.embed)  # the sections written anew
+        if not vision:  # the app's background worker reads the scan pages meanwhile (vision.VisionWorker)
+            stats["vision"] = {"note": "läuft im Hintergrund"}
+        else:  # last: the model reads the scan pages within its time budget; the next pass goes on
+            phase("Bildauswertung")
+            stats["vision"] = run_vision(conn, llm, settings, progress=phase)
+            if embeddings and ai is not None and (stats["vision"].get("pages") or stats["vision"].get("documents")):
+                stats["vision_embeddings"] = embed_pending(conn, ai.embed)  # the sections written anew
     stats["seconds"] = round(time.time() - started, 2)
     log.info("Indexierung fertig: %s", stats)
     return stats

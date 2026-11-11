@@ -127,24 +127,113 @@ def test_ui_order_wins_over_the_environment_until_reset(tmp_path):
     assert [f["name"] for f in data["folders"]] == ["1", "3", "2"] and data["customized"] is False
 
 
-def test_a_folder_switched_off_comes_last_but_is_read(tmp_path, recorded):
+def test_a_folder_switched_off_is_not_read_but_stays_searchable(tmp_path, recorded):
     make_share(tmp_path / "projekte")
     s = settings(tmp_path)
     run_index(s)
     c = client_for(s)
-    c.post("/status/reihenfolge/ordner", data={"ordner": "3", "aktion": "aus"})
+    r = c.post("/status/reihenfolge/ordner", data={"ordner": "3", "aktion": "aus"}, headers={"HX-Request": "true"})
+    assert "Ordner 3 ist ausgeschaltet – seine Projekte werden nicht gelesen" in r.text
+    assert "aus – wird nicht gelesen" in r.text
     folders = c.get("/api/reihenfolge").json()["folders"]
     assert [(f["name"], f["enabled"], f["rank"]) for f in folders] == [("2", True, 1), ("1", True, 2), ("3", False, None)]
+    # a new and a changed file in the folder switched off: not read; what was read stays (and stays searchable)
+    project = next((tmp_path / "projekte" / "3").glob("310002_*"))
+    (project / "Neu.txt").write_text("Brandmeldeanlage Zusatzvermerk", encoding="utf-8")
+    (project / "Notiz.txt").write_text("Geaendert: Sprinkleranlage", encoding="utf-8")
+    os.utime(project / "Notiz.txt", (time.time() + 5, time.time() + 5))
     with db.session(s.db_path) as conn:
         conn.execute("UPDATE projects SET done_at = NULL")
     recorded.clear()
-    run_index(s)
-    assert recorded[-2:] == ["310002", "310001"] and len(recorded) == 7
-    # a switched-off folder cannot be moved above the folders switched on; switched on it is last of them
+    stats = run_index(s)
+    assert recorded == ["210005", "210003", "210001", "110002", "110001"]
+    assert stats["projects"].get("deactivated", 0) == 0
+    row = projects_row(s, "310002")
+    assert row["active"] == 1 and row["done_at"] is None  # still registered, not deleted, not marked done
+    with db.session(s.db_path) as conn:
+        docs = [r[0] for r in conn.execute("SELECT filename FROM documents WHERE project = '310002'")]
+        hits = conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE chunks_fts MATCH 'Rettungsweg' AND rowid IN "
+                            "(SELECT id FROM chunks WHERE project = '310002')").fetchone()[0]
+    assert docs == ["Notiz.txt"] and hits == 1
+    search = c.get("/suche", params={"q": "Rettungsweg 310002"})
+    assert search.status_code == 200
+    # the list: not in the queue, "Ordner ausgeschaltet" in "Alle"; pinning is refused
+    data = c.get("/api/reihenfolge").json()
+    assert data["switched_off"] == 2 and all(p["number"][0] != "3" for p in data["projects"])
+    page = c.get("/status").text
+    assert "2 Projekte in ausgeschalteten Ordnern werden nicht gelesen" in page
+    alle = c.get("/api/reihenfolge?tab=alle").json()["projects"]
+    assert {p["number"]: p["state"] for p in alle}["310002"] == "off"
+    assert "Ordner ausgeschaltet" in c.get("/status?tab=alle").text
+    r = c.post("/status/reihenfolge/vorziehen", data={"nummer": "310002"}, follow_redirects=False)
+    assert r.status_code == 409 and "ausgeschalteten Ordner 3" in r.text
+    assert c.post("/api/reihenfolge/vorziehen", json={"number": "310002"}).status_code == 400
+    assert projects_row(s, "310002")["pinned"] is None
+    # a switched-off folder cannot be moved above the folders switched on; switched on it is read again
     r = c.post("/status/reihenfolge/ordner", data={"ordner": "3", "aktion": "hoch"}, follow_redirects=False)
     assert r.status_code == 409 and "nicht weiter verschieben" in r.text
     c.post("/status/reihenfolge/ordner", data={"ordner": "3", "aktion": "an"})
     assert [f["name"] for f in c.get("/api/reihenfolge").json()["folders"]] == ["2", "1", "3"]
+    recorded.clear()
+    run_index(s)
+    assert recorded[:2] == ["310002", "310001"]  # not done: first now
+    with db.session(s.db_path) as conn:
+        assert sorted(r[0] for r in conn.execute("SELECT filename FROM documents WHERE project = '310002'")) == [
+            "Neu.txt", "Notiz.txt"]
+
+
+def test_a_folder_switched_off_during_the_pass_stops_its_project(tmp_path, monkeypatch):
+    make_share(tmp_path / "projekte", {"1": ["110001"], "3": ["310001", "310002"]})
+    project = next((tmp_path / "projekte" / "3").glob("310002_*"))
+    for k in range(6):
+        (project / f"Datei{k}.txt").write_text(f"Vermerk {k} Rauchabzug", encoding="utf-8")
+    s = settings(tmp_path)
+    run_index(s)
+    for k in range(6, 12):  # new files: read in the next pass – until the folder is switched off
+        (project / f"Datei{k}.txt").write_text(f"Vermerk {k} Rauchabzug", encoding="utf-8")
+    with db.session(s.db_path) as conn:
+        conn.execute("UPDATE projects SET done_at = NULL")
+    monkeypatch.setattr(reihenfolge, "OFF_CHECK_SECONDS", 0)
+    read: list[str] = []
+    real = documents.prepare_document
+
+    def prepare(**kw):
+        read.append(kw["rel_path"])
+        if len(read) == 2:  # someone switches folder 3 off while 310002 is read
+            with db.session(s.db_path) as other:
+                reihenfolge.change_folder(other, s.projects_dir, (), "3", "aus")
+        return real(**kw)
+
+    monkeypatch.setattr(documents, "prepare_document", prepare)
+    seen: list[str] = []
+    spy_real = documents.index_project_documents
+    monkeypatch.setattr(documents, "index_project_documents",
+                        lambda conn, p, *a, **kw: (seen.append(p["number"]), spy_real(conn, p, *a, **kw))[1])
+    run_index(s)
+    assert seen == ["310002", "110001"]  # 310001 not started any more
+    assert len(read) == 2  # stopped after the file it was reading
+    row = projects_row(s, "310002")
+    assert row["done_at"] is None and row["active"] == 1
+    with db.session(s.db_path) as conn:  # nothing removed: the files not gone through this time stay
+        assert conn.execute("SELECT COUNT(*) FROM documents WHERE project = '310002'").fetchone()[0] == 9
+
+
+def test_sites_with_their_orders_follow_the_folder_of_the_site_when_switched_off(tmp_path, recorded):
+    root = tmp_path / "projekte"
+    for folder, site, orders in (("2", "2842_Wohnanlage", ["284201_Neubau Kita"]),
+                                 ("1", "1015_Rathaus", ["101500_Sanierung Rathaus"])):
+        for o in orders:
+            (root / folder / site / o).mkdir(parents=True)
+            (root / folder / site / o / "Notiz.txt").write_text("Rettungsweg", encoding="utf-8")
+        (root / folder / site / "Lageplan.txt").write_text("Lageplan Feuerwehrzufahrt", encoding="utf-8")
+    s = settings(tmp_path, PROJECT_FOLDER_DEPTH="3", PROJECT_PARENT_DIGITS="4")
+    db.init_db(s.db_path)
+    with db.session(s.db_path) as conn:
+        sync_from_folder(conn, s.projects_dir, PATTERN, max_depth=3, parent_digits=4)
+        reihenfolge.change_folder(conn, s.projects_dir, (), "2", "aus")
+    run_index(s)
+    assert recorded == ["101500", "1015"]  # the site 2842 and its order are both off
+    assert projects_row(s, "284201")["active"] == 1 and projects_row(s, "2842")["active"] == 1
 
 
 def test_unknown_folder_and_action_are_refused(tmp_path):
@@ -401,7 +490,7 @@ def test_card_now_shows_the_project_files_phase_and_the_next_three(tmp_path):
     live.start(pending[0], "3", pending, 1, plan.version)
     live.files("310002", 38, 120)
     part = c.get("/status/reihenfolge/jetzt").text
-    assert 'hx-trigger="every 4s"' in part and "rf-spin" in part
+    assert 'hx-trigger="every 4s"' in part and 'class="rf-now-body"' in part and "rf-spin" not in part
     assert "310002" in part and "Ordner 3" in part and "38 von 120 Dateien" in part and ">Dokumente<" in part
     assert 'max="120" value="38"' in part
     assert "Danach: " in part and part.index("310001") < part.index("210005") < part.index("210003")
@@ -474,10 +563,11 @@ def test_api_order_and_pinning(tmp_path):
     assert [(f["name"], f["enabled"]) for f in data["folders"]] == [("1", True), ("2", True), ("3", False)]
     assert [p["number"] for p in data["projects"]][:2] == ["110002", "110001"]
     assert c.post("/api/reihenfolge/ordner", json={"order": ["7"]}).status_code == 400
-    data = c.post("/api/reihenfolge/vorziehen", json={"number": "310001"}).json()
-    assert data["projects"][0]["number"] == "310001" and data["projects"][0]["state"] == "pin"
-    data = c.post("/api/reihenfolge/zurueck", json={"number": "310001"}).json()
-    assert data["projects"][-1]["number"] == "310001"
+    assert c.post("/api/reihenfolge/vorziehen", json={"number": "310001"}).status_code == 400  # folder 3 is off
+    data = c.post("/api/reihenfolge/vorziehen", json={"number": "210001"}).json()
+    assert data["projects"][0]["number"] == "210001" and data["projects"][0]["state"] == "pin"
+    data = c.post("/api/reihenfolge/zurueck", json={"number": "210001"}).json()
+    assert data["projects"][-1]["number"] == "210001"
     assert c.post("/api/reihenfolge/vorziehen", json={"number": "000000"}).status_code == 400
     data = c.post("/api/reihenfolge/ordner", json={"reset": True}).json()
     assert data["customized"] is False and [f["name"] for f in data["folders"]] == ["3", "2", "1"]

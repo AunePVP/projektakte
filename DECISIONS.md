@@ -800,9 +800,10 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   war die Reihenfolge die der Einfügung in die Datenbank, Bauvorhaben am Schluss.
 - *Ordner*: die oberste Ebene unter `PROJECTS_DIR` (bei eurer Ablage `1` … `9`), nur Ordner mit Projekten.
   Nicht platzierte Ordner: nummerierte absteigend (`3, 2, 1`, passt zu „neueste zuerst“), dann die übrigen nach
-  Namen, Projekte direkt in `PROJECTS_DIR` zuletzt. „Aus“ überspringt nicht, sondern stellt ans Ende: ein
-  Ordner, der nie gelesen würde, wäre still unvollständig. Ein ausgeschalteter Ordner lässt sich nicht über
-  eingeschaltete schieben (die Anzeige entspricht immer der tatsächlichen Reihenfolge).
+  Namen, Projekte direkt in `PROJECTS_DIR` zuletzt. „Aus“ stellte zuerst nur ans Ende; seit dem Wunsch des Büros
+  wird ein ausgeschalteter Ordner gar nicht gelesen (Abschnitt „Ordner „aus“ wird nicht gelesen“ unten). Ein
+  ausgeschalteter Ordner lässt sich nicht über eingeschaltete schieben (die Anzeige entspricht immer der
+  tatsächlichen Reihenfolge).
 - *Gespeichert*: Tabelle `index_folders` (Migration 11, nur hinzugefügt). Leer → `INDEX_FOLDER_ORDER` gilt; die
   erste Änderung auf der Seite speichert die ganze Reihenfolge, ab dann gilt sie (sonst wäre unklar, was eine
   geänderte Umgebungsvariable gegen eine Einstellung auf der Seite bedeutet). „Auf Standard zurücksetzen“ leert
@@ -907,3 +908,108 @@ je Dokument.
 - *Protokoll*: „Bild nicht lesbar“ je Dokument und Ursache nur einmal (Streifenscans mit JBIG2 ohne `jbig2dec`
   schrieben eine Zeile je Streifen); der Fortschritt nennt die Seitennummer im PDF und die laufende Nummer unter
   den Scan-Seiten („Seite 22 (2 von 5)“) – vorher passten die beiden Zählungen nicht zusammen.
+
+## Einlesen, Bildauswertung und Embeddings nebeneinander
+
+Auf der echten Freigabe dauert der erste Dokumentendurchgang Tage (Tesseract für rund 180.000 Scan-Seiten). Die
+Bildauswertung und die Embeddings kamen erst danach – das Modell und der Embedding-Dienst warteten tagelang, obwohl
+der KI-Server vier Anfragen gleichzeitig nimmt und der Embedding-Dienst ein eigener Dienst ist.
+
+- *Eigene Threads in der Anwendung* (`vision.VisionWorker`, `embed_worker.EmbedWorker`), gestartet und beendet mit
+  dem Indexierungs-Thread (`background.py`), keine Task-Queue. Der Lauf lässt seine Phasen „Embeddings“ und
+  „Bildauswertung“ dann aus (`run_index(vision=False, embeddings=False)`; Statistik „läuft im Hintergrund“).
+  `python -m projektakte.index`, `evaluate` und die Tests ohne Anwendung behalten die Phasen am Ende des Laufs –
+  dort gibt es keinen zweiten Thread. Mit `LLM_VISION=0` startet keine Bildauswertung.
+- *Gleichzeitigkeit*: Bildauswertung höchstens `VISION_CONCURRENCY` (3) Modellaufrufe – einer der vier Plätze des
+  KI-Servers bleibt für Fragen frei, wie bisher; nur ein Durchgang der Bildauswertung je Prozess (`vision._PASS_LOCK`),
+  die Grenze gilt also insgesamt. Embeddings höchstens `EMBED_CONCURRENCY` (2) Stapel zu 32 Abschnitten: ein
+  zweiter Stapel hält den Dienst beschäftigt, während der erste geschrieben wird, und eine Frage braucht nur einen
+  kurzen Aufruf dazwischen. Mehr bringt bei einem GPU-Dienst kaum etwas (er bündelt selbst).
+- *Seitenbilder: ein zweiter Leseprozess statt eines geteilten.* Der Leseprozess des Laufs ist für eine ganze Datei
+  belegt – Tesseract auf einer 100-seitigen Scan-Mappe dauert Minuten. Teilten sich beide den Prozess (mit Sperre),
+  wartete die Bildauswertung dahinter und das Modell stünde still. Der zweite Prozess (`extract_worker.own_worker`)
+  hat dieselben Grenzen (`EXTRACT_MEMORY_MB`, CPU, Wandzeit), damit auch die Grenzvermerke im Profil (`|limit:`)
+  dieselbe Bedeutung haben. Gemessen: leer etwa 50 MB RSS (die App etwa 65 MB); im schlimmsten Fall braucht er wie
+  der erste bis zu `EXTRACT_MEMORY_MB`, ein A0-Farbplan etwa 1 GB. Daher Container-Speicher mindestens App + 2 ×
+  `EXTRACT_MEMORY_MB` (`deploy/compose.yaml`: 6 GB statt 4 GB).
+- *SQLite*: jeder Thread eine eigene Verbindung (WAL, `busy_timeout` 30 s wie bisher), Schreiben in kurzen
+  Transaktionen. Prüfen und Schreiben gehören zusammen: Die Bildauswertung nimmt dafür `BEGIN IMMEDIATE` und
+  speichert eine Seite bzw. setzt ein Dokument nur zusammen, wenn die Datei noch dieselbe ist (`sha256`) – hat der
+  Dokumentendurchgang eine geänderte Datei inzwischen neu gelesen, warten deren neue Seiten und die alte Antwort
+  wird verworfen (Statistik `discarded`). Ein Vektor wird nur gespeichert, wenn der Abschnitt noch ohne Vektor ist
+  und denselben Text hat (`vectors.STORE_SQL`): Ein neu geschriebenes Dokument löscht seine Abschnitte, und SQLite
+  kann einem neuen Abschnitt dieselbe Nummer geben. Ein so übergangener Abschnitt kommt in der nächsten Runde dran
+  (der Embedding-Thread beginnt nach dem Ende wieder vorn). Kein Vektor doppelt, keiner für den falschen Text.
+- *Migration 13*: Teilindex `chunks_without_vector` (nur Abschnitte ohne Vektor). Der Embedding-Thread sucht und
+  zählt sie vor jeder Runde, die Statusseite bei jedem Aufruf – ohne Index wäre das jedes Mal ein Durchlauf über
+  alle Abschnitte. Nur hinzugefügt (`IF NOT EXISTS`).
+- *`VISION_PASS_SECONDS` bleibt, heißt jetzt „Runde“*: Nach der Zeit endet ein Durchgang der Bildauswertung und der
+  nächste beginnt sofort. Wozu: fehlgeschlagene Seiten, deren Wartezeit inzwischen um ist, und übersprungene
+  Dokumente kommen wieder dran, und die Seiten bleiben nie länger als eine Runde ungeschrieben. Neue Dokumente
+  übernimmt die Runde schon vorher (Liste alle 60 s neu gelesen, `REFRESH_SECONDS`), ebenso eine geänderte
+  Reihenfolge. Ohne Arbeit schläft der Thread, bis der Lauf ein Dokument mit Scan-Seiten schreibt
+  (`documents.VISION_WAITING`) oder 60 s um sind; der Embedding-Thread ebenso bis zu neuen Abschnitten
+  (`vectors.CHUNKS_WAITING`) oder 30 s.
+- *Beenden*: Die Bildauswertung wartet nicht auf Antworten unterwegs (Daemon-Threads wie bisher); ihr Leseprozess
+  wird beendet. Was noch nicht gespeichert ist, liest sie nach dem nächsten Start. Ein Dokument, dessen Seiten alle
+  gelesen, aber noch nicht zusammengesetzt waren, setzt sie dann ohne Modell zusammen (vorher blieb so ein Dokument
+  als „ausstehend“ stehen). Der Embedding-Thread lässt die Stapel beim Dienst noch zu Ende laufen (deren eigene
+  Zeitgrenze).
+- *Datenbank anlegen*: Beim Start eines frischen `DATA_DIR` legten Indexierung und Hintergrund-Threads gleichzeitig
+  die Tabellen an („table documents already exists“); `db.init_db` ist jetzt im Prozess gesperrt.
+- *Vektoren nach der Bildauswertung*: macht der Embedding-Thread, sobald die Abschnitte geschrieben sind (vorher
+  ein Embedding-Lauf am Ende der Phase).
+
+## Ordner „aus“ wird nicht gelesen
+
+Wunsch des Büros: „Wenn ich einen Ordner ausschalte, soll er aus sein und nicht gelesen werden.“ Vorher kam er nur
+ans Ende.
+- *Was „aus“ heißt*: kein Lauf liest seine Projekte (auch keine neuen oder geänderten Dateien, kein Tesseract), die
+  Bildauswertung nimmt seine Dateien nicht (auch nicht die Nachprüfung älterer PDF-Dateien). Ein Projekt daraus,
+  das gerade gelesen wird, hört nach der aktuellen Datei auf (`Plan.switched_off`, höchstens einmal je Sekunde eine
+  kleine Abfrage), wird nicht als fertig markiert und entfernt nichts – die nicht durchgesehenen Dateien gelten
+  nicht als verschwunden.
+- *Nichts wird gelöscht*: Was gelesen ist, bleibt im Index und durchsuchbar, die Projekte bleiben im Register und
+  aktiv (der Registerabgleich weiß nichts von „aus“). Wer einen Ordner aus der Suche nehmen will, braucht etwas
+  anderes – „aus“ ist eine Einstellung für das Lesen, kein Löschen, und einschalten soll ohne Neulesen weitergehen.
+- *Mails* und ihre Anhänge sind nicht betroffen, auch wenn sie einem Projekt eines ausgeschalteten Ordners
+  zugeordnet sind (sie kommen nicht aus dem Ordner).
+- *Zuordnung zum Ordner* wie bei der Reihenfolge: Aufträge eines Bauvorhabens gehören zum Ordner des Bauvorhabens,
+  zusammengeführte Projekte zum Ordner ihres Hauptordners.
+- *Vorziehen geht nicht* (Meldung „erst den Ordner einschalten“): Ein vorgezogenes Projekt, das nicht gelesen wird,
+  wäre ein Widerspruch auf der Seite. Wird der Ordner eines schon vorgezogenen Projekts ausgeschaltet, gilt „aus“.
+- *Anzeige*: Ordnerzeile „aus – wird nicht gelesen“, Projekte „Ordner ausgeschaltet“ (Reiter „Alle“, nicht in der
+  Warteschlange), Hinweis unter der Warteschlange, Bildauswertung „N Seiten in ausgeschalteten Ordnern“.
+- *Keine Umgebungsvariable `INDEX_FOLDER_OFF`*: Sie hätte durch alle Aufrufer der Reihenfolge gereicht werden müssen,
+  und die Einstellung auf der Statusseite bleibt ohnehin in der Datenbank erhalten. `INDEX_FOLDER_ORDER` bleibt,
+  wie sie war.
+
+## Statusseite: echte Dateizahl, Zeiten und Schätzungen, ruhiges Ladesymbol
+
+- *25er-Schritte*: Die Karte erfuhr die Dateizahl nur jede 25. Datei (`ProjectRun.step`, um den Zustand selten zu
+  sperren). Das kostet nichts: Der Zustand liegt im Speicher, ein Zähler unter einer Sperre. Jetzt jede Datei.
+- *Ladesymbol*: HTMX ersetzte alle 4 s die ganze Karte samt Ladesymbol, die CSS-Animation begann jedes Mal von vorn.
+  Jetzt ersetzt HTMX nur den Inhalt (`#rf-jetzt-inhalt`); das Ladesymbol steht daneben, im Seitenquelltext danach
+  (per `order: -1` vorn angezeigt), und wird über den Geschwister-Selektor `.idle ~ .rf-spin` ausgeblendet – ohne
+  Skript und ohne Inline-Stil (CSP). Im Browser (Chromium) geprüft: dasselbe Element über alle Abfragen, die
+  Animationszeit läuft durch.
+- *Jede Tätigkeit für sich*: Seit Bildauswertung und Embeddings nebenher laufen, zeigt die Karte Lauf, Bildauswertung
+  und Embeddings je in einer eigenen Zeile; „Alles gelesen“ und das langsame Abfragen (30 s) nur, wenn nichts läuft.
+- *Zeiten*: „Lauf seit“ und „Projekt seit“ aus dem Zustand im Speicher. Ø je *gelesene* Datei zählt nur Dateien,
+  die gelesen und geschrieben wurden; unveränderte (ein `stat`) stehen als Zahl daneben – ein Durchschnitt über
+  beide sagte bei der Prüfung fertiger Projekte nichts. Restzeit des Projekts aus seiner eigenen bisherigen Rate
+  (alle durchgesehenen Dateien, auch nicht lesbare Typen), erst nach 20 Dateien.
+- *Warteschlange über Projekte, nicht Dateien*: Wie viele Dateien die noch nicht gelesenen Projekte haben, weiß
+  niemand, bevor sie aufgelistet sind (das kostet über das Netz selbst Stunden). Darum Projekte übrig × gleitender
+  Durchschnitt je Projekt der Warteschlange, „grob“, erst nach 5 Projekten und 20 gelesenen Dateien. Projekte sind
+  verschieden groß; über viele gemittelt reicht das für „≈ 3 Tage“ oder „≈ 2 Wochen“.
+- *Gleitende Durchschnitte in `meta`* (`zeiten.py`, je Wert eine Zeile JSON, Gewicht der älteren 0,98 je neuem –
+  etwa die letzten 50 zählen): überstehen Neustarts und folgen einem schneller oder langsamer gewordenen Dienst. Je
+  Projekt geschrieben, wenn es fertig ist; je Datei gesammelt alle 50 Dateien und am Projektende; je Seite in der
+  Transaktion, die die Seite speichert; je Abschnitt nach jeder Embedding-Runde. Nie eine eigene Schreibtransaktion
+  je Datei.
+- *Bildauswertung*: Seiten je Stunde = Gleichzeitigkeit × 3600 ÷ Ø Sekunden je Seite, Restzeit = ausstehende Seiten
+  (ohne ausgeschaltete Ordner) × Ø ÷ Gleichzeitigkeit, nach 10 Seiten. *Embeddings*: Ø je Abschnitt ist die Zeit
+  einer Runde (mit ihren gleichzeitigen Stapeln) je Abschnitt, Restzeit = Abschnitte ohne Vektor × Ø, nach 100.
+- *Deutsch gerundet*: „2 Std. 14 Min.“ für Verstrichenes, „≈ 2 Std. 15 Min.“, „≈ 3 Tage“, „≈ 4 Wochen“ für
+  Schätzungen (auf 5 Minuten, Stunden, halbe Tage gerundet) – eine Schätzung soll nicht genauer aussehen, als sie ist.

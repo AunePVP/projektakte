@@ -1,5 +1,8 @@
 """Background indexing: runs at start-up and every INDEX_INTERVAL seconds in a daemon thread, so
-the web server starts immediately and keeps answering while documents and mails are processed."""
+the web server starts immediately and keeps answering while documents and mails are processed. With
+LLM_VISION=1 the Bildauswertung runs beside it in a thread of its own (vision.VisionWorker), from the start
+on – the model reads scan pages while the documents pass reads the share; the embeddings, too
+(embed_worker.EmbedWorker)."""
 from __future__ import annotations
 
 import logging
@@ -7,7 +10,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from . import demo, extract_worker
+from . import demo, embed_worker, extract_worker, vision
 from .ai.services import AIServices
 from .config import Settings
 from .demo_cleanup import demo_purge_note
@@ -37,6 +40,10 @@ class BackgroundIndexer:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        llm = getattr(ai, "llm", None)
+        self.vision = vision.VisionWorker(settings, llm) if vision.VisionWorker.wanted(llm) else None
+        embed = getattr(ai, "embed", None)
+        self.embedder = embed_worker.EmbedWorker(settings, embed) if embed_worker.EmbedWorker.wanted(embed) else None
         self.state: dict = {"running": False, "phase": "wartet", "runs": 0, "last_started": None,
                             "last_finished": None, "last_stats": None, "last_error": None,
                             "last_warnings": [], "next_run": None, "demo_generated": None}
@@ -48,10 +55,18 @@ class BackgroundIndexer:
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="indexer", daemon=True)
         self._thread.start()
+        if self.vision is not None:
+            self.vision.start()
+        if self.embedder is not None:
+            self.embedder.start()
 
     def stop(self, timeout: float = 10.0) -> None:
         self._stop.set()
         self._wake.set()
+        if self.vision is not None:  # first: no new page images are prepared, answers on their way are dropped
+            self.vision.stop(timeout)
+        if self.embedder is not None:
+            self.embedder.stop(timeout)
         # the extraction worker process ends with the app: a file being read is abandoned at once (it is
         # read again on the next start) instead of holding up the shutdown
         extract_worker.shutdown()
@@ -68,7 +83,12 @@ class BackgroundIndexer:
 
     def status(self) -> dict:
         with self._lock:
-            return {**self.state, "alive": self.alive, "interval_s": self.settings.index_interval}
+            state = {**self.state, "alive": self.alive, "interval_s": self.settings.index_interval}
+        state["vision"] = (vision.LIVE.snapshot() | {"alive": self.vision.alive, "error": self.vision.last_error}
+                           if self.vision is not None else None)
+        state["embeddings"] = (embed_worker.LIVE.snapshot() | {"alive": self.embedder.alive}
+                               if self.embedder is not None else None)
+        return state
 
     def _set(self, **kw) -> None:
         with self._lock:
@@ -78,7 +98,8 @@ class BackgroundIndexer:
     def run_once(self) -> dict | None:
         self._set(running=True, last_started=_now(), phase="startet")
         try:
-            stats = run_index(self.settings, self.ai, progress=lambda phase: self._set(phase=phase))
+            stats = run_index(self.settings, self.ai, progress=lambda phase: self._set(phase=phase),
+                              vision=self.vision is None, embeddings=self.embedder is None)
             warnings = run_warnings(stats)
             purged = demo_purge_note(stats.get("demo_purge"))
             for w in warnings:

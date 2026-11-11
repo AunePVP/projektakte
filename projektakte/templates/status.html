@@ -6,7 +6,7 @@
   <section class="card">
     <h2>Indexierung</h2>
     <dl class="meta">
-      <dt>Zustand</dt><dd>{{ 'läuft (' ~ st.indexing.phase ~ ')' if st.indexing.running else 'wartet' }}</dd>
+      <dt>Zustand</dt><dd>{{ 'läuft (' ~ st.indexing.phase ~ ')' if st.indexing.running else 'wartet' }}{% if eye %} · Bildauswertung {{ ('läuft, ' ~ eye.concurrency ~ ' gleichzeitig') if eye.busy else ('wartet' if eye.alive else 'beendet') }}{% endif %}{% if emb %} · Embeddings {{ 'laufen' if emb.busy else ('warten' if emb.alive else 'beendet') }}{% endif %}</dd>
       <dt>Läufe</dt><dd>{{ st.indexing.runs|de_num }}</dd>
       <dt>Letzter Lauf</dt><dd>{{ st.indexing.last_finished|de_date(true) }}</dd>
       <dt>Nächster Lauf</dt><dd>{{ st.indexing.next_run|de_date(true) if st.indexing.next_run else 'auf Anforderung' }}</dd>
@@ -23,8 +23,8 @@
       <dt>Dokumente</dt><dd>{{ st.counts.documents|de_num }} ({{ st.counts.documents_skipped|de_num }} übersprungen/fehlerhaft)</dd>
       <dt>Mails</dt><dd>{{ st.counts.mails|de_num }} ({{ st.counts.inbox|de_num }} im Eingang{% if st.counts.plmail_open %}, {{ st.counts.plmail_open|de_num }} in plMail noch nicht zugeordnet{% endif %})</dd>
       <dt>Zuordnung</dt><dd>{{ 'von Hand (Mails aus plMail werden in plMail zugeordnet)' if st.assign_mode == 'manual' else 'automatisch über die Projektnummer, sonst Vorschlag' }}</dd>
-      <dt>Abschnitte</dt><dd>{{ st.counts.chunks|de_num }} ({{ st.counts.chunks_without_vector|de_num }} ohne Vektor)</dd>
-      {% if st.counts.vision_pending_pages or st.counts.vision_recheck %}<dt>Bildauswertung</dt><dd>{% if st.counts.vision_pending_pages %}{{ st.counts.vision_pending_pages|plural('Seite', 'Seiten') }} in {{ st.counts.vision_pending_documents|plural('Dokument', 'Dokumenten') }} ausstehend (schon mit vorläufigem Text durchsuchbar){% endif %}{% if st.counts.vision_pending_pages and st.counts.vision_recheck %}; {% endif %}{% if st.counts.vision_recheck %}{{ st.counts.vision_recheck|plural('ältere PDF-Datei', 'ältere PDF-Dateien') }} noch auf gescannte Seiten zu prüfen{% endif %}</dd>{% endif %}
+      <dt>Abschnitte</dt><dd>{{ st.counts.chunks|de_num }} ({{ st.counts.chunks_without_vector|de_num }} ohne Vektor{% if emb and emb.busy and emb.per_hour %} – {{ emb.per_hour|round|int|de_num }} je Stunde, fertig grob {{ emb.eta|etwa }}{% endif %})</dd>
+      {% if st.counts.vision_pending_pages or st.counts.vision_recheck %}<dt>Bildauswertung</dt><dd>{% if st.counts.vision_pending_pages %}{{ st.counts.vision_pending_pages|plural('Seite', 'Seiten') }} in {{ st.counts.vision_pending_documents|plural('Dokument', 'Dokumenten') }} ausstehend (schon mit vorläufigem Text durchsuchbar){% if eye and eye.per_hour %} – Ø {{ eye.per_page|je }} je Seite, {{ eye.per_hour|round|int|de_num }} Seiten/Std., fertig grob {{ eye.eta|etwa }}{% endif %}{% if eye and eye.off_pages %}, davon {{ eye.off_pages|de_num }} in ausgeschalteten Ordnern (werden nicht ausgewertet){% endif %}{% endif %}{% if st.counts.vision_pending_pages and st.counts.vision_recheck %}; {% endif %}{% if st.counts.vision_recheck %}{{ st.counts.vision_recheck|plural('ältere PDF-Datei', 'ältere PDF-Dateien') }} noch auf gescannte Seiten zu prüfen{% endif %}</dd>{% endif %}
     </dl>
   </section>
 </div>

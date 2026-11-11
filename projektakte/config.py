@@ -185,6 +185,22 @@ def _vision_concurrency(env: Mapping[str, str], warnings: list[str]) -> int:
     return value
 
 
+def _embed_concurrency(env: Mapping[str, str], warnings: list[str]) -> int:
+    """EMBED_CONCURRENCY: batches the background embedding sends to the embedding service at a time (1–8);
+    default 2 – the service is a separate one, a question needs one short call of it in between."""
+    raw = (env.get("EMBED_CONCURRENCY") or "").strip()
+    if not raw:
+        return 2
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if not 1 <= value <= 8:
+        warnings.append(f"EMBED_CONCURRENCY={raw} ist ungültig (ganze Zahl von 1 bis 8) – es gilt 2")
+        return 2
+    return value
+
+
 def _vision_pass_seconds(env: Mapping[str, str], warnings: list[str]) -> float:
     """VISION_PASS_SECONDS: time budget of the phase "Bildauswertung" per indexing pass; 0 = no limit."""
     raw = (env.get("VISION_PASS_SECONDS") or "").strip()
@@ -333,6 +349,8 @@ class Settings:
     # seconds (0 = until nothing is pending)
     vision_concurrency: int = 3
     vision_pass_seconds: float = 1800.0
+    # background embedding (embed_worker.py): batches sent to the embedding service at a time
+    embed_concurrency: int = 2
     # levels below PROJECTS_DIR at which project folders are looked for (PROJECT_FOLDER_DEPTH);
     # None: the depth found by the automatic detection (PROJECT_NUMBER_PATTERN=auto, see structure.py –
     # with auto a number set here is not used, the confirmed proposal's depth is)
@@ -424,6 +442,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
                     else demo_mode and (e.get("AI_MODE") or "").strip().lower() == "fake"),
         vision_concurrency=_vision_concurrency(e, warnings),
         vision_pass_seconds=_vision_pass_seconds(e, warnings),
+        embed_concurrency=_embed_concurrency(e, warnings),
         vision_skip_folders=tuple(w.strip() for w in (e.get("VISION_SKIP_FOLDERS") or "").split(",") if w.strip()),
         index_folder_order=tuple(dict.fromkeys(w.strip().strip("/") for w in (e.get("INDEX_FOLDER_ORDER") or "").split(",")
                                                if w.strip().strip("/"))),

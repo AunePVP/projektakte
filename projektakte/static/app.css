@@ -259,6 +259,11 @@ progress.rf-bar.run::-moz-progress-bar { background: var(--accent); }
 .rf-spin { width: 22px; height: 22px; border: 3px solid #eceff3; border-top-color: var(--accent); border-radius: 50%;
   animation: rf-spin .9s linear infinite; flex: none; margin-top: 2px; display: inline-block; }
 .rf-spin.sm { width: 14px; height: 14px; border-width: 2px; margin: 0; }
+.rf-now > .rf-spin { order: -1; } /* after the polled part in the page, shown before it */
+.rf-now-body.idle ~ .rf-spin { display: none; }
+.rf-times { margin-top: .2rem; }
+.rf-bg { margin-top: .55rem; padding-top: .45rem; border-top: 1px solid var(--line); }
+.rf-bg .warn { color: var(--warn); }
 @keyframes rf-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .rf-spin { animation-duration: 3s; } }
 .rf-chip { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .8rem; background: #eceff3;
@@ -275,6 +280,7 @@ table.list.rf-list form { margin: 0; }
 .rf-st { display: inline-flex; align-items: center; gap: .35rem; font-size: .87rem; white-space: nowrap; }
 .rf-st.ok { color: var(--ok); } .rf-st.warn { color: var(--warn); } .rf-st.wait { color: var(--muted); }
 .rf-st.pin { color: var(--info); }
+.rf-st.off { color: var(--muted); font-style: italic; }
 @media (max-width: 700px) {
   /* the project list keeps Stand and the button; #, Ordner and Dateien give way */
   table.list.rf-list th, table.list.rf-list td { display: table-cell; }

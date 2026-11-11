@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -20,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import extract_worker, reihenfolge
+from .vectors import CHUNKS_WAITING
 from .db import BAUVORHABEN
 from .chunking import Chunk, chunk_pages
 from .extract import IMAGE_EXT, SUPPORTED_EXT, Extracted, Page, extract, extraction_profile
@@ -140,6 +142,11 @@ _STATUS_DE = {"ok": "ok", "skipped": "übersprungen", "error": "Fehler", "empty"
 _VISION_LATER: ContextVar[bool] = ContextVar("vision_later", default=False)
 
 
+# Set when a document with scan pages waiting for the model was written: wakes the Bildauswertung running
+# in the background (vision.VisionWorker), which otherwise looks for new pages now and then.
+VISION_WAITING = threading.Event()
+
+
 @contextmanager
 def vision_later(on: bool = True):
     """Within the block, files are read in two stages (see vision.py): the scan pages of PDFs and images
@@ -223,6 +230,7 @@ def write_document(conn: sqlite3.Connection, doc: PreparedDocument, *, path: str
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))", (*values, path)).lastrowid
     if pending:
         store_page_texts(conn, doc_id, r.pages, pending, known)
+        VISION_WAITING.set()
     write_chunks(conn, doc_id, chunks, filename=doc.filename, project=project, project_name=project_name,
                  mail_id=mail_id)
     return doc_id
@@ -262,6 +270,8 @@ def write_chunks(conn: sqlite3.Connection, doc_id: int, chunks: list[Chunk], *, 
             "INSERT INTO chunks(doc_id, mail_id, project, ord, page, heading, text) VALUES(?,?,?,?,?,?,?)",
             (doc_id, mail_id, project, c.ord, c.page, c.heading, c.text)).lastrowid
         add_fts(conn, cid, fts_title(filename, project, project_name, c.heading), c.text)
+    if chunks:
+        CHUNKS_WAITING.set()
 
 
 def store_document(conn: sqlite3.Connection, *, path: str, rel_path: str, project: str | None,
@@ -590,6 +600,8 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
     unlisted: list[Path] = []  # stored paths whose content is unknown this pass – their documents stay
     reachable = 0
     for stored in stored_folders:
+        if run.stopped:
+            break
         root = real_folder(stored)
         if root is None or not is_folder(root):  # vanished, share not reachable, or a folder above unreadable
             log.warning("Projektordner nicht erreichbar, Dokumente bleiben unverändert: %s%s", stored,
@@ -603,7 +615,8 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
                       boundary=Path(projects_dir).resolve() if projects_dir else root.resolve(),
                       profile=profile, now=now, seen=seen, bad=bad, unlisted=unlisted,
                       exclude=frozenset(project.get("exclude") or ()), skip_photos=skip_photos, run=run)
-    if not reachable:  # nothing could be read: change nothing
+    if not reachable or run.stopped:  # nothing could be read, or stopped half-way: remove nothing
+        conn.commit()
         return stats
     handover = project.get("handover") or ()
     if bad:
@@ -662,7 +675,8 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
         files = []
     run.listed(len(files))
     for f in files:
-        run.step()
+        if not run.step():  # its folder was switched off on the status page: stop after the file read last
+            break
         if f.suffix.lower() not in SUPPORTED_EXT:
             stats["skipped"] += 1
             continue
@@ -730,6 +744,7 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
             stats["unchanged"] += 1
             continue
         run.changed()  # the project is not done until this pass over it ends
+        began = time.monotonic()
         doc = prepare_document(rel_path=shown, data=data, mtime=st.st_mtime,  # no lock held
                                llm=None if file_profile != profile else llm, ocr=False if photo else None)
         if file_profile != profile:
@@ -743,6 +758,7 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
             run.problem()
             continue
         conn.commit()  # one short write transaction per file – the web UI never waits long
+        run.file_read(time.monotonic() - began)
         if row is None:
             stats["new"] += 1
         else:
@@ -898,8 +914,9 @@ def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Pat
     encoding, ``bad_name_examples`` names some of them (project folder/path).
 
     The projects are taken in the order of reihenfolge.py (pinned, not done yet folder by folder with
-    ``folder_order`` as INDEX_FOLDER_ORDER, then the done ones); a change made on the status page meanwhile
-    sorts the projects not started yet again. Each project that was read completely is marked done."""
+    ``folder_order`` as INDEX_FOLDER_ORDER, then the done ones), without the projects of folders switched off;
+    a change made on the status page meanwhile sorts the projects not started yet again (a folder switched
+    off stops its project being read). Each project that was read completely is marked done."""
     total: dict = {"removed": purge_inactive_documents(conn), "bad_names": 0, "bad_name_examples": []}
     conn.commit()
     mark_garbled_eml_documents(conn)
@@ -909,6 +926,8 @@ def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Pat
     # a site's own files come after its orders (reihenfolge.ordered); which of two sites reads a file both
     # could is settled by the hand-over below, whichever is read first
     pending = plan.order(projects)
+    queued = plan.queued(pending)  # projects of the queue (not done) not started yet
+    started: set[str] = set()
     further = further_folders(conn)
     excluded = site_exclusions(conn, further)
     # what each site reads: its folders without its exclusions – a file of one site that lies there now
@@ -919,12 +938,18 @@ def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Pat
     at = 0  # pending[at] is the next project (no list copies per project with thousands of them)
     try:
         while at < len(pending):
-            if plan.stale():  # a person changed the order: the projects not started yet are sorted again
-                pending, at = plan.order(pending[at:]), 0
+            if plan.stale():  # a person changed the order: the projects not started yet are sorted again – also
+                # those of a folder switched on again meanwhile, without those of a folder switched off
+                pending, at = plan.order([p for p in projects if p["number"] not in started]), 0
+                queued = plan.queued(pending)
             p = pending[at]
             at += 1
-            live.start(p, plan.folder_of.get(p["number"], ""), pending, at, plan.version)
-            run = reihenfolge.ProjectRun(conn, p["number"])
+            started.add(p["number"])
+            in_queue = p["number"] not in plan.done
+            queued -= in_queue
+            live.start(p, plan.folder_of.get(p["number"], ""), pending, at, plan.version, queue_left=max(0, queued),
+                       queued=in_queue)
+            run = reihenfolge.ProjectRun(conn, p["number"], plan=plan, queued=in_queue)
             _index_one(conn, p, further, excluded, areas, total, llm=llm, projects_dir=projects_dir,
                        skip_photos=skip_photos, run=run, profile=profile)
     finally:

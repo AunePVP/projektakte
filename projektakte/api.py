@@ -280,14 +280,20 @@ def _rf_data(request: Request, tab: str = "", q: str = "", limit: int = 50) -> d
         rf = reihenfolge_context(request, conn, tab, q, limit=max(1, min(limit, RF_MAX_LIMIT)))
     now = rf["now"]
     projects = [{k: p[k] for k in ("position", "number", "name", "kind", "folder", "files", "state", "done_at",
-                                   "skipped")} for p in rf["rows"]]
+                                   "skipped", "off")} for p in rf["rows"]]
+    times = now["times"]
     return structure.clean({
         "folders": [{"name": f["name"], "label": f["label"], "enabled": f["enabled"], "rank": f["rank"],
                      "projects": f["total"], "done": f["finished"]} for f in rf["folders"]],
         "customized": rf["customized"], "default_order": rf["default_order"],
         "current": {"running": now["running"], "phase": now["phase_detail"], "project": now["project"],
-                    "files_done": now["seen"], "files_total": now["total"], "next": now["upcoming"]},
-        "queue": rf["queue_count"], "done": rf["done_count"], "tab": rf["tab"], "q": rf["q"],
+                    "files_done": now["seen"], "files_total": now["total"], "next": now["upcoming"],
+                    "seconds_running": times["run_elapsed"], "seconds_on_project": times["project_elapsed"],
+                    "files_read": times["files_read"], "files_unchanged": times["files_unchanged"],
+                    "seconds_per_file_read": times["per_file"], "eta_project_seconds": times["project_eta"],
+                    "eta_queue_seconds": times["queue_eta"], "seconds_per_project": times["per_project"]},
+        "vision": now["vision"], "embeddings": now["embed"],
+        "queue": rf["queue_count"], "done": rf["done_count"], "switched_off": rf["off_count"], "tab": rf["tab"], "q": rf["q"],
         "total": rf["total"], "count": len(projects), "projects": projects})
 
 
@@ -300,7 +306,7 @@ def order(request: Request, tab: str = "", q: str = "", limit: int = 50) -> dict
 
 class FolderOrderRequest(BaseModel):
     order: list[str] = []  # these folders first, in this order; the others keep theirs after them
-    off: list[str] = []  # switched off: their projects come last
+    off: list[str] = []  # switched off: their projects are not read (what was read stays searchable)
     reset: bool = False  # back to INDEX_FOLDER_ORDER and the default
 
 
@@ -336,7 +342,8 @@ def order_folders(request: Request, body: FolderOrderRequest) -> dict:
 
 @router.post("/reihenfolge/vorziehen")
 def order_pin(request: Request, body: PinRequest) -> dict:
-    return _rf_write(request, lambda conn, s: reihenfolge.pin(conn, body.number))
+    return _rf_write(request, lambda conn, s: reihenfolge.pin(conn, body.number, s.projects_dir,
+                                                             getattr(s, "index_folder_order", ())))
 
 
 @router.post("/reihenfolge/zurueck")
