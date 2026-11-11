@@ -5,6 +5,23 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Dokument-Betrachter:** Dokumente öffnen im Fenster der Anwendung statt auf einer neuen Seite – aus der
+  Ordneransicht, den Anhängen, der Karte der Zeitleiste, den Quellen einer Antwort, den Suchtreffern und den
+  Anhängen einer Mail. Rechts über der Seite (Handy: bildschirmfüllend) mit Dateiname, Ordner, Schließen (✕/Esc),
+  ‹ › durch die Liste, „In neuem Fenster öffnen“/„Originaldatei herunterladen“ und „Textansicht“. PDF im
+  PDF-Betrachter des Browsers (Quellen mit Seite öffnen auf der Seite), JPEG/PNG/GIF/WebP direkt mit Zoom per
+  Klick, TIFF/BMP als vom Server umgewandelte Vorschau mit Seitenwahl (begrenzt: Größe vor dem Entpacken geprüft,
+  eine Umwandlung zur Zeit), Mails, Word, OpenDocument und Text als gelesener Text mit Sprung zum zitierten
+  Abschnitt. HTML/SVG nie aktiv, ausstehende oder fehlende Dateien mit Hinweis. Zurück im Browser schließt den
+  Betrachter. Die Dokumentseite zeigt PDF/Bild/Vorschau über den Abschnitten (`?seite=N`). Ohne JavaScript wie
+  bisher. Neu: `GET /dokumente/{id}/ansicht` (Fenster-Inhalt), `GET /dokumente/{id}/vorschau?seite=N`,
+  `static/betrachter.js`, `projektakte/betrachter.py`.
+- **Sicherheits-Header:** Originaldateien (`/dokumente/{id}/datei…`) dürfen von der Anwendung selbst eingebettet
+  werden (`frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`; weiter ohne Skripte, außer PDF in der
+  Sandbox); die Seiten erlauben Rahmen nur vom eigenen Ursprung (`frame-src 'self'`) und keine Plugins
+  (`object-src 'none'`) und lassen sich weiter nirgends einbetten. HTML, SVG, XML und Skriptdateien werden als
+  `application/octet-stream` zum Herunterladen ausgeliefert; GIF und WebP öffnen im Browser.
+
 - **Reihenfolge beim Einlesen (Statusseite):** Neuer Bereich unter den bisherigen Karten. *Reihenfolge der
   Ordner*: die obersten Ordner unter `PROJECTS_DIR` mit „N von M Projekten fertig“, verschiebbar (▲/▼) und
   abschaltbar („aus“: ihre Projekte kommen zuletzt, werden aber gelesen); gespeichert in der Datenbank, gilt
@@ -144,8 +161,8 @@ Roadmap-Schritt.
 - `VISION_SKIP_FOLDERS` (z. B. `Bilder`): Fotos in Ordnern wie `263900-Bilder` gehen nicht an die Bildauswertung;
   ohne die Einstellung werden sie später nachgelesen.
 - Protokoll: je gelesener Datei eine Zeile „Gelesen: <Datei> – ok (Bildauswertung), 3 Seite(n), 7 Abschnitt(e), 12,3 s“.
-- 1987 Tests (1982 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`
-  und `tests/test_index_reihenfolge.py`.
+- 2025 Tests (2020 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`,
+  `tests/test_index_reihenfolge.py` und `tests/test_dokument_betrachter.py`.
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

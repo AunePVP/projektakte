@@ -1,0 +1,35 @@
+{#- The viewer panel of one document (GET /dokumente/{id}/ansicht), put into #betrachter by static/betrachter.js.
+    The buttons only work with the script (the panel is only ever shown by it). -#}
+{% from "_betrachter_anzeige.html" import anzeige, hinweise with context %}
+<div class="bt bt-art-{{ v.kind }}" data-bt-doc="{{ v.id }}"{% if v.chunk %} data-bt-ziel="bt-c{{ v.chunk }}"{% endif %}>
+  <div class="bt-head">
+    <div class="bt-titel">
+      <h2 id="bt-titel" tabindex="-1">{{ v.filename|path }}</h2>
+      <p class="muted small">{% if v.mail %}Anhang der Mail „{{ v.mail.subject or '(ohne Betreff)' }}“ vom {{ v.mail.date|de_date }}{% elif v.folder %}{{ v.folder|path }}{% endif %}{% if v.page and v.kind == 'pdf' %} · Seite {{ v.page }}{% endif %}</p>
+    </div>
+    <div class="bt-nav" data-bt-nav hidden>
+      <button type="button" class="secondary" data-bt-schritt="-1" aria-label="Vorheriges Dokument der Liste">‹</button>
+      <span class="small muted" data-bt-pos></span>
+      <button type="button" class="secondary" data-bt-schritt="1" aria-label="Nächstes Dokument der Liste">›</button>
+    </div>
+    <button type="button" class="secondary bt-close" data-bt-schliessen aria-label="Betrachter schließen (Esc)" title="Schließen (Esc)">✕</button>
+  </div>
+  <p class="bt-actions">
+    {% if v.available %}<a class="button secondary" href="{{ v.file_url }}" target="_blank" rel="noopener">{{ 'In neuem Fenster öffnen' if v.kind in ('pdf', 'bild') or v.file_url.endswith(('.txt', '.md')) else 'Originaldatei herunterladen' }}</a>{% endif %}
+    <a class="button secondary" href="{{ v.text_url }}">Textansicht</a>
+  </p>
+  <div class="bt-body">
+    {{ hinweise(v) }}
+    {{ anzeige(v, '/dokumente/' ~ v.id ~ '/ansicht?', in_panel=true) }}
+    {% if v.kind == 'text' %}
+    <div class="bt-text">
+    {% for c in chunks %}
+    <section class="chunk" id="bt-c{{ c.id }}">
+      {% if c.context %}<p class="muted small chunk-context">{{ c.context }}</p>{% endif %}
+      <div class="doc-text">{{ c.html }}</div>
+    </section>
+    {% else %}<p class="empty">Kein Text gelesen.</p>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>

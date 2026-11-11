@@ -25,7 +25,7 @@
   <li id="{{ prefix }}-{{ s.n }}" value="{{ s.n }}">
     <span class="src-n">[{{ s.n }}]</span>
     {% if s.kind == 'mail' %}<a href="/mails/{{ s.mail_id }}">{{ s.label }}</a>
-    {% else %}<a href="/dokumente/{{ s.doc_id }}#c{{ s.chunk_id }}">{{ s.label }}</a>{% endif %}
+    {% else %}<a href="/dokumente/{{ s.doc_id }}#c{{ s.chunk_id }}" data-betrachter="{{ viewer_url(s.doc_id, s.page, s.chunk_id) }}">{{ s.label }}</a>{% endif %}
     {% if s.project and s.project not in (s.label or '') %}<span class="muted">· <a href="/projekte/{{ s.project }}">{{ s.project }}</a></span>{% endif %}
     <blockquote>{{ passage(s.snippet, s.text, question)|highlight(question) }}</blockquote>
   </li>
@@ -37,7 +37,7 @@
     and the passage around the query words (no markdown syntax). -#}
 {% macro search_hit(h, q, weak=false, show_project=true) -%}
 <li{% if weak %} class="weak"{% endif %}>
-  <div>{% if h.kind == 'mail' %}<a href="/mails/{{ h.mail_id }}">{{ h.label|highlight(q) }}</a>{% else %}<a href="/dokumente/{{ h.doc_id }}#c{{ h.chunk_id }}">{{ h.label|highlight(q) }}</a>{% endif %}
+  <div>{% if h.kind == 'mail' %}<a href="/mails/{{ h.mail_id }}">{{ h.label|highlight(q) }}</a>{% else %}<a href="/dokumente/{{ h.doc_id }}#c{{ h.chunk_id }}" data-betrachter="{{ viewer_url(h.doc_id, h.page, h.chunk_id) }}">{{ h.label|highlight(q) }}</a>{% endif %}
   {% if show_project and h.project and h.project not in h.label %}<span class="muted">· <a href="/projekte/{{ h.project }}">{{ h.project }} {{ h.project_name or '' }}</a></span>{% endif %}
   {% if weak %}<span class="pill">schwach passend</span>{% endif %}</div>
   <blockquote>{{ h.text|snippet(q)|highlight(q) }}</blockquote>

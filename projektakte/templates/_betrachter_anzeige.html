@@ -1,0 +1,33 @@
+{#- The file itself in the viewer (web.viewer_view): PDF in the browser's own viewer (iframe of the file route,
+    allowed for the own origin only), images directly, TIFF/BMP as a converted preview with page selector.
+    Text kinds show nothing here – the panel and the document page show the cleaned text instead.
+    page_base: address of another page of the same document (panel: the viewer fragment, data-bt-wechsel;
+    document page: the page itself, works without JavaScript). -#}
+{% macro anzeige(v, page_base, in_panel=false) -%}
+{% if v.kind == 'pdf' %}
+<div class="bt-frame-wrap"><iframe class="bt-frame" src="{{ v.frame_url }}" title="{{ v.filename }} (PDF)"></iframe></div>
+<p class="muted small bt-handy">Manche Handy-Browser zeigen PDF-Dateien nicht im Fenster – dann <a href="{{ v.frame_url }}" target="_blank" rel="noopener">in neuem Fenster öffnen</a>.</p>
+{% elif v.kind == 'bild' %}
+<div class="bt-bild" data-bt-zoombereich><img class="bt-img" src="{{ v.file_url }}" alt="{{ v.filename }}" data-bt-zoom title="Klicken zum Vergrößern"></div>
+{% elif v.kind == 'wandeln' %}
+{% if v.pages > 1 %}
+<p class="bt-seiten">
+  {% if v.page > 1 %}<a class="button secondary" href="{{ page_base }}seite={{ v.page - 1 }}"{% if in_panel %} data-bt-wechsel{% endif %} aria-label="Vorherige Seite">‹</a>{% endif %}
+  <span>Seite {{ v.page }} von {{ v.pages }}</span>
+  {% if v.page < v.pages %}<a class="button secondary" href="{{ page_base }}seite={{ v.page + 1 }}"{% if in_panel %} data-bt-wechsel{% endif %} aria-label="Nächste Seite">›</a>{% endif %}
+</p>
+{% endif %}
+<div class="bt-bild" data-bt-zoombereich><img class="bt-img" src="{{ v.preview_url }}" alt="{{ v.filename }}{% if v.pages > 1 %}, Seite {{ v.page }}{% endif %}" data-bt-zoom title="Klicken zum Vergrößern"></div>
+<p class="muted small">Vorschau, umgewandelt aus {{ v.filename.rsplit('.', 1)[-1]|upper if '.' in v.filename else 'dem Original' }}{% if v.available and not in_panel %} – Original: <a href="{{ v.file_url }}">herunterladen</a>{% endif %}</p>
+{% endif %}
+{%- endmacro %}
+
+{#- Notes when the file itself cannot be shown (same wording as the document and mail pages). -#}
+{% macro hinweise(v) -%}
+{% if not v.available %}
+{% if v.status == 'pending' %}<p class="note info">Originaldatei noch nicht da – sie wird automatisch nachgeladen, sobald plMail sie liefert.</p>
+{% else %}<p class="note warn">Die Originaldatei ist nicht verfügbar.{% if v.status not in ('ok', 'pending') and v.message %} {{ v.message }}{% endif %}</p>{% endif %}
+{% elif v.note %}<p class="note warn">{{ v.note }} Unten der gelesene Text; das Original lässt sich <a href="{{ v.file_url }}">herunterladen</a>.</p>
+{% elif v.kind == 'text' %}<p class="note">{% if v.active %}Diese Datei wird aus Sicherheitsgründen nicht im Browser angezeigt. {% endif %}Angezeigt wird der gelesene Text. <a href="{{ v.file_url }}">Originaldatei herunterladen</a></p>
+{% endif %}
+{%- endmacro %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_betrachter_anzeige.html" import anzeige with context %}
 {% block title %}{{ d.filename }}{% endblock %}
 {% block content %}
 <p class="crumbs">{% if d.project %}<a href="/projekte/{{ d.project }}">{{ d.project }} {{ d.project_name }}</a> › {% endif %}Dokument</p>
@@ -13,6 +14,10 @@
 {% if d.available %}<p><a class="button secondary" href="{{ file_url(d.id, d.filename) }}">Originaldatei öffnen</a></p>
 {% elif d.status == 'pending' %}<p class="note info">Originaldatei noch nicht da – sie wird automatisch nachgeladen, sobald plMail sie liefert.</p>
 {% else %}<p class="note warn">Die Originaldatei ist nicht verfügbar.</p>{% endif %}
+{#- the file itself above the text: PDF, image or converted preview (the viewer of the project page, inline) -#}
+{% if v.kind != 'text' %}
+<section class="bt-inline bt-art-{{ v.kind }}" aria-label="Ansicht der Datei">{{ anzeige(v, '/dokumente/' ~ d.id ~ '?') }}</section>
+{% elif v.note %}<p class="note warn">{{ v.note }}</p>{% endif %}
 <h2>Abschnitte</h2>
 {#- c.html: the chunk text without markdown syntax (web.chunk_view) – headings, tables, lists; the
     paragraph chunking repeats at the beginning of the next section is shown only once (web.without_overlap) -#}

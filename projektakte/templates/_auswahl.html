@@ -24,10 +24,10 @@
       {% set e = sel.entry %}
       {% if e.kind == 'doc' and e.status != 'ok' %}<p class="note warn">{{ DOC_STATUS.get(e.status, e.status) }}{% if e.message %}: {{ e.message }}{% endif %}</p>{% endif %}
       {% if e.kind == 'mail' and e.atts %}
-      <ul class="plain">{% for a in e.atts %}<li><a href="/dokumente/{{ a.id }}">{{ a.filename|path }}</a>{% if a.status == 'pending' %} <span class="muted small">(Anhang ausstehend)</span>{% endif %}</li>{% endfor %}</ul>
+      <ul class="plain">{% for a in e.atts %}<li><a href="/dokumente/{{ a.id }}" data-betrachter="{{ viewer_url(a.id) }}">{{ a.filename|path }}</a>{% if a.status == 'pending' %} <span class="muted small">(Anhang ausstehend)</span>{% endif %}</li>{% endfor %}</ul>
       {% endif %}
       <p class="auswahl-actions">
-        <a class="button" href="{{ '/mails/' ~ e.id if e.kind == 'mail' else '/dokumente/' ~ e.id }}">Öffnen</a>
+        <a class="button" href="{{ '/mails/' ~ e.id if e.kind == 'mail' else '/dokumente/' ~ e.id }}"{% if e.kind == 'doc' %} data-betrachter="{{ viewer_url(e.id) }}"{% endif %}>Öffnen</a>
         {% if e.kind == 'doc' %}<a class="button secondary" href="{{ tab_url(p.number, 'dokumente', e.folder) }}" hx-get="{{ tab_url(p.number, 'dokumente', e.folder, partial=True) }}" hx-target="#inhalt" hx-swap="outerHTML" hx-push-url="{{ tab_url(p.number, 'dokumente', e.folder) }}">Im Ordner zeigen</a>{% endif %}
       </p>
     {% else %}
@@ -35,7 +35,7 @@
       <ul class="plain group">
         {% for e in sel.members %}
         <li><span class="date">{{ e.date|de_date }}</span> <span class="tag {{ e.kind }}">{{ 'Mail' if e.kind == 'mail' else 'Dokument' }}</span>
-          <a href="{{ '/mails/' ~ e.id if e.kind == 'mail' else '/dokumente/' ~ e.id }}">{{ e.title|path }}</a>{% if e.kind == 'mail' %} <span class="muted small">– {{ e.sub }}</span>{% endif %}</li>
+          <a href="{{ '/mails/' ~ e.id if e.kind == 'mail' else '/dokumente/' ~ e.id }}"{% if e.kind == 'doc' %} data-betrachter="{{ viewer_url(e.id) }}"{% endif %}>{{ e.title|path }}</a>{% if e.kind == 'mail' %} <span class="muted small">– {{ e.sub }}</span>{% endif %}</li>
         {% endfor %}
       </ul>
       {% else %}<p class="empty">Keine Einträge.</p>{% endif %}

@@ -1,6 +1,6 @@
 # Übergabe – Projektakte
 
-Stand: 9. November 2026, Version 0.5.0 plus „Unveröffentlicht“ (siehe CHANGELOG.md).
+Stand: 11. November 2026, Version 0.5.0 plus „Unveröffentlicht“ (siehe CHANGELOG.md).
 Diese Datei fasst alles zusammen, was man zum Weiterarbeiten braucht – in einem neuen Chat, mit
 einem anderen Werkzeug oder selbst. Ausführliches steht in den verlinkten Dateien.
 
@@ -22,7 +22,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
-- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.990 Tests, etwa 2–3 min). Docker-Probelauf:
+- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 2.025 Tests, etwa 2–3 min). Docker-Probelauf:
   `sh scripts/docker-smoke.sh`.
 
 ## 3. Stand in Zahlen
@@ -30,7 +30,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
 | Was | Ergebnis |
 |---|---|
 | Phase A (14 Roadmap-Schritte), Zuordnung in plMail, Nachbesserungen | fertig (ROADMAP 1–16a) |
-| Testsuite | grün (zuletzt 1982 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
+| Testsuite | grün (zuletzt 2020 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
 | Docker-Probelauf | grün |
 | Eigener Evaluationssatz mit Fake-KI | 103/103 |
 | Zurückgehaltener Prüfsatz (unabhängiger Autor) mit Fake-KI | 19/28 beantwortbare richtig (0,68), 12/12 Absagen, 0 erfundene Antworten |
@@ -329,6 +329,16 @@ in der neuen Reihenfolge durch (unveränderte Dateien kosten nur ein `stat`) und
 Einzelheiten: README „Reihenfolge der Projekte“, DECISIONS „Reihenfolge beim Einlesen“. Zu prüfen auf der echten
 Freigabe: ob die obersten Ordner die erwarteten sind (`1` … `9`) und wie lange der Prüfdurchgang über fertige
 Projekte übers Netz dauert.
+
+## 7d. Dokument-Betrachter
+
+Ein Klick auf ein Dokument (Ordneransicht, Anhänge, Zeitleisten-Karte, Quellen, Suchtreffer, Mail-Anhänge) öffnet
+es rechts im Fenster (Handy: ganzer Bildschirm): PDF im PDF-Betrachter des Browsers (Quelle → richtige Seite),
+Bilder direkt, TIFF/BMP als Vorschau vom Server, Mails/Word/ODT/Text als gelesener Text. Code: `betrachter.py`,
+`static/betrachter.js`, `templates/_betrachter*.html`, Routen `/dokumente/{id}/ansicht` und `/vorschau` in `web.py`.
+Grenzen der Vorschau oben in `betrachter.py` (`MAX_PIXELS`, `MAX_DECODED_BYTES`, `PREVIEW_EDGE`). Zu prüfen im Büro:
+große Plan-TIFFs von der Freigabe (Dauer der Umwandlung, Lesbarkeit beim Zoomen) und der PDF-Betrachter des im
+Büro benutzten Browsers im Rahmen. Einzelheiten: README „Dokument-Betrachter“, DECISIONS „Dokument-Betrachter“.
 
 ## 8. Offene Punkte, nach Wichtigkeit
 

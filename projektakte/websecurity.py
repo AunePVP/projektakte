@@ -5,8 +5,11 @@
   ``Cache-Control: no-store`` for everything except /static, so mails and documents do not stay
   in the browser cache of shared PCs.
 * Original files (``/dokumente/{id}/datei…``) open in the browser's own viewers (image, text, PDF),
-  which style their page inline and embed the PDF: they get a policy of their own – no scripts,
-  forms or framing, and a sandbox for everything but PDFs (PDF viewers refuse sandboxed documents).
+  which style their page inline and embed the PDF: they get a policy of their own – no scripts or
+  forms, and a sandbox for everything but PDFs (PDF viewers refuse sandboxed documents). The
+  application's own document viewer shows them in an iframe, so they may be framed by pages of the
+  same origin (``frame-ancestors 'self'``, ``X-Frame-Options: SAMEORIGIN``); every other page may
+  not be framed at all. The pages themselves frame only the own origin and embed no plugins.
 * Cross-site requests: a browser marks every request with ``Sec-Fetch-Site``; for older browsers
   the ``Origin`` header is compared with the own host. State-changing requests (POST, PUT, PATCH,
   DELETE) that another site – also a sibling subdomain (``same-site``) – triggered are rejected.
@@ -24,6 +27,7 @@ from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 CONTENT_SECURITY_POLICY = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+                           "frame-src 'self'; object-src 'none'; "
                            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 SECURITY_HEADERS: dict[str, str] = {
     "X-Frame-Options": "DENY",
@@ -34,7 +38,8 @@ SECURITY_HEADERS: dict[str, str] = {
     "Cross-Origin-Resource-Policy": "same-origin",
 }
 FILE_CONTENT_SECURITY_POLICY = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; "
-                                "object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+                                "object-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
+FILE_FRAME_OPTIONS = "SAMEORIGIN"  # older browsers without frame-ancestors
 FILE_PATH = re.compile(r"/dokumente/\d+/datei(?:/.*)?\Z", re.DOTALL)  # also …/datei/<Dateiname>
 CACHEABLE_PREFIXES = ("/static/",)
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -61,8 +66,10 @@ class SecurityHeadersMiddleware:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
                 if original_file:
-                    headers.setdefault("Content-Security-Policy", file_policy(
-                        headers.get("content-type", ""), headers.get("content-disposition", "")))
+                    policy = file_policy(headers.get("content-type", ""), headers.get("content-disposition", ""))
+                    headers.setdefault("Content-Security-Policy", policy)
+                    if policy != CONTENT_SECURITY_POLICY:  # an original file, not an error page
+                        headers.setdefault("X-Frame-Options", FILE_FRAME_OPTIONS)
                 for name, value in SECURITY_HEADERS.items():
                     headers.setdefault(name, value)
                 if not cacheable:

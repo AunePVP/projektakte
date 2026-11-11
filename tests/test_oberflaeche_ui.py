@@ -386,14 +386,16 @@ def test_project_page_lists_mail_attachments(ro):
     html = ro.get("/projekte/BS-2024-0137", params={"tab": "anhaenge"}).text
     section = _section(html, '<div id="inhalt">', "</table>")
     assert "Anhänge aus Mails" in section
-    doc_id = re.search(r'<a href="/dokumente/(\d+)">Stellungnahme Feuerwehr.pdf</a>', section).group(1)
+    doc_id = re.search(r'<a href="/dokumente/(\d+)" data-betrachter="/dokumente/\1/ansicht">Stellungnahme Feuerwehr.pdf</a>',
+                       section).group(1)
     mail_id = re.search(r'<a href="/mails/(\d+)">Stellungnahme Brandschutzdienststelle', section).group(1)
     assert re.search(r'<span class="muted">\d\d\.\d\d\.\d{4}</span>', section)
     assert ro.get(f"/dokumente/{doc_id}").status_code == 200
     # chosen in the timeline, the mail names its attachment
     page = ro.get("/projekte/BS-2024-0137", params={"auswahl": f"m{mail_id}"}).text
     card = _section(page, '<div id="auswahl"', "</section>")
-    assert f'<a href="/dokumente/{doc_id}">Stellungnahme Feuerwehr.pdf</a>' in card
+    assert (f'<a href="/dokumente/{doc_id}" data-betrachter="/dokumente/{doc_id}/ansicht">Stellungnahme Feuerwehr.pdf'
+            '</a>') in card
     assert "Stellungnahme Brandschutzdienststelle" in card
 
 

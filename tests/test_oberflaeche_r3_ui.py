@@ -350,7 +350,7 @@ def test_pending_attachment_offers_no_file_link(rw):
     mail = rw.get(f"/mails/{mid}").text
     assert f"/dokumente/{pending}/datei" not in mail
     assert re.search(rf'href="/dokumente/{ok}/datei/Plan\.txt">Datei öffnen</a>', mail)
-    item = re.search(rf'<li><a href="/dokumente/{pending}">Notiz\.txt</a>.*?</li>', mail, re.S).group(0)
+    item = re.search(rf'<li><a href="/dokumente/{pending}" data-betrachter="[^"]+">Notiz\.txt</a>.*?</li>', mail, re.S).group(0)
     assert "Anhang ausstehend" in item and "wird automatisch nachgeladen" in item and "Datei öffnen" not in item
 
     doc = rw.get(f"/dokumente/{pending}").text
@@ -362,7 +362,7 @@ def test_pending_attachment_offers_no_file_link(rw):
 
     project = rw.get("/projekte/BS-2024-0137", params={"auswahl": f"m{mid}"}).text  # the card of the mail in the timeline
     assert f"/dokumente/{pending}/datei" not in project
-    assert re.search(rf'<a href="/dokumente/{pending}">Notiz\.txt</a> <span class="muted small">\(Anhang ausstehend\)',
+    assert re.search(rf'<a href="/dokumente/{pending}" data-betrachter="[^"]+">Notiz\.txt</a> <span class="muted small">\(Anhang ausstehend\)',
                      project)
 
 

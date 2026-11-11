@@ -126,13 +126,36 @@ nur mit `PROJEKTAKTE_INTEGRATION=1` (siehe docs/ki-dienste.md).
     einem Teil der Projektnummer über alle Projekte. Höchstens 50 Zeilen („50 von 3.353 angezeigt“).
   Alles geht ohne JavaScript (Formulare laden die Seite neu); mit JavaScript wird nur der Bereich ersetzt.
 
+- **Dokument-Betrachter** – ein Klick auf ein Dokument (Ordneransicht, Anhänge, Karte der Zeitleiste, Quellen
+  einer Antwort, Suchtreffer, Anhänge einer Mail) öffnet es in einem Fenster rechts über der Seite, auf dem Handy
+  bildschirmfüllend. Oben Dateiname und Ordner (bzw. die Mail des Anhangs), ✕ oder Esc schließt, ‹ › blättert
+  durch die Dokumente derselben Liste, „In neuem Fenster öffnen“ bzw. „Originaldatei herunterladen“ und
+  „Textansicht“ (die Dokumentseite). Was gezeigt wird:
+  - *PDF* im PDF-Betrachter des Browsers; eine Quelle mit Seitenangabe öffnet auf dieser Seite (`#page=N`).
+  - *Bilder* JPEG, PNG, GIF, WebP direkt, ans Fenster angepasst; ein Klick zeigt das Bild in voller Größe.
+  - *TIFF und BMP* (zeigen Browser nicht an) als Vorschau, die der Server umwandelt (PNG für Schwarzweiß und
+    Grau, sonst JPEG, höchstens 3.200 Pixel Kantenlänge), bei mehrseitigen TIFF Seite für Seite. Zu große
+    Bilder (über 200 Megapixel, über etwa 320 MB entpackt oder über 300 MB Datei) werden nicht umgewandelt –
+    dann steht ein Hinweis da und der gelesene Text.
+  - *Mails (`.eml`), Word, OpenDocument, Text* sowie alles andere: der gelesene, bereinigte Text mit Abschnitten
+    und Seitenangaben wie auf der Dokumentseite, darüber „Originaldatei herunterladen“; eine Quelle springt zu
+    ihrem Abschnitt.
+  - *HTML und SVG* nie als Seite oder Bild (sie könnten Skripte ausführen): nur Text und Download.
+  - Ein noch nicht gelieferter Mail-Anhang oder eine fehlende Datei zeigt den Hinweis statt eines leeren Rahmens.
+  Ohne JavaScript führen dieselben Links wie bisher auf die Dokumentseite. Der Zurück-Knopf des Browsers schließt
+  den Betrachter (die Adresse bleibt dieselbe, die Seite dahinter wird nicht neu geladen); Vorwärts öffnet ihn
+  wieder. Die **Dokumentseite** zeigt PDF, Bild bzw. Vorschau ebenso über den Abschnitten (`?seite=N` öffnet eine
+  Seite, bei TIFF blättern Links auch ohne JavaScript).
+
 Mail- und Dokumentseiten zeigen den Text bzw. die Abschnitte (mit Seitenangabe) und öffnen die
 Originaldatei. Serverseitig gerendert (Jinja2), HTMX liegt lokal unter `/static` (kein CDN); alle
 Formulare funktionieren auch ohne JavaScript. Keine Inline-Skripte oder -Styles (strenge CSP).
 Ohne horizontales Scrollen auf Laptop und Handy. Ausschnitte in Antworten und Suche zeigen die
 passende Stelle als Klartext (ohne Markdown-Zeichen), die Dokumentseite eine bereinigte Ansicht mit
 Überschriften und Tabellen. Originaldateien öffnen im Betrachter des Browsers
-(`/dokumente/{id}/datei/{Dateiname}`, eigene skriptfreie CSP). Die Suche zeigt Treffer, die eine
+(`/dokumente/{id}/datei/{Dateiname}`, eigene skriptfreie CSP; einbetten darf sie nur die Anwendung selbst –
+`frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN` –, alle anderen Seiten lassen sich gar nicht einbetten;
+HTML, SVG & Co. kommen immer als Download). Die Suche zeigt Treffer, die eine
 Projektnummer oder ein Aktenzeichen aus der Anfrage wörtlich enthalten, immer an. Der Eingang blättert
 per Schlüssel – nach Entscheidungen werden keine Mails übersprungen. Unbekannte Adressen zeigen eine
 deutsche Fehlerseite.
@@ -692,6 +715,7 @@ in der WAL-Datei fehlen.
 | `projektakte/websecurity.py`, `startup.py`, `logsetup.py` | Sicherheits-Header und Schutz vor fremden Formularen, Startprüfungen, Logformat |
 | `projektakte/backup.py`, `healthcheck.py` | Sicherung, Docker-HEALTHCHECK |
 | `projektakte/api.py`, `web.py`, `inbox.py`, `templates/`, `static/` | JSON-API und Weboberfläche |
+| `projektakte/betrachter.py`, `static/betrachter.js` | Dokument-Betrachter: Darstellung je Dateityp, Vorschau für TIFF/BMP |
 | `deploy/` | Betriebsbeispiel mit TLS-Reverse-Proxy |
 
 ## Datenschutz

@@ -106,9 +106,10 @@ def test_original_files_get_viewer_csp(client, doc_id, media, sandboxed):
     assert r.status_code == 200 and r.headers["content-type"].startswith(media)
     csp = r.headers["content-security-policy"]
     assert "style-src 'unsafe-inline'" in csp and "script-src" not in csp and "default-src 'none'" in csp
-    assert "frame-ancestors 'none'" in csp and "form-action 'none'" in csp
+    # the app's own document viewer frames them: same origin only (tests/test_dokument_betrachter.py)
+    assert "frame-ancestors 'self'" in csp and "form-action 'none'" in csp
     assert csp.endswith("; sandbox") is sandboxed  # PDF viewers refuse sandboxed documents
-    assert r.headers["x-frame-options"] == "DENY" and r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["x-frame-options"] == "SAMEORIGIN" and r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["cache-control"] == "no-store"
 
 

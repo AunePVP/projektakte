@@ -15,7 +15,7 @@
     <tbody>
     {% for a in attachments %}
     <tr>
-      <td><a href="/dokumente/{{ a.id }}">{{ a.filename|path }}</a>
+      <td><a href="/dokumente/{{ a.id }}" data-betrachter="{{ viewer_url(a.id) }}">{{ a.filename|path }}</a>
         <span class="show-sm small">aus der Mail <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a> <span class="muted">vom {{ a.date|de_date }}</span></span></td>
       <td class="hide-sm">{{ a.ext[1:]|upper }}</td>
       <td class="hide-sm"><span class="muted">{{ a.date|de_date }}</span> <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a></td>

@@ -839,3 +839,52 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
 - *API*: eigener Endpunkt `/api/reihenfolge` statt `/api/status`, weil `/api/status` billig bleiben soll
   (Monitoring); Änderungen wie die anderen schreibenden Endpunkte als POST mit JSON, gleicher Schutz
   (Anmeldung, keine fremden Seiten) durch die Middleware.
+
+**Dokument-Betrachter (Dateien im Fenster ansehen)**
+- *Warum*: Originaldateien öffneten bisher nur auf einer neuen Seite im Betrachter des Browsers; wer mehrere
+  Quellen einer Antwort oder die Pläne eines Ordners durchsehen will, verlor jedes Mal die Projektseite.
+- *Fenster statt Seite*: Ein Bereich rechts über der Seite (Handy: ganzer Bildschirm), kein Nebeneinander im
+  Raster: die Projektseite hat schon zwei Spalten, eine dritte wäre auf dem Laptop zu schmal für einen Plan. Der
+  Inhalt kommt als HTML-Fragment vom Server (`/dokumente/{id}/ansicht`), ein kleines Skript
+  (`static/betrachter.js`, unter `script-src 'self'`) hängt sich an Links mit `data-betrachter`. Der `href` bleibt
+  die Dokumentseite: ohne JavaScript ändert sich nichts, mittlere Maustaste/Strg-Klick öffnen wie bisher die Seite.
+  Die Adresse `…/ansicht` ohne das Skript (neuer Tab) leitet auf die Dokumentseite um. ‹ › blättert durch die
+  Dokument-Links derselben Liste (Tabelle oder Liste um den Link, gleiche Dokumente hintereinander zählen einmal) –
+  ohne Abfrage am Server, die Liste steht ja schon auf der Seite.
+- *Zurück-Knopf: ein eigener History-Eintrag mit derselben Adresse* (`history.pushState({bt: …})`), kein
+  `hx-push-url` und kein `#hash`. Eine eigene Adresse für den Betrachter hätte beim Neuladen eine Projektseite mit
+  offenem Fenster gebraucht (doppelte Darstellung), ein Hash stört die Sprungmarken `#c…`/`#inhalt`. Zurück schließt
+  das Fenster, Vorwärts öffnet es wieder; Blättern im Fenster ersetzt den Eintrag (sonst bräuchte man zehnmal
+  Zurück). htmx stellt bei „popstate“ seine Einträge wieder her, indem es die Seite neu aufbaut (die Zeitleiste
+  verlöre ihre Scrollposition); zwischen dem Eintrag des Fensters und dem der Seite mit derselben Adresse wird das
+  übersprungen (`window.onpopstate` von htmx wird dafür einmal umhüllt). Navigiert htmx bei offenem Fenster
+  (Ordner, Reiter), schließt das Fenster vorher, damit es nicht in htmx' Seitenspeicher landet.
+- *PDF im `<iframe>` der bestehenden Dateiroute* (Betrachter des Browsers, `#page=N` für die Seite der Quelle)
+  statt pdf.js: keine neue Abhängigkeit, kein eigener Code für PDF-Inhalte. Dafür dürfen Originaldateien vom eigenen
+  Ursprung eingebettet werden (`frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN` für ältere Browser); ihre
+  skriptfreie CSP und die Sandbox für alles außer PDF bleiben. Die Fehlerseite unter derselben Adresse und alle
+  Seiten der Anwendung bleiben `DENY`. Die Seiten erlauben Rahmen nur vom eigenen Ursprung (`frame-src 'self'`,
+  vorher implizit über `default-src`) und keine Plugins (`object-src 'none'`).
+- *HTML, SVG, XML, Skripte*: nie im Rahmen, nie als `<img>` – sie liefen sonst im Ursprung der Anwendung. Die
+  Dateiroute liefert sie als `application/octet-stream` mit `attachment` (dazu die Sandbox-CSP); der Betrachter
+  zeigt den gelesenen Text.
+- *TIFF/BMP: Umwandlung im Webprozess mit Pillow, nicht im Leseprozess*: Der Leseprozess liest während eines Laufs
+  eine Datei nach der anderen (bis zu Minuten je Datei); wer einen Plan ansehen will, darf nicht dahinter warten.
+  Stattdessen eigene Grenzen: Dateigröße (300 MB), Größe **vor dem Entpacken** aus dem Kopf der Datei geschätzt
+  (200 Megapixel, etwa 320 MB im Speicher samt Umwandlung – ein A0-Plan mit 300 dpi in Schwarzweiß braucht etwa
+  140 MB; eine „Dekompressionsbombe“ wird abgelehnt, bevor sie Speicher kostet), Pillows eigene Bombenprüfung,
+  **eine Umwandlung zur Zeit** (weitere warten bis 20 s, dann 503), Ausgabe höchstens 3.200 Pixel Kantenlänge
+  (schnelles ganzzahliges Verkleinern, dann fein). Schwarzweiß/Grau als PNG (Pläne bleiben scharf und klein),
+  Farbe als JPEG. Mehrseitige TIFF Seite für Seite (die Seitenzahl kommt aus den Köpfen, höchstens 999).
+- *Kein Zwischenspeicher*: weder auf der Platte noch im Browser (`no-store` wie überall, damit Dokumente nicht auf
+  gemeinsam genutzten Rechnern liegen bleiben). Eine Seite erneut umzuwandeln kostet bei großen Plänen ein bis zwei
+  Sekunden; ein Cache bräuchte Aufräumen, Größengrenzen und Schutz vor veralteten Bildern – erst, wenn es im
+  Betrieb stört.
+- *Mails, Word, OpenDocument, Text*: der gelesene, bereinigte Text aus dem Index (dieselbe Darstellung wie die
+  Dokumentseite), kein LibreOffice im Image – zu groß, zu langsam und eine weitere Angriffsfläche für fremde
+  Dateien. Die Originaldatei gibt es zum Herunterladen.
+- *Fehlende Datei*: Ein noch nicht gelieferter Anhang oder eine verschwundene Datei zeigt dieselben Hinweise wie
+  Dokument- und Mailseite und den gelesenen Text, nie einen leeren Rahmen.
+- *Grenzen*: Mails selbst (nicht als Datei) öffnen weiter ihre eigene Seite. Ob der PDF-Betrachter im Rahmen
+  erscheint, hängt vom Browser ab (Chromium, Firefox, Edge ja; manche Handy-Browser zeigen PDF in Rahmen nicht –
+  auf schmalen Bildschirmen steht darum unter dem Rahmen ein Link „in neuem Fenster öffnen“).

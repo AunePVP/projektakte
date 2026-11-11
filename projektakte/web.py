@@ -15,16 +15,16 @@ import secrets
 import sqlite3
 from datetime import date, datetime, timezone
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from markupsafe import Markup, escape
 
-from . import __version__, db, inbox, reihenfolge, structure, zeitleiste
+from . import __version__, betrachter, db, inbox, reihenfolge, structure, zeitleiste
 from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .config import DEFAULT_PROJECT_NUMBER_PATTERN
@@ -163,6 +163,17 @@ def file_url(doc_id: int, filename: str | None = None) -> str:
     return f"/dokumente/{doc_id}/datei/{quote(name, safe='')}" if name else f"/dokumente/{doc_id}/datei"
 
 
+def viewer_url(doc_id: int, page: int | None = None, chunk: int | None = None) -> str:
+    """Address of the viewer panel of a document (loaded by static/betrachter.js; the link itself keeps
+    the document page as its href, so it works without JavaScript). ``page``: the PDF opens there."""
+    params = {}
+    if page:
+        params["seite"] = int(page)
+    if chunk:
+        params["c"] = int(chunk)
+    return f"/dokumente/{int(doc_id)}/ansicht" + (f"?{urlencode(params)}" if params else "")
+
+
 # ------------------------------------------------------------------------------------- answers
 STATUS_TITLES = {
     "no_citation": "Antwort ohne Quellenangabe – bitte prüfen",
@@ -289,7 +300,8 @@ templates.env.filters.update(de_date=de_date, de_num=de_num, plural=plural, file
                              path=breakable_path)
 templates.env.globals.update(ASSIGN_LABELS=ASSIGN_LABELS, METHOD_LABELS=METHOD_LABELS, DOC_STATUS=DOC_STATUS,
                              INBOX_FILTERS=INBOX_FILTERS, version=__version__, answer_view=answer_view,
-                             auth_disabled_for=auth_disabled_for, passage=_passage_global, file_url=file_url)
+                             auth_disabled_for=auth_disabled_for, passage=_passage_global, file_url=file_url,
+                             viewer_url=viewer_url)
 
 
 # ------------------------------------------------------------------------------------- helpers
@@ -1068,22 +1080,112 @@ def mail_page(request: Request, mail_id: int):
 
 
 @router.get("/dokumente/{doc_id}", response_class=HTMLResponse)
-def document_page(request: Request, doc_id: int):
+def document_page(request: Request, doc_id: int, seite: str = ""):
     s = _settings(request)
     with db.session(s.db_path) as conn:
         d = conn.execute("SELECT d.*, p.name AS project_name FROM documents d LEFT JOIN projects p ON "
                          "p.number = d.project WHERE d.id = ?", (doc_id,)).fetchone()
         if not d:
             raise HTTPException(404, "Dokument nicht gefunden")
-        rows = [dict(r) for r in conn.execute(
-            "SELECT id, ord, page, heading, text FROM chunks WHERE doc_id = ? ORDER BY ord", (doc_id,))]
+        rows = _chunk_rows(conn, doc_id)
         mail = None
         if d["mail_id"]:
             mail = conn.execute("SELECT id, subject, date FROM mails WHERE id = ?", (d["mail_id"],)).fetchone()
     d = dict(d)
-    d["available"] = original_file(s, d) is not None
+    v = viewer_view(s, d, page=_page_param(seite), mail=dict(mail) if mail else None)
+    d["available"] = v["available"]
     chunks = [chunk_view(c) for c in without_overlap(rows)]
-    return render(request, "document.html", d=d, chunks=chunks, mail=dict(mail) if mail else None)
+    return render(request, "document.html", d=d, chunks=chunks, mail=dict(mail) if mail else None, v=v)
+
+
+def _chunk_rows(conn, doc_id: int) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT id, ord, page, heading, text FROM chunks WHERE doc_id = ? ORDER BY ord", (doc_id,))]
+
+
+def _page_param(value: str | int | None) -> int | None:
+    """A page number from the address (1 … 99999), anything else is ignored."""
+    try:
+        n = int(str(value or "").strip())
+    except ValueError:
+        return None
+    return n if 1 <= n <= 99_999 else None
+
+
+def viewer_view(s, d: dict, *, page: int | None = None, chunk: int | None = None, mail: dict | None = None) -> dict:
+    """How the viewer shows a document row (see betrachter.py): ``kind`` pdf / bild / wandeln / text, the
+    file and text addresses, the page (PDF page or TIFF page), notes. A file that is not there (attachment
+    still pending, file gone) is always shown as text with the existing note, never as a broken frame."""
+    path = original_file(s, d)
+    kind = betrachter.view_kind(d.get("ext") or Path(d.get("filename") or "").suffix)
+    rel = d.get("rel_path") or ""
+    folder = "" if d.get("mail_id") else str(PurePosixPath(rel).parent) if rel else ""
+    v = {"id": d["id"], "filename": d.get("filename") or rel, "folder": "" if folder == "." else folder,
+         "mail": mail, "available": path is not None, "status": d.get("status"), "message": d.get("message"),
+         "file_url": file_url(d["id"], d.get("filename")), "text_url": f"/dokumente/{d['id']}",
+         "page": page, "chunk": chunk, "pages": 1, "note": "", "active": betrachter.is_active(d.get("ext"))}
+    if chunk:
+        v["text_url"] += f"#c{chunk}"
+    if path is None:
+        kind = "text"
+    elif kind == "wandeln":
+        try:
+            v["pages"] = betrachter.image_info(path).pages
+        except betrachter.PreviewError as exc:
+            kind, v["note"] = "text", str(exc)
+        v["page"] = min(page or 1, v["pages"])
+    v["kind"] = kind
+    v["frame_url"] = v["file_url"] + (f"#page={page}" if kind == "pdf" and page else "")
+    v["preview_url"] = f"/dokumente/{d['id']}/vorschau" + (f"?seite={v['page']}" if (v["page"] or 1) > 1 else "")
+    return v
+
+
+@router.get("/dokumente/{doc_id}/ansicht", response_class=HTMLResponse)
+def document_viewer(request: Request, doc_id: int, seite: str = "", c: str = ""):
+    """The viewer panel of a document (a fragment for static/betrachter.js). Without the script – an
+    address typed or opened in a new tab – the document page."""
+    page = _page_param(seite)
+    chunk = int(c.strip()) if c.strip().isdigit() and len(c.strip()) <= 12 else None
+    if not is_htmx(request):
+        query = f"?seite={page}" if page else ""
+        return RedirectResponse(f"/dokumente/{doc_id}{query}" + (f"#c{chunk}" if chunk else ""), status_code=303)
+    s = _settings(request)
+    with db.session(s.db_path) as conn:
+        d = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        if not d:
+            raise HTTPException(404, "Dokument nicht gefunden")
+        d = dict(d)
+        mail = None
+        if d["mail_id"]:
+            mail = conn.execute("SELECT id, subject, date FROM mails WHERE id = ?", (d["mail_id"],)).fetchone()
+        v = viewer_view(s, d, page=page, chunk=chunk, mail=dict(mail) if mail else None)
+        chunks = [chunk_view(r) for r in without_overlap(_chunk_rows(conn, doc_id))] if v["kind"] == "text" else []
+    if chunk and not any(ch["id"] == chunk for ch in chunks):
+        v["chunk"] = None
+    return templates.TemplateResponse(request, "_betrachter.html", {"v": v, "chunks": chunks})
+
+
+@router.get("/dokumente/{doc_id}/vorschau")
+def document_preview(request: Request, doc_id: int, seite: str = ""):
+    """A TIFF or BMP page converted to PNG/JPEG for the viewer (betrachter.preview: bounded, one at a
+    time). Same checks as the original file: only files known to the index, below the configured roots."""
+    s = _settings(request)
+    with db.session(s.db_path) as conn:
+        d = conn.execute("SELECT path, cache_path, filename, ext, mail_id, status FROM documents WHERE id = ?",
+                         (doc_id,)).fetchone()
+    if not d:
+        raise HTTPException(404, "Dokument nicht gefunden")
+    path = original_file(s, d)
+    if path is None or betrachter.view_kind(d["ext"] or path.suffix) != "wandeln":
+        raise HTTPException(404, "Keine Vorschau verfügbar")
+    try:
+        data, media = betrachter.preview(path, _page_param(seite) or 1)
+    except betrachter.PreviewBusy:
+        raise HTTPException(503, "Die Vorschau ist gerade belegt – bitte gleich erneut versuchen.",
+                            headers={"Retry-After": "5"}) from None
+    except betrachter.PreviewError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return Response(data, media_type=media)
 
 
 def without_overlap(chunks: list[dict]) -> list[dict]:
@@ -1154,9 +1256,16 @@ def document_file(request: Request, doc_id: int, filename: str = ""):
     path = original_file(s, d)
     if path is None:
         raise HTTPException(404, "Datei nicht verfügbar")
-    inline = path.suffix.lower() in (".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg")
-    return FileResponse(path, filename=d["filename"],
+    ext = path.suffix.lower()
+    inline = ext in INLINE_EXT
+    # HTML, SVG & Co. would run as active content in the application's origin: always a plain download
+    media = "application/octet-stream" if betrachter.is_active(ext) or betrachter.is_active(
+        Path(d["filename"] or "").suffix) else None
+    return FileResponse(path, filename=d["filename"], media_type=media,
                         content_disposition_type="inline" if inline else "attachment")
+
+
+INLINE_EXT = frozenset({".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg", ".gif", ".webp"})
 
 
 # ------------------------------------------------------------------------------------- status

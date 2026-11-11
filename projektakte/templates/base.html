@@ -8,6 +8,7 @@
 <title>{% block title %}Projektakte{% endblock %} – Projektakte</title>
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/htmx.min.js" defer></script>
+<script src="/static/betrachter.js" defer></script>
 </head>
 <body hx-boost="false">
 <header class="top">
@@ -34,5 +35,8 @@
 {% block content %}{% endblock %}
 </main>
 <footer>Projektakte {{ version }} · nur lesend · alle Daten bleiben im lokalen Netz</footer>
+{#- the document viewer (static/betrachter.js fills it; links with data-betrachter open it, without JavaScript
+    they lead to the document page) -#}
+<div id="betrachter" class="bt-panel" role="dialog" aria-modal="false" aria-labelledby="bt-titel" hidden></div>
 </body>
 </html>

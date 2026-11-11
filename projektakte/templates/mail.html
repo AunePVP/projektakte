@@ -17,7 +17,7 @@
 <ul class="atts">
   {#- "Datei öffnen" only when the file is there (web.original_file); an attachment plMail has not
       delivered yet shows "Anhang ausstehend" (reason as tooltip) instead of a link that answers 404. -#}
-  {% for a in atts %}<li><a href="/dokumente/{{ a.id }}">{{ a.filename }}</a> <span class="muted">({{ a.size|filesize }})</span>
+  {% for a in atts %}<li><a href="/dokumente/{{ a.id }}" data-betrachter="{{ viewer_url(a.id) }}">{{ a.filename }}</a> <span class="muted">({{ a.size|filesize }})</span>
     {%- if a.available %} · <a href="{{ file_url(a.id, a.filename) }}">Datei öffnen</a>{% endif %}
     {%- if a.status != 'ok' %} <span class="pill warn" title="{{ a.message or '' }}">{{ DOC_STATUS.get(a.status, a.status) }}</span>{% endif %}
     {%- if a.available %}{% elif a.status == 'pending' %} <span class="muted small">wird automatisch nachgeladen</span>
