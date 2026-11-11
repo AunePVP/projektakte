@@ -687,6 +687,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
 | `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
 | `INDEX_FOLDER_ORDER` | leer | Oberste Ordner unter `PROJECTS_DIR`, deren Projekte zuerst gelesen werden, mit Komma getrennt (`3,2`: erst Ordner 3, dann 2, dann die übrigen). Nur Voreinstellung: Sobald jemand die Reihenfolge auf der Statusseite ändert, gilt die dort gespeicherte |
+| `PROJECTS_TOP_FOLDERS` | leer (alle) | Nur diese obersten Ordner unter `PROJECTS_DIR` nach Projekten durchsuchen, mit Komma getrennt (`1,2,3,4,5,6,7,8,9`). Andere Ordner dort (Vorlagen, Archiv, lose Projektordner direkt in `PROJECTS_DIR`) werden nicht gelesen; schon bekannte Projekte daraus werden inaktiv und ihre Dateien aus dem Index genommen. Liegt keiner der Ordner da, bleibt alles unverändert (Warnung) |
 | `EXTRACT_ISOLATION` | `1` (`0` bei `APP_ENV=test`) | PDF/Word/OpenDocument/Mails in einem eigenen Leseprozess mit Grenzen lesen |
 | `EXTRACT_MEMORY_MB` | `2048` | Speichergrenze des Leseprozesses (mindestens 256) |
 | `EXTRACT_CPU_SECONDS` | `120` | Rechenzeit je Datei; Warten auf das Sprachmodell zählt nicht |

@@ -221,9 +221,11 @@ Roadmap-Schritt.
   die an der alten Grenze scheiterten, werden einmal neu gelesen (Migration 12).
 - Protokoll: „Bild nicht lesbar“ steht je Dokument und Ursache nur noch einmal (Streifenscans mit JBIG2 ohne
   `jbig2dec` meldeten es je Streifen); der Fortschritt nennt die echte Seitennummer („Seite 22 (2 von 5)“).
-- 2127 Tests (2122 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`,
+- `PROJECTS_TOP_FOLDERS` (z. B. `1,2,3,4,5,6,7,8,9`): nur diese obersten Ordner unter `PROJECTS_DIR` werden nach
+  Projekten durchsucht; Vorlagen-, Archiv- und andere Ordner daneben nicht. Bekannte Projekte von dort werden inaktiv.
+- 2131 Tests (2126 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`,
   `tests/test_index_reihenfolge.py`, `tests/test_dokument_betrachter.py`, `tests/test_grosse_plaene.py`,
-  `tests/test_bildauswertung_parallel.py`, `tests/test_dokumentarten.py` und `tests/test_tippfehler.py`.
+  `tests/test_bildauswertung_parallel.py`, `tests/test_dokumentarten.py`, `tests/test_tippfehler.py` und `tests/test_oberste_ordner.py`.
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

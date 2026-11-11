@@ -121,7 +121,8 @@ def _run(settings: Settings, ai: AIServices | None, phase, vision: bool = True, 
         else:
             stats["projects"] = sync_from_folder(conn, settings.projects_dir, layout.pattern,
                                                  max_depth=layout.depth,
-                                                 parent_digits=getattr(settings, "project_parent_digits", 0))
+                                                 parent_digits=getattr(settings, "project_parent_digits", 0),
+                                                 top_folders=getattr(settings, "projects_top_folders", ()))
         conn.commit()
         llm = ai.llm if ai else None
         phase("Dokumente")

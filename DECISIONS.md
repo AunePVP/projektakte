@@ -1090,3 +1090,18 @@ heißt; andere Dokumente ebenso; vertippte Suchwörter sollen trotzdem finden; d
   Aktenvermerk = Aktennotiz. Nicht aufgenommen: Brandschutzkonzept = Brandschutznachweis als Synonym – die Wörter
   stehen in Texten für verschiedene Dokumente; die Suche behandelt sie als *verwandte Arten* (gleich danach) und die
   Vektoren finden „BS-Nachweis“ zu „Brandschutzkonzept“ über die Bedeutung.
+
+## Nur bestimmte oberste Ordner (`PROJECTS_TOP_FOLDERS`)
+
+Die echte Freigabe hat neben den Nummernordnern 1 bis 9 weitere Ordner in der obersten Ebene (Vorlagen, Archiv
+u. Ä.), in denen ebenfalls Ordner mit Projektnummern liegen. Sie sollen nicht gelesen werden.
+- *Eine Einstellung statt „aus“ auf der Statusseite*: „aus“ ist für Ordner gedacht, die zur Ablage gehören und nur
+  zeitweise nicht gelesen werden sollen (das Gelesene bleibt durchsuchbar). Ordner, die nie dazugehören, sollen gar
+  nicht erst als Projekte auftauchen – auch nicht in der Projektliste.
+- *Exakte Namen, keine Muster*: `1,2,…,9` ist eindeutig; ein Muster wäre bei Ordnern wie „1_alt“ überraschend.
+- *Wirkung wie ein verschwundener Ordner*: Bekannte Projekte von dort werden inaktiv (der bestehende Weg der
+  Registersynchronisation, Mails und Entscheidungen bleiben), ihre Dateien verlassen den Index.
+- *Schutz*: Liegt keiner der genannten Ordner in `PROJECTS_DIR` (Tippfehler, Laufwerk nicht eingebunden), ändert der
+  Lauf nichts und warnt – wie bei einem leeren Projektordner.
+- Die Strukturerkennung (`PROJECT_NUMBER_PATTERN=auto`, `python -m projektakte.structure`) sieht weiter die ganze
+  Freigabe; sie schlägt nur ein Schema vor.

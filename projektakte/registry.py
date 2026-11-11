@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import sqlite3
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -346,8 +347,13 @@ def scan_projects(root: Path, pattern: str, max_depth: int = DEFAULT_PROJECT_FOL
                   duplicates: list[tuple[str, Path, Path]] | None = None,
                   excluded: list[tuple[str, Path]] | None = None,
                   bad_names: list[Path] | None = None,
-                  foreign: list[tuple[str, Path, Path]] | None = None) -> list[ProjectFolder]:
+                  foreign: list[tuple[str, Path, Path]] | None = None,
+                  top_folders: Collection[str] = ()) -> list[ProjectFolder]:
     """Find project folders below ``root`` (e.g. ``2024/BS-2024-0137 Grundschule …``).
+
+    ``top_folders`` (PROJECTS_TOP_FOLDERS): if given, only these folders directly in ``root`` are searched
+    (exact names); everything else in ``root`` – other folders, project folders lying directly in it – is
+    left out as if it did not exist.
 
     A folder whose name starts with a project number is a project folder; its subfolders are not
     searched for further projects. Other folders are searched down to ``max_depth`` levels below
@@ -405,6 +411,8 @@ def scan_projects(root: Path, pattern: str, max_depth: int = DEFAULT_PROJECT_FOL
                 unreadable.append(folder)
             return
         for child in children:
+            if depth == 1 and top_folders and child.name not in top_folders:
+                continue
             if bad_names is not None and has_bad_encoding(child.name):
                 bad_names.append(child)
             m = head.match(child.name)
@@ -654,13 +662,16 @@ def active_count(conn: sqlite3.Connection) -> int:
 
 
 def sync_from_folder(conn: sqlite3.Connection, root: Path, pattern: str, *,
-                     max_depth: int = DEFAULT_PROJECT_FOLDER_DEPTH, parent_digits: int = 0) -> dict:
+                     max_depth: int = DEFAULT_PROJECT_FOLDER_DEPTH, parent_digits: int = 0,
+                     top_folders: Collection[str] = ()) -> dict:
     """Scan PROJECTS_DIR and store the result – unless the folder looks unavailable.
 
     A missing or unreadable folder, or one that suddenly contains no projects although active
     projects are known (share not mounted yet), changes nothing: the stats then carry ``warning``
     and the caller skips the documents as well. So does an unusable ``pattern``. ``parent_digits``
-    (PROJECT_PARENT_DIGITS, 0 = off): group the projects under their sites (:func:`bauvorhaben`)."""
+    (PROJECT_PARENT_DIGITS, 0 = off): group the projects under their sites (:func:`bauvorhaben`).
+    ``top_folders`` (PROJECTS_TOP_FOLDERS): only these folders directly in ``root`` are searched; projects
+    found earlier elsewhere become inactive like projects whose folder disappeared."""
     active = active_count(conn)
     if bad := pattern_problem(pattern):
         problem = f"PROJECT_NUMBER_PATTERN={pattern} ist unbrauchbar: {bad}"
@@ -670,8 +681,12 @@ def sync_from_folder(conn: sqlite3.Connection, root: Path, pattern: str, *,
     unreadable: list[Path] = []
     excluded: list[tuple[str, Path]] = []
     bad_names: list[Path] = []
+    top = frozenset(top_folders)
+    if not problem and top and not any(is_folder(Path(root) / name) for name in top):
+        problem = (f"Keiner der Ordner aus PROJECTS_TOP_FOLDERS ({', '.join(sorted(top))}) liegt in {root} – "
+                   "Einstellung oder Laufwerk prüfen")
     folders = [] if problem else scan_projects(root, pattern, max_depth, unreadable=unreadable,
-                                               excluded=excluded, bad_names=bad_names)
+                                               excluded=excluded, bad_names=bad_names, top_folders=top)
     if not problem and not folders and active:
         problem = (f"Projektordner {root} enthält keine Projekte mehr (bisher {active} aktiv) – "
                    "Laufwerk nicht eingebunden?")
