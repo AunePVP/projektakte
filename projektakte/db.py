@@ -181,6 +181,23 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (doc_id, page)
     );
     """,
+    # 11 – order of the documents pass (reihenfolge.py): per project when its last complete documents pass
+    #      ended (``done_at``), with which extraction profile (``done_profile``) and how many files or folders
+    #      it could not read (``done_skipped``); ``pinned`` is the position of a project a person moved to the
+    #      front ("Vorziehen", cleared once it is done). ``index_folders`` is the order of the top-level folders
+    #      set on the status page (no rows: INDEX_FOLDER_ORDER and the default). Existing projects are not done
+    #      yet: the next pass walks them in the new order (unchanged files cost a stat) and marks them.
+    """
+    ALTER TABLE projects ADD COLUMN done_at TEXT;
+    ALTER TABLE projects ADD COLUMN done_profile TEXT;
+    ALTER TABLE projects ADD COLUMN done_skipped INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE projects ADD COLUMN pinned INTEGER;
+    CREATE TABLE index_folders (
+        name      TEXT PRIMARY KEY,
+        position  INTEGER NOT NULL,
+        enabled   INTEGER NOT NULL DEFAULT 1
+    );
+    """,
 ]
 
 # projects.kind

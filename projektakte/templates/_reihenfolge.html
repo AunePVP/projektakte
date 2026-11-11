@@ -1,0 +1,60 @@
+{#- Section "Reihenfolge" of the status page (reihenfolge.py): the order of the top-level folders, the project
+    being read and the project list. Every form posts (login and cross-site check by the middleware) and
+    works without JavaScript (redirect back here); with HTMX the section is swapped in place. -#}
+<div id="reihenfolge" class="rf">
+  {% if rf.note %}<p class="note {{ 'warn' if rf.problem else 'info' }}" role="status">{{ rf.note }}</p>{% endif %}
+  <div class="grid">
+    <section class="card" aria-labelledby="rf-h-ordner">
+      <h2 id="rf-h-ordner">Reihenfolge der Ordner</h2>
+      <p class="small muted rf-lead">Projekte aus dem obersten Ordner werden zuerst gelesen. Ein ausgeschalteter Ordner kommt erst ganz am Ende.</p>
+      {% if rf.folders %}
+      <ol class="rf-folders">
+        {% for f in rf.folders %}
+        {% set prev = rf.folders[loop.index0 - 1] if not loop.first else none %}
+        {% set nxt = rf.folders[loop.index0 + 1] if not loop.last else none %}
+        <li class="{{ 'off' if not f.enabled }}">
+          <span class="rf-rank">{{ f.rank if f.rank else '–' }}</span>
+          <div class="rf-fbody">
+            <span class="rf-fname">{{ f.label }}</span> <span class="small muted">· {{ f.finished|de_num }} von {{ f.total|de_num }} {{ 'Projekt' if f.total == 1 else 'Projekten' }} fertig</span>
+            <progress class="rf-bar" max="{{ f.total or 1 }}" value="{{ f.finished }}">{{ f.finished }} von {{ f.total }}</progress>
+          </div>
+          <form method="post" action="/status/reihenfolge/ordner" hx-post="/status/reihenfolge/ordner" hx-target="#reihenfolge" hx-swap="outerHTML" class="rf-acts">
+            <input type="hidden" name="ordner" value="{{ f.name }}"><input type="hidden" name="tab" value="{{ rf.tab }}"><input type="hidden" name="q" value="{{ rf.q }}">
+            <button class="secondary rf-icon" name="aktion" value="hoch"{% if not prev or prev.enabled != f.enabled %} disabled{% endif %} aria-label="Ordner {{ f.label }} nach oben" title="nach oben">▲</button>
+            <button class="secondary rf-icon" name="aktion" value="runter"{% if not nxt or nxt.enabled != f.enabled %} disabled{% endif %} aria-label="Ordner {{ f.label }} nach unten" title="nach unten">▼</button>
+            <button class="secondary rf-icon" name="aktion" value="{{ 'aus' if f.enabled else 'an' }}" aria-label="Ordner {{ f.label }} {{ 'ausschalten' if f.enabled else 'einschalten' }}">{{ 'aus' if f.enabled else 'an' }}</button>
+          </form>
+        </li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="empty">Noch keine Projekte erkannt.</p>
+      {% endif %}
+      <p class="small muted rf-hint">Gilt sofort für die Warteschlange und bleibt nach einem Neustart erhalten.{% if not rf.customized and rf.default_order %} Voreinstellung aus <code>INDEX_FOLDER_ORDER</code>: {{ rf.default_order|join(', ') }}.{% endif %}</p>
+      {% if rf.customized %}
+      <form method="post" action="/status/reihenfolge/standard" hx-post="/status/reihenfolge/standard" hx-target="#reihenfolge" hx-swap="outerHTML">
+        <input type="hidden" name="tab" value="{{ rf.tab }}"><input type="hidden" name="q" value="{{ rf.q }}">
+        <button class="link small">Auf Standard zurücksetzen{% if rf.default_order %} ({{ rf.default_order|join(', ') }}){% endif %}</button>
+      </form>
+      {% endif %}
+    </section>
+    <section class="card" aria-labelledby="rf-h-jetzt">
+      <h2 id="rf-h-jetzt">Wird gerade gelesen</h2>
+      {% with now = rf.now %}{% include "_reihenfolge_jetzt.html" %}{% endwith %}
+    </section>
+  </div>
+  <section class="card" aria-labelledby="rf-h-projekte">
+    <div class="head-row">
+      <h2 id="rf-h-projekte">Projekte</h2>
+      <form action="/status#reihenfolge" method="get" class="search-inline" role="search">
+        {% with oob = false %}{% include "_reihenfolge_tab.html" %}{% endwith %}
+        <input type="search" name="q" value="{{ rf.q }}" placeholder="Projektnummer suchen, z. B. 2104" aria-label="Projektnummer suchen"
+               hx-get="/status/reihenfolge/liste" hx-trigger="input changed delay:300ms, search" hx-target="#rf-liste" hx-swap="outerHTML"
+               hx-include="closest form" autocomplete="off">
+        <button class="secondary">Suchen</button>
+      </form>
+    </div>
+    {% include "_reihenfolge_liste.html" %}
+  </section>
+  <p class="small muted">So arbeitet jeder Lauf: zuerst die vorgezogenen Projekte, dann die noch nicht fertigen Ordner für Ordner, darin die neueste Nummer zuerst. Danach werden die fertigen Projekte in derselben Reihenfolge auf neue und geänderte Dateien geprüft – Mails und neue Dateien kommen also weiter in jedem Lauf dran. Die Bildauswertung folgt derselben Reihenfolge.</p>
+</div>

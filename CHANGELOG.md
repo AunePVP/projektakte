@@ -5,6 +5,23 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Reihenfolge beim Einlesen (Statusseite):** Neuer Bereich unter den bisherigen Karten. *Reihenfolge der
+  Ordner*: die obersten Ordner unter `PROJECTS_DIR` mit „N von M Projekten fertig“, verschiebbar (▲/▼) und
+  abschaltbar („aus“: ihre Projekte kommen zuletzt, werden aber gelesen); gespeichert in der Datenbank, gilt
+  sofort und nach Neustarts; Voreinstellung mit der neuen Einstellung `INDEX_FOLDER_ORDER` (z. B. `3,2`).
+  *Wird gerade gelesen*: Projekt, „x von y Dateien“, Phase, Balken und die nächsten drei Nummern, alle 4 s
+  aktualisiert. *Projekte*: Reiter Warteschlange / Fertig / Alle mit Platz, Nummer, Ordner, Dateien und Stand
+  („wartet“, „vorgezogen“, „wird gelesen“, „✓ fertig“ / „fertig, N übersprungen“ mit Zeitpunkt), Suche nach
+  einem Teil der Nummer, höchstens 50 Zeilen; „Vorziehen“/„zurück“. Alles auch ohne JavaScript.
+- **Der Dokumentendurchgang folgt dieser Reihenfolge:** vorgezogene Projekte, dann die noch nicht fertigen
+  Ordner für Ordner (neueste Nummer zuerst; Bauvorhaben bei ihren Aufträgen), dann die fertigen zur Prüfung auf
+  neue und geänderte Dateien. Je Projekt wird gespeichert, wann es vollständig gelesen wurde (mit Leseprofil)
+  und was es nicht lesen konnte; eine neue oder geänderte Datei stellt es zurück in die Warteschlange, ein
+  Neustart macht dort weiter. Änderungen auf der Statusseite gelten für alle noch nicht angefangenen Projekte des
+  laufenden Laufs. Die Bildauswertung nimmt Dokumente vorgezogener Projekte zuerst, dann nach Ordnern (darin wie
+  bisher neueste zuerst). DB-Migration 11 (nur hinzugefügt).
+- **API:** `GET /api/reihenfolge`, `POST /api/reihenfolge/ordner`, `/vorziehen`, `/zurueck`.
+
 - **Scans in zwei Stufen (Phase „Bildauswertung“):** Beim Einlesen ruft Projektakte das Bildmodell nicht mehr
   auf. Gescannte Seiten mit OCR-Textebene behalten zunächst ihren Text, Seiten ohne Textebene liest Tesseract
   (`tesseract-ocr` + `tesseract-ocr-deu`, jetzt im Docker-Image; fehlt es, wie bisher ohne). Das Dokument ist
@@ -127,7 +144,8 @@ Roadmap-Schritt.
 - `VISION_SKIP_FOLDERS` (z. B. `Bilder`): Fotos in Ordnern wie `263900-Bilder` gehen nicht an die Bildauswertung;
   ohne die Einstellung werden sie später nachgelesen.
 - Protokoll: je gelesener Datei eine Zeile „Gelesen: <Datei> – ok (Bildauswertung), 3 Seite(n), 7 Abschnitt(e), 12,3 s“.
-- 1962 Tests (1957 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`.
+- 1987 Tests (1982 bestanden, 4 Integrationstests übersprungen, 1 xfail), neu `tests/test_bildauswertung_stufen.py`
+  und `tests/test_index_reihenfolge.py`.
 
 ## [0.5.0] – 2026-11-09 – Schlussprüfung und Gegenprüfungen
 

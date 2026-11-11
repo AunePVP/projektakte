@@ -1,0 +1,2 @@
+{#- The tab the search form searches in (switching tabs with HTMX updates it out of band). -#}
+<input type="hidden" name="tab" id="rf-tab" value="{{ 'alle' if rf.tab == 'warteschlange' else rf.tab }}"{% if oob %} hx-swap-oob="true"{% endif %}>

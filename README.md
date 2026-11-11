@@ -111,7 +111,20 @@ nur mit `PROJEKTAKTE_INTEGRATION=1` (siehe docs/ki-dienste.md).
 - **Fragen** und **Suche** – projektübergreifend oder auf ein Projekt beschränkt. Die Suche blendet
   schwach passende Treffer aus (`SEARCH_MIN_RERANK`), lässt sie aber auf Wunsch anzeigen.
 - **Status** – Indexierung (mit Warnungen, z. B. fehlendes Laufwerk), Bestand und Zustand der
-  KI-Dienste (im Fake-Modus „simuliert“) und von plMail.
+  KI-Dienste (im Fake-Modus „simuliert“) und von plMail. Darunter die **Reihenfolge beim Einlesen**:
+  - *Reihenfolge der Ordner*: die obersten Ordner unter `PROJECTS_DIR`, in denen Projekte liegen, je mit „N von
+    M Projekten fertig“ und Balken. ▲/▼ verschiebt einen Ordner, „aus“ schaltet ihn ab – seine Projekte kommen
+    dann erst ganz am Ende (sie werden weiter gelesen). Beispiel „erst alle Projekte aus Ordner 3, dann aus 2“:
+    Ordner 3 nach oben, Ordner 2 direkt darunter. Die Einstellung gilt sofort, steht in der Datenbank und
+    überdauert Neustarts; „Auf Standard zurücksetzen“ gilt wieder `INDEX_FOLDER_ORDER`.
+  - *Wird gerade gelesen*: Projekt, „x von y Dateien“, Phase, Balken und die nächsten drei Nummern; aktualisiert
+    sich alle 4 Sekunden, solange ein Lauf läuft (sonst alle 30 Sekunden).
+  - *Projekte* mit den Reitern Warteschlange / Fertig / Alle: Platz, Nummer, Projekt, Ordner, Dateien, Stand
+    („wartet“, „vorgezogen“, „wird gelesen“, „✓ fertig“ bzw. „fertig, N übersprungen“ mit Zeitpunkt).
+    „Vorziehen“ setzt ein wartendes Projekt direkt hinter das laufende (mehrere in der Reihenfolge des
+    Vorziehens), „zurück“ hebt das auf; fertig gelesen, ist es nicht mehr vorgezogen. Das Suchfeld filtert nach
+    einem Teil der Projektnummer über alle Projekte. Höchstens 50 Zeilen („50 von 3.353 angezeigt“).
+  Alles geht ohne JavaScript (Formulare laden die Seite neu); mit JavaScript wird nur der Bereich ersetzt.
 
 Mail- und Dokumentseiten zeigen den Text bzw. die Abschnitte (mit Seitenangabe) und öffnen die
 Originaldatei. Serverseitig gerendert (Jinja2), HTMX liegt lokal unter `/static` (kein CDN); alle
@@ -286,6 +299,19 @@ Die Anwendung indexiert im Hintergrund: beim Start und danach alle `INDEX_INTERV
 Mit `DEMO_MODE=1` wird der Demo-Datensatz vorher in `$DATA_DIR/demo` erzeugt, falls er fehlt.
 Stand und Zahlen: `GET /api/status`; sofort neu indexieren: `POST /api/reindex` oder
 `python -m projektakte.index` (ein Durchlauf im Vordergrund, ohne Webserver).
+
+**Reihenfolge der Projekte:** Jeder Lauf liest die Projekte so: zuerst die vorgezogenen (Statusseite,
+„Vorziehen“), dann die noch nicht fertigen Ordner für Ordner – die obersten Ordner unter `PROJECTS_DIR` in der
+Reihenfolge der Statusseite, sonst `INDEX_FOLDER_ORDER` (z. B. `3,2`), dann die übrigen (nummerierte Ordner
+absteigend, dann die anderen nach Namen); im Ordner die höchste (neueste) Nummer zuerst. Danach prüft er die
+fertigen Projekte in derselben Reihenfolge auf neue und geänderte Dateien – neue Dateien und Mails kommen also
+weiter in jedem Lauf dran. Ein Bauvorhaben bleibt bei seinen Aufträgen (sie zählen im Ordner des Bauvorhabens,
+seine eigenen Dateien kommen direkt nach ihnen). „Fertig“ heißt: alle Ordner des Projekts wurden mit dem
+aktuellen Leseprofil vollständig durchgegangen. Eine neue oder geänderte Datei setzt das Projekt zurück in die
+Warteschlange, bis sie gelesen ist – ein Neustart mitten im Lauf macht dort weiter, wo er war. Ein anderes
+Modell oder `LLM_VISION=1` stellt alle Projekte wieder an (gelesen werden dann nur unvollständige Dateien).
+Änderungen auf der Statusseite gelten im laufenden Lauf für alle Projekte, die er noch nicht angefangen hat.
+Die Bildauswertung folgt derselben Reihenfolge (vorgezogene, dann Ordner; darin neueste Dokumente zuerst).
 
 Projekte sind Ordner unter `PROJECTS_DIR`, deren Name mit einer Projektnummer beginnt
 (`PROJECT_NUMBER_PATTERN`), direkt oder tiefer, z. B. in Jahres- oder Kundenordnern
@@ -498,6 +524,9 @@ zugeordnet oder vorgeschlagen, 8 von 8 inhaltlichen Vorschlägen richtig.
 | `GET /health/deps` | Zustand der KI-Dienste und von plMail (erreichbar, Format, Antwortzeit) |
 | `GET /api/status` | Indexierungsstand (Phase, letzter Lauf, Fehler) und Zahlen |
 | `POST /api/reindex` | Indexierung sofort anstoßen |
+| `GET /api/reihenfolge?tab=&q=&limit=` | Reihenfolge beim Einlesen: `folders` (Name, `enabled`, `rank`, `projects`, `done`), `current` (laufendes Projekt, Phase, `files_done`/`files_total`, `next`), `queue`/`done` (Anzahl) und `projects` des Reiters (`warteschlange`, `fertig`, `alle`; `q` = Teil der Nummer; `limit` höchstens 500) mit `position`, `state` (`run`, `pin`, `wait`, `done`), `done_at`, `skipped` |
+| `POST /api/reihenfolge/ordner` | Ordner-Reihenfolge: `{"order": ["3", "2"], "off": ["Archiv"]}` (nicht genannte Ordner danach wie bisher) oder `{"reset": true}` (zurück zu `INDEX_FOLDER_ORDER`) |
+| `POST /api/reihenfolge/vorziehen`, `POST /api/reihenfolge/zurueck` | `{"number": "284201"}` vorziehen bzw. wieder an seinen Platz |
 | `GET /api/projects?q=` | Projektliste, optional gefiltert nach Nummer/Name; je Eintrag `kind` (`projekt`/`bauvorhaben`), `parent` (Bauvorhaben eines Auftrags), bei Bauvorhaben `children` (Nummern der Unterprojekte) |
 | `GET /api/projects/{nummer}` | ein Projekt oder Bauvorhaben, mit `folders` (alle Ordner der Nummer, Hauptordner zuerst), `kind`, `parent`, `parent_name` und `children` (`number`, `name`, `path`) |
 | `GET /api/projects/{nummer}/documents` | Dokumente eines Projekts mit Status (ok/übersprungen/Fehler); bei einem Bauvorhaben nur seine eigenen Dateien außerhalb der Unterprojekte |
@@ -568,6 +597,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
 | `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
 | `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
+| `INDEX_FOLDER_ORDER` | leer | Oberste Ordner unter `PROJECTS_DIR`, deren Projekte zuerst gelesen werden, mit Komma getrennt (`3,2`: erst Ordner 3, dann 2, dann die übrigen). Nur Voreinstellung: Sobald jemand die Reihenfolge auf der Statusseite ändert, gilt die dort gespeicherte |
 | `EXTRACT_ISOLATION` | `1` (`0` bei `APP_ENV=test`) | PDF/Word/OpenDocument/Mails in einem eigenen Leseprozess mit Grenzen lesen |
 | `EXTRACT_MEMORY_MB` | `2048` | Speichergrenze des Leseprozesses (mindestens 256) |
 | `EXTRACT_CPU_SECONDS` | `120` | Rechenzeit je Datei; Warten auf das Sprachmodell zählt nicht |
@@ -656,6 +686,7 @@ in der WAL-Datei fehlen.
 | `projektakte/search.py`, `ask.py`, `textutil.py` | hybride Suche, Fragen beantworten, Synonyme/Wortformen |
 | `projektakte/evaluate.py` | Antwortqualität messen (`python -m projektakte.evaluate`) |
 | `projektakte/indexer.py`, `background.py` | Indexierungslauf, Hintergrund-Thread |
+| `projektakte/reihenfolge.py` | Reihenfolge der Projekte im Lauf, Fertig-Stand je Projekt, Vorziehen, „Wird gerade gelesen“ |
 | `projektakte/integration.py` | API für plMail |
 | `projektakte/auth.py`, `auth_web.py`, `passwords.py`, `passwd.py` | Benutzer, Sitzung, Anmeldebremse, Login/Logout, Passwort-Hashes |
 | `projektakte/websecurity.py`, `startup.py`, `logsetup.py` | Sicherheits-Header und Schutz vor fremden Formularen, Startprüfungen, Logformat |

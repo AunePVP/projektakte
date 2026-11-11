@@ -22,7 +22,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
-- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.960 Tests, etwa 2 min). Docker-Probelauf:
+- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 1.990 Tests, etwa 2–3 min). Docker-Probelauf:
   `sh scripts/docker-smoke.sh`.
 
 ## 3. Stand in Zahlen
@@ -30,7 +30,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
 | Was | Ergebnis |
 |---|---|
 | Phase A (14 Roadmap-Schritte), Zuordnung in plMail, Nachbesserungen | fertig (ROADMAP 1–16a) |
-| Testsuite | grün (zuletzt 1957 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
+| Testsuite | grün (zuletzt 1982 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
 | Docker-Probelauf | grün |
 | Eigener Evaluationssatz mit Fake-KI | 103/103 |
 | Zurückgehaltener Prüfsatz (unabhängiger Autor) mit Fake-KI | 19/28 beantwortbare richtig (0,68), 12/12 Absagen, 0 erfundene Antworten |
@@ -314,6 +314,21 @@ Docker: `sudo apt install tesseract-ocr tesseract-ocr-deu`. Zu messen mit der ec
 Handschrift-Vermerke an einigen Prüfprotokollen, Dauer je Seite, ob Fragen während der Bildauswertung
 schnell genug bleiben (sonst `VISION_CONCURRENCY=2`). Einzelheiten: README „Scans in zwei Stufen“,
 DECISIONS „Scans in zwei Stufen“.
+
+## 7c. Reihenfolge beim Einlesen
+
+Statusseite, Bereich unter „KI-Dienste“: Ordner-Reihenfolge (▲/▼, „aus“ = ans Ende), „Wird gerade gelesen“
+(aktualisiert sich selbst), Projektliste mit Warteschlange / Fertig / Alle, Suche nach Nummer, „Vorziehen“.
+Für den Wunsch „erst Ordner 3, dann 2“: Ordner 3 nach oben, 2 darunter – oder vorab in `projektakte.env`
+`INDEX_FOLDER_ORDER=3,2` (gilt, bis jemand die Reihenfolge auf der Seite ändert). Jeder Lauf: vorgezogene →
+nicht fertige Ordner für Ordner (neueste Nummer zuerst) → fertige auf neue Dateien prüfen; die Bildauswertung
+folgt derselben Reihenfolge. Ein Neustart mitten im ersten Lauf macht bei den nicht fertigen Projekten weiter.
+Migration 11 (Spalten `done_at`, `done_profile`, `done_skipped`, `pinned` in `projects`, Tabelle
+`index_folders`): Nach dem Update stehen alle Projekte einmal in der Warteschlange; der nächste Lauf geht sie
+in der neuen Reihenfolge durch (unveränderte Dateien kosten nur ein `stat`) und markiert sie als fertig.
+Einzelheiten: README „Reihenfolge der Projekte“, DECISIONS „Reihenfolge beim Einlesen“. Zu prüfen auf der echten
+Freigabe: ob die obersten Ordner die erwarteten sind (`1` … `9`) und wie lange der Prüfdurchgang über fertige
+Projekte übers Netz dauert.
 
 ## 8. Offene Punkte, nach Wichtigkeit
 

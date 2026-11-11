@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import extract_worker
+from . import extract_worker, reihenfolge
 from .db import BAUVORHABEN
 from .chunking import Chunk, chunk_pages
 from .extract import IMAGE_EXT, SUPPORTED_EXT, Extracted, Page, extract, extraction_profile
@@ -550,7 +550,8 @@ class _ProjectState:
 
 
 def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *,
-                            projects_dir: Path | str | None = None, skip_photos: tuple[str, ...] = ()) -> dict:
+                            projects_dir: Path | str | None = None, skip_photos: tuple[str, ...] = (),
+                            run: reihenfolge.ProjectRun | None = None) -> dict:
     """Bring the documents of one project up to date – all its folders: the primary folder
     (``project["path"]``) and the further folders with the same number (``project["further"]``, read
     from the register if the key is missing). Every file is read and extracted without holding the
@@ -569,7 +570,11 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
     A site (Bauvorhaben, ``project["kind"]``) holds the files of its folders outside every project:
     ``project["exclude"]`` names the registered folders inside them (its orders and their further
     folders, other projects, the folders of other sites), which are never entered – their files belong
-    to those projects, never twice to the site."""
+    to those projects, never twice to the site.
+
+    ``run`` follows the pass for the order of the documents pass (reihenfolge.py): files listed and gone
+    through, what could not be read, and the first file that has to be read."""
+    run = run or reihenfolge.ProjectRun()
     stored_root = Path(project["path"])
     further = project.get("further")
     if further is None:
@@ -590,13 +595,14 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
             log.warning("Projektordner nicht erreichbar, Dokumente bleiben unverändert: %s%s", stored,
                         f" – {ENCODING_HINT}" if "\ufffd" in str(stored) else "")
             unlisted.append(stored)
+            run.problem()
             continue
         reachable += 1
         _index_folder(conn, project, state, stats, llm=llm, stored=stored, root=root,
                       prefix=folder_prefix(stored_root, stored),
                       boundary=Path(projects_dir).resolve() if projects_dir else root.resolve(),
                       profile=profile, now=now, seen=seen, bad=bad, unlisted=unlisted,
-                      exclude=frozenset(project.get("exclude") or ()), skip_photos=skip_photos)
+                      exclude=frozenset(project.get("exclude") or ()), skip_photos=skip_photos, run=run)
     if not reachable:  # nothing could be read: change nothing
         return stats
     handover = project.get("handover") or ()
@@ -635,12 +641,13 @@ def _what(project: dict) -> str:
 def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState, stats: dict, *, llm,
                   stored: Path, root: Path, prefix: str, boundary: Path, profile: str, now: str, seen: set[str],
                   bad: list[str], unlisted: list[Path], exclude: frozenset[str] = frozenset(),
-                  skip_photos: tuple[str, ...] = ()) -> None:
+                  skip_photos: tuple[str, ...] = (), run: reihenfolge.ProjectRun | None = None) -> None:
     """The files of one folder of a project (``stored`` as registered, ``root`` its real path): new and
     changed ones are extracted and written, every file found is added to ``seen``; folders inside that
     could not be listed are added to ``unlisted``, names in a wrong encoding to ``bad``. Subfolders
     registered as ``exclude`` (stored form) are not entered – compared in the stored form, so a folder
     whose name is no valid UTF-8 is recognised as well."""
+    run = run or reihenfolge.ProjectRun()
     walk_errors: list[OSError] = []
     skip = None
     if exclude:
@@ -648,12 +655,14 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
             return printable(str(stored / folder.relative_to(root))) in exclude
     site = project.get("kind") == BAUVORHABEN
     if is_inside(root, boundary):
-        files = _project_files(root, boundary, walk_errors, skip=skip)
+        files = list(_project_files(root, boundary, walk_errors, skip=skip))  # listed first: "x von y Dateien"
     else:
         warn_once(log, "Projektordner liegt außerhalb von PROJECTS_DIR und wird nicht gelesen: %s",
                   printable(str(root)))
-        files = ()
+        files = []
+    run.listed(len(files))
     for f in files:
+        run.step()
         if f.suffix.lower() not in SUPPORTED_EXT:
             stats["skipped"] += 1
             continue
@@ -662,10 +671,12 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
         if has_bad_encoding(rel):  # cannot be stored – never read it (nor extract it again at every pass)
             bad.append(f"{stored.name}/{printable(rel)}")
             stats["skipped"] += 1
+            run.problem()
             continue
         try:
             st = f.stat()
         except OSError:
+            run.problem()
             continue
         key = str(stored / rel_path)
         shown = str(Path(prefix) / rel_path) if prefix else rel  # the name inside the project
@@ -704,18 +715,21 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
             continue
         if st.st_size > MAX_FILE_BYTES:
             stats["skipped"] += 1
+            run.problem()
             continue
         try:
             data = _read_inside(f, boundary)
         except OSError as exc:
             log.warning("Datei nicht lesbar: %s (%s)", key, exc)
             stats["errors"] += 1
+            run.problem()
             continue
         if row and not due and row["sha256"] == sha256(data):  # touched but not changed
             conn.execute("UPDATE documents SET mtime=?, size=? WHERE id=?", (st.st_mtime, st.st_size, row["id"]))
             conn.commit()
             stats["unchanged"] += 1
             continue
+        run.changed()  # the project is not done until this pass over it ends
         doc = prepare_document(rel_path=shown, data=data, mtime=st.st_mtime,  # no lock held
                                llm=None if file_profile != profile else llm, ocr=False if photo else None)
         if file_profile != profile:
@@ -726,6 +740,7 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
             conn.rollback()
             warn_once(log, "Datei nicht gespeichert, ein Text ist kein gültiges UTF-8: %s (%s)", key, exc)
             stats["errors"] += 1
+            run.problem()
             continue
         conn.commit()  # one short write transaction per file – the web UI never waits long
         if row is None:
@@ -733,6 +748,7 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
         else:
             stats["reprocessed" if due and row["sha256"] == doc.sha256 else "changed"] += 1
     for e in walk_errors:  # folders that could not be listed, as stored (with � where no UTF-8)
+        run.problem()
         if getattr(e, "filename", None):
             try:
                 unlisted.append(stored / Path(os.fsdecode(e.filename)).relative_to(root))
@@ -849,42 +865,70 @@ def site_exclusions(conn: sqlite3.Connection, further: dict[str, list[str]] | No
     return out
 
 
+def _index_one(conn: sqlite3.Connection, p: dict, further: dict, excluded: dict, areas: list, total: dict, *,
+               llm, projects_dir, skip_photos, run: reihenfolge.ProjectRun, profile: str) -> None:
+    """One project of :func:`index_all_documents`; its stats are added to ``total``."""
+    p["further"] = further.get(p["number"], [])
+    if p["kind"] == BAUVORHABEN:
+        p["exclude"] = excluded.get(p["number"], set())
+        p["handover"] = [(folders, ex) for n, folders, ex in areas if n != p["number"]]
+    try:
+        stats = index_project_documents(conn, p, llm=llm, projects_dir=projects_dir, skip_photos=skip_photos,
+                                        run=run)
+    except UnicodeError as exc:
+        conn.rollback()
+        warn_once(log, "Projekt %s: Dokumente nicht vollständig gelesen – ein Name ist kein gültiges UTF-8 "
+                       "(%s) – %s", p["number"], exc, ENCODING_HINT)
+        total["errors"] = total.get("errors", 0) + 1
+        return
+    run.finish(profile)
+    examples = stats.pop("bad_name_examples", [])
+    room = MAX_BAD_EXAMPLES - len(total["bad_name_examples"])
+    total["bad_name_examples"] += examples[:max(0, room)]
+    for k, v in stats.items():
+        total[k] = total.get(k, 0) + v
+
+
 def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Path | str | None = None,
-                        skip_photos: tuple[str, ...] = ()) -> dict:
+                        skip_photos: tuple[str, ...] = (), folder_order: tuple[str, ...] = ()) -> dict:
     """Index the files of all active projects (files of unknown projects leave the index first).
     ``projects_dir`` is the boundary for links (default: each project folder itself). A project whose
     files cannot be stored (a name that is no valid UTF-8 the checks missed) is skipped with a warning
     – never the projects after it. ``bad_names`` counts the files skipped for a name in a wrong
-    encoding, ``bad_name_examples`` names some of them (project folder/path)."""
+    encoding, ``bad_name_examples`` names some of them (project folder/path).
+
+    The projects are taken in the order of reihenfolge.py (pinned, not done yet folder by folder with
+    ``folder_order`` as INDEX_FOLDER_ORDER, then the done ones); a change made on the status page meanwhile
+    sorts the projects not started yet again. Each project that was read completely is marked done."""
     total: dict = {"removed": purge_inactive_documents(conn), "bad_names": 0, "bad_name_examples": []}
     conn.commit()
     mark_garbled_eml_documents(conn)
     projects = [dict(r) for r in conn.execute("SELECT number, name, path, kind FROM projects WHERE active = 1")]
-    projects.sort(key=lambda p: p["kind"] == BAUVORHABEN)  # projects first: a site never holds their files
+    profile = extraction_profile(llm)
+    plan = reihenfolge.Plan(conn, projects_dir, folder_order, profile)
+    # a site's own files come after its orders (reihenfolge.ordered); which of two sites reads a file both
+    # could is settled by the hand-over below, whichever is read first
+    pending = plan.order(projects)
     further = further_folders(conn)
     excluded = site_exclusions(conn, further)
     # what each site reads: its folders without its exclusions – a file of one site that lies there now
     # is handed over to that site (index_project_documents), whichever of the two is read first
     areas = [(p["number"], [Path(f) for f in (p["path"], *further.get(p["number"], ()))],
               [Path(e) for e in excluded.get(p["number"], ())]) for p in projects if p["kind"] == BAUVORHABEN]
-    for p in projects:
-        p["further"] = further.get(p["number"], [])
-        if p["kind"] == BAUVORHABEN:
-            p["exclude"] = excluded.get(p["number"], set())
-            p["handover"] = [(folders, ex) for n, folders, ex in areas if n != p["number"]]
-        try:
-            stats = index_project_documents(conn, p, llm=llm, projects_dir=projects_dir, skip_photos=skip_photos)
-        except UnicodeError as exc:
-            conn.rollback()
-            warn_once(log, "Projekt %s: Dokumente nicht vollständig gelesen – ein Name ist kein gültiges UTF-8 "
-                           "(%s) – %s", p["number"], exc, ENCODING_HINT)
-            total["errors"] = total.get("errors", 0) + 1
-            continue
-        examples = stats.pop("bad_name_examples", [])
-        room = MAX_BAD_EXAMPLES - len(total["bad_name_examples"])
-        total["bad_name_examples"] += examples[:max(0, room)]
-        for k, v in stats.items():
-            total[k] = total.get(k, 0) + v
+    live = reihenfolge.LIVE
+    at = 0  # pending[at] is the next project (no list copies per project with thousands of them)
+    try:
+        while at < len(pending):
+            if plan.stale():  # a person changed the order: the projects not started yet are sorted again
+                pending, at = plan.order(pending[at:]), 0
+            p = pending[at]
+            at += 1
+            live.start(p, plan.folder_of.get(p["number"], ""), pending, at, plan.version)
+            run = reihenfolge.ProjectRun(conn, p["number"])
+            _index_one(conn, p, further, excluded, areas, total, llm=llm, projects_dir=projects_dir,
+                       skip_photos=skip_photos, run=run, profile=profile)
+    finally:
+        live.documents_done()
     return total
 
 

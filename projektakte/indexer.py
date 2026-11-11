@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 
-from . import db, documents, extract_worker, structure
+from . import db, documents, extract_worker, reihenfolge, structure
 from .ai.services import AIServices
 from .assign import assign_mails
 from .config import Settings
@@ -38,6 +38,7 @@ def plmail_client(settings: Settings) -> JMAPClient:
 def run_index(settings: Settings, ai: AIServices | None = None, progress=None) -> dict:
     """One pass over all sources. ``progress(phase)`` is called with the current phase."""
     def phase(name: str) -> None:
+        reihenfolge.LIVE.set_phase(name)  # status page: "Wird gerade gelesen"
         if progress:
             progress(name)
 
@@ -46,7 +47,11 @@ def run_index(settings: Settings, ai: AIServices | None = None, progress=None) -
     # stages: the model reads scan pages in the phase "Bildauswertung" at the end (vision.py)
     VECTOR_INDEX.configure(getattr(settings, "vector_search", DEFAULT_VECTOR_SEARCH))  # mail assignment searches
     with _RUN_LOCK, extract_worker.isolation(settings), documents.vision_later():
-        return _run(settings, ai, phase)
+        reihenfolge.LIVE.begin()
+        try:
+            return _run(settings, ai, phase)
+        finally:
+            reihenfolge.LIVE.end()
 
 
 def _demo_data(conn, settings: Settings) -> dict | None:
@@ -79,7 +84,8 @@ def _index_documents(conn, llm, settings: Settings) -> dict:
     failing."""
     try:
         return index_all_documents(conn, llm=llm, projects_dir=settings.projects_dir,
-                                   skip_photos=settings.vision_skip_folders)
+                                   skip_photos=settings.vision_skip_folders,
+                                   folder_order=getattr(settings, "index_folder_order", ()))
     except UnicodeError as exc:
         conn.rollback()
         log.warning("Dokumente: ein Datei- oder Ordnername ist kein gültiges UTF-8 (%s) – %s", exc, ENCODING_HINT)

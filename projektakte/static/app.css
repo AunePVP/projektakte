@@ -228,3 +228,55 @@ main.login { max-width: 420px; }
 .login-card label { display: flex; flex-direction: column; gap: .2rem; font-size: .9rem; }
 .login-card input { font: inherit; padding: .5rem .6rem; border: 1px solid #c3c9d2; border-radius: var(--radius); }
 code { background: #f0f2f5; padding: 0 .25rem; border-radius: 4px; }
+/* status page, section "Reihenfolge": folder order, the project being read, the project list */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0);
+  white-space: nowrap; border: 0; }
+.rf-lead { margin: 0 0 .6rem; } .rf-hint { margin: .6rem 0 0; }
+ol.rf-folders { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
+ol.rf-folders li { display: grid; grid-template-columns: 1.8rem minmax(0, 1fr) auto; gap: .6rem; align-items: center;
+  padding: .45rem .6rem; border: 1px solid var(--line); border-radius: 6px; }
+ol.rf-folders li.off { opacity: .55; }
+.rf-rank { text-align: center; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rf-fname, .rf-num { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-weight: 600;
+  font-variant-numeric: tabular-nums; }
+.rf-acts { display: flex; gap: .25rem; margin: 0; }
+button.rf-icon { padding: .15rem .5rem; border-color: var(--line); color: var(--muted); }
+button.rf-icon:hover { border-color: var(--muted); background: #f4f5f7; }
+button.rf-icon:disabled, button.rf-icon:disabled:hover { opacity: .35; cursor: default; background: #fff; }
+button.rf-small { padding: .2rem .6rem; font-size: .87rem; }
+progress.rf-bar { display: block; width: 100%; height: 6px; margin-top: .3rem; border: 0; border-radius: 3px;
+  background: #eceff3; overflow: hidden; -webkit-appearance: none; appearance: none; }
+progress.rf-bar::-webkit-progress-bar { background: #eceff3; border-radius: 3px; }
+progress.rf-bar::-webkit-progress-value { background: var(--ok); border-radius: 3px; }
+progress.rf-bar::-moz-progress-bar { background: var(--ok); border-radius: 3px; }
+progress.rf-bar.run::-webkit-progress-value { background: var(--accent); }
+progress.rf-bar.run::-moz-progress-bar { background: var(--accent); }
+.rf-now { display: flex; gap: .8rem; align-items: flex-start; }
+.rf-now p { margin: 0; }
+.rf-now-body { flex: 1; min-width: 0; }
+.rf-files { margin: .25rem 0; }
+.rf-next { margin-top: .5rem; }
+.rf-spin { width: 22px; height: 22px; border: 3px solid #eceff3; border-top-color: var(--accent); border-radius: 50%;
+  animation: rf-spin .9s linear infinite; flex: none; margin-top: 2px; display: inline-block; }
+.rf-spin.sm { width: 14px; height: 14px; border-width: 2px; margin: 0; }
+@keyframes rf-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .rf-spin { animation-duration: 3s; } }
+.rf-chip { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .8rem; background: #eceff3;
+  padding: .05rem .4rem; border-radius: 4px; white-space: nowrap; }
+.rf-tabs { margin: .2rem 0 .6rem; }
+.rf-tabs a { padding: .4rem .8rem; border-bottom: 3px solid transparent; margin-bottom: -1px; color: var(--muted); }
+.rf-tabs a:hover { text-decoration: none; background: #f4f5f7; }
+.rf-tabs a.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 650; }
+table.list.rf-list { table-layout: auto; }
+table.list.rf-list th.rf-pos { width: 3rem; }
+table.list.rf-list tr.running td { background: #fff6dd; }
+table.list.rf-list tr.pinned td:first-child { box-shadow: inset 3px 0 0 var(--info); }
+table.list.rf-list form { margin: 0; }
+.rf-st { display: inline-flex; align-items: center; gap: .35rem; font-size: .87rem; white-space: nowrap; }
+.rf-st.ok { color: var(--ok); } .rf-st.warn { color: var(--warn); } .rf-st.wait { color: var(--muted); }
+.rf-st.pin { color: var(--info); }
+@media (max-width: 700px) {
+  /* the project list keeps Stand and the button; #, Ordner and Dateien give way */
+  table.list.rf-list th, table.list.rf-list td { display: table-cell; }
+  table.list.rf-list .hide-sm { display: none; }
+}

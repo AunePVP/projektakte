@@ -788,3 +788,54 @@ frühere Entscheidungen sind dadurch **ersetzt** – das steht jeweils dabei.
   Text); nur ein Indexierungslauf arbeitet in zwei Stufen (`documents.vision_later`).
 - *Fotos in `VISION_SKIP_FOLDERS`*: weder Modell noch Tesseract (Baustellenfotos ergeben keinen Text, nur
   Zeichenmüll; Tesseract-Text mit weniger als drei Wörtern wird ohnehin verworfen).
+
+**Reihenfolge beim Einlesen (Statusseite „Reihenfolge“)**
+- *Warum*: Der erste Lauf über die ganze Freigabe dauert Tage. Das Büro will bestimmen, was zuerst lesbar ist
+  („erst alle Projekte aus Ordner 3, dann aus 2“), einzelne Projekte vorziehen und sehen, was fertig ist.
+- *Reihenfolge*: vorgezogene Projekte (in der Reihenfolge des Vorziehens) → noch nicht fertige Projekte Ordner
+  für Ordner → fertige Projekte in derselben Reihenfolge. Die fertigen werden weiter in jedem Lauf durchgegangen
+  (unveränderte Dateien kosten nur ein `stat`), damit neue und geänderte Dateien wie bisher in jedem Lauf
+  gefunden werden – nur eben nach der Warteschlange. Mails laufen unverändert nach den Dokumenten. Im Ordner
+  höchste Nummer zuerst (wie die neuesten Dokumente in der Bildauswertung: Neues ist meist gefragter); vorher
+  war die Reihenfolge die der Einfügung in die Datenbank, Bauvorhaben am Schluss.
+- *Ordner*: die oberste Ebene unter `PROJECTS_DIR` (bei eurer Ablage `1` … `9`), nur Ordner mit Projekten.
+  Nicht platzierte Ordner: nummerierte absteigend (`3, 2, 1`, passt zu „neueste zuerst“), dann die übrigen nach
+  Namen, Projekte direkt in `PROJECTS_DIR` zuletzt. „Aus“ überspringt nicht, sondern stellt ans Ende: ein
+  Ordner, der nie gelesen würde, wäre still unvollständig. Ein ausgeschalteter Ordner lässt sich nicht über
+  eingeschaltete schieben (die Anzeige entspricht immer der tatsächlichen Reihenfolge).
+- *Gespeichert*: Tabelle `index_folders` (Migration 11, nur hinzugefügt). Leer → `INDEX_FOLDER_ORDER` gilt; die
+  erste Änderung auf der Seite speichert die ganze Reihenfolge, ab dann gilt sie (sonst wäre unklar, was eine
+  geänderte Umgebungsvariable gegen eine Einstellung auf der Seite bedeutet). „Auf Standard zurücksetzen“ leert
+  die Tabelle. Ordner, die gerade keine Projekte haben, behalten ihren Platz hinten.
+- *Bauvorhaben*: Aufträge zählen im Ordner ihres Bauvorhabens und bleiben zusammen, sortiert nach dem neuesten
+  Auftrag; das Bauvorhaben selbst (seine Dateien außerhalb der Aufträge) direkt danach. Zusammengeführte Projekte
+  (mehrere Ordner einer Nummer) zählen im Ordner ihres Hauptordners. Welches Bauvorhaben eine Datei liest, die
+  zwei lesen könnten, regelt wie bisher die Übergabe (unabhängig davon, wer zuerst dran ist).
+- *Fertig*: `projects.done_at` wird gesetzt, wenn der Dokumentendurchgang eines Projekts über alle seine Ordner
+  endet, zusammen mit dem Leseprofil (`done_profile`). Fertig heißt `done_at` gesetzt und Profil = aktuelles
+  Profil – ein anderes Modell oder `LLM_VISION=1` stellt alles wieder an, ohne etwas umzuschreiben. Muss eine
+  Datei gelesen werden (neu, geändert, Wiederholung fällig), wird `done_at` vorher gelöscht: Bricht der Lauf ab,
+  steht das Projekt in der Warteschlange und wird nach dem Neustart zuerst gelesen. Kein erreichbarer Ordner →
+  nicht fertig. Billiger als jede Datei gegen das Dateisystem zu prüfen, und richtig, weil jeder Lauf ohnehin
+  jedes Projekt durchgeht. Die Bildauswertung zählt nicht dazu (eigene Anzeige „Bildauswertung ausstehend“).
+- *„N übersprungen“*: Dateien und Ordner, die das Projekt nicht lesen konnte – Lesefehler, zu groß, Name in
+  falscher Zeichenkodierung, nicht auflistbare Ordner, Dokumente mit Status „Fehler“. Nicht gelesene Dateitypen
+  (`.dwg` …) zählen nicht, sonst stünde fast jedes Projekt als Warnung da.
+- *Vorziehen*: `projects.pinned` (fortlaufende Zahl); wird beim Fertigwerden gelöscht.
+- *Änderungen im laufenden Lauf*: Jede Änderung erhöht einen Zähler in `meta`; der Lauf vergleicht ihn vor
+  jedem Projekt (eine kleine Abfrage) und sortiert die noch nicht angefangenen neu. Auch ein Lauf in einem
+  anderen Prozess (`python -m projektakte.index`) sieht das. Die Bildauswertung prüft denselben Zähler vor
+  jedem Dokument.
+- *Bildauswertung*: Stufen vorgezogen → Ordner (ausgeschaltete zuletzt, Anhänge ohne Projekt nach den
+  eingeschalteten Ordnern); innerhalb einer Stufe bleibt „neueste Dokumente zuerst“. Fertig/nicht fertig spielt
+  hier keine Rolle.
+- *„Wird gerade gelesen“*: Der Lauf meldet Projekt, Dateizahl (die Dateien eines Ordners werden dafür vorher
+  aufgelistet – einige Tausend Pfade je Projekt, unkritisch) und Phase an ein Objekt im Prozess
+  (`reihenfolge.LIVE`); die Karte fragt es alle 4 s ab, ohne Lauf alle 30 s. Ein Abruf liest nur diesen Zustand
+  und die Versionszahl; nur nach einer Änderung wird die Reihenfolge für „Danach“ neu berechnet.
+- *Viele Projekte*: Die Seite liest alle Projekte mit einer Abfrage und sortiert in Python (15.000 Projekte:
+  deutlich unter einer Sekunde), Dateizahlen nur für die höchstens 50 gezeigten Zeilen mit einer gruppierten
+  Abfrage. Ein Test baut 15.000 Projekte und zählt die SQL-Anweisungen.
+- *API*: eigener Endpunkt `/api/reihenfolge` statt `/api/status`, weil `/api/status` billig bleiben soll
+  (Monitoring); Änderungen wie die anderen schreibenden Endpunkte als POST mit JSON, gleicher Schutz
+  (Anmeldung, keine fremden Seiten) durch die Middleware.

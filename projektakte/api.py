@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from . import db, inbox as inbox_queries, structure, vision
+from . import db, inbox as inbox_queries, reihenfolge, structure, vision
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .ask import ask as answer_question
 from .search import hybrid_search
@@ -267,3 +267,78 @@ def status(request: Request) -> dict:
 def reindex(request: Request) -> dict:
     request.app.state.indexer.trigger()
     return {"status": "angestoßen"}
+
+
+# -- order of the documents pass (reihenfolge.py; the section "Reihenfolge" of the status page) ---------
+RF_MAX_LIMIT = 500
+
+
+def _rf_data(request: Request, tab: str = "", q: str = "", limit: int = 50) -> dict:
+    from .web import reihenfolge_context
+
+    with db.session(_settings(request).db_path) as conn:
+        rf = reihenfolge_context(request, conn, tab, q, limit=max(1, min(limit, RF_MAX_LIMIT)))
+    now = rf["now"]
+    projects = [{k: p[k] for k in ("position", "number", "name", "kind", "folder", "files", "state", "done_at",
+                                   "skipped")} for p in rf["rows"]]
+    return structure.clean({
+        "folders": [{"name": f["name"], "label": f["label"], "enabled": f["enabled"], "rank": f["rank"],
+                     "projects": f["total"], "done": f["finished"]} for f in rf["folders"]],
+        "customized": rf["customized"], "default_order": rf["default_order"],
+        "current": {"running": now["running"], "phase": now["phase_detail"], "project": now["project"],
+                    "files_done": now["seen"], "files_total": now["total"], "next": now["upcoming"]},
+        "queue": rf["queue_count"], "done": rf["done_count"], "tab": rf["tab"], "q": rf["q"],
+        "total": rf["total"], "count": len(projects), "projects": projects})
+
+
+@router.get("/reihenfolge")
+def order(request: Request, tab: str = "", q: str = "", limit: int = 50) -> dict:
+    """Order of the documents pass: the top-level folders, what is read right now, and the projects of a
+    tab (``warteschlange`` default, ``fertig``, ``alle``) – ``q`` filters by (part of) the number."""
+    return _rf_data(request, tab, q, limit)
+
+
+class FolderOrderRequest(BaseModel):
+    order: list[str] = []  # these folders first, in this order; the others keep theirs after them
+    off: list[str] = []  # switched off: their projects come last
+    reset: bool = False  # back to INDEX_FOLDER_ORDER and the default
+
+
+class PinRequest(BaseModel):
+    number: str
+
+
+def _rf_write(request: Request, action) -> dict:
+    s = _settings(request)
+    try:
+        with db.session(s.db_path) as conn:
+            action(conn, s)
+    except reihenfolge.OrderError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except sqlite3.OperationalError as exc:
+        if not inbox_queries.is_db_busy(exc):
+            raise
+        raise HTTPException(503, "Die Datenbank ist gerade belegt (Indexierung) – die Änderung wurde nicht "
+                                 "gespeichert. Bitte in einigen Sekunden erneut versuchen.",
+                            headers={"Retry-After": str(BUSY_RETRY_AFTER)}) from None
+    return _rf_data(request)
+
+
+@router.post("/reihenfolge/ordner")
+def order_folders(request: Request, body: FolderOrderRequest) -> dict:
+    def action(conn, s):
+        if body.reset:
+            reihenfolge.reset_folders(conn)
+        else:
+            reihenfolge.set_folder_order(conn, s.projects_dir, s.index_folder_order, body.order, body.off)
+    return _rf_write(request, action)
+
+
+@router.post("/reihenfolge/vorziehen")
+def order_pin(request: Request, body: PinRequest) -> dict:
+    return _rf_write(request, lambda conn, s: reihenfolge.pin(conn, body.number))
+
+
+@router.post("/reihenfolge/zurueck")
+def order_unpin(request: Request, body: PinRequest) -> dict:
+    return _rf_write(request, lambda conn, s: reihenfolge.unpin(conn, body.number))

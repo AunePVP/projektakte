@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import extract as extract_mod
-from . import extract_worker
+from . import extract_worker, reihenfolge
 from .ai.http import seconds_text
 from .chunking import chunk_pages
 from .documents import (LIMIT_MARK, _read_inside, _sqlite_time, _utcnow, document_date, pending_message, printable,
@@ -87,12 +87,14 @@ class VisionPass:
     """One run of the phase within its time budget (see the module docstring)."""
 
     def __init__(self, conn, llm, *, seconds: float = 1800.0, concurrency: int = 3, projects_dir=None,
-                 progress=None, clock=time.monotonic, prepare=None, extract=None):
+                 progress=None, clock=time.monotonic, prepare=None, extract=None, order=None):
         self.conn, self.llm = conn, llm
         self.seconds = float(seconds)
         self.concurrency = max(1, int(concurrency))
         self.boundary = Path(projects_dir).resolve() if projects_dir else None
         self.progress = progress
+        self.order = order  # reihenfolge.VisionOrder: pinned projects and the folder order first
+        self._project: dict[int, str | None] = {}  # document id → project
         self.clock = clock
         self.prepare = prepare or extract_mod.page_images
         self.extract = extract or extract_mod.extract
@@ -120,7 +122,9 @@ class VisionPass:
                  f", {counts['recheck']} ältere PDF-Datei(en) zu prüfen" if counts["recheck"] else "",
                  self.concurrency, f"{seconds_text(self.seconds)} s" if self.seconds > 0 else "unbegrenzt")
         self._end = self.clock() + self.seconds if self.seconds > 0 else float("inf")
-        self._ids = deque(r[0] for r in self.conn.execute(f"SELECT id FROM documents WHERE vision_pending > 0 {_ORDER}"))
+        rows = self.conn.execute(f"SELECT id, project FROM documents WHERE vision_pending > 0 {_ORDER}").fetchall()
+        self._project = {r[0]: r[1] for r in rows}
+        self._ids = deque(self.order.sort([(r[0], r[1]) for r in rows]) if self.order else (r[0] for r in rows))
         pool = _Pool()  # (app shutdown: answers still on their way are not waited for – daemon threads)
         inflight: dict[Future, _Task] = {}
         while True:
@@ -191,6 +195,8 @@ class VisionPass:
         while True:
             if not self._ids:
                 return None
+            if self.order is not None and self.order.stale():  # the order was changed on the status page
+                self._ids = deque(self.order.sort([(i, self._project.get(i)) for i in self._ids]))
             doc_id = self._ids.popleft()
             if doc_id in self._seen:
                 continue
@@ -209,6 +215,9 @@ class VisionPass:
             if data is None:
                 continue
             doc = _Doc(dict(row), data, deque((r["page"], r["text"]) for r in due))
+            if self.order is not None:
+                number = self._project.get(doc_id)
+                reihenfolge.LIVE.vision_project(number, self.order.project_of(number))
             self._docs[doc_id] = doc
             return doc
 
@@ -448,4 +457,6 @@ def run_vision(conn, llm, settings, *, progress=None) -> dict:
                 "pending_documents": counts["documents"]}
     return VisionPass(conn, llm, seconds=getattr(settings, "vision_pass_seconds", 1800.0),
                       concurrency=getattr(settings, "vision_concurrency", 3),
-                      projects_dir=getattr(settings, "projects_dir", None), progress=progress).run()
+                      projects_dir=getattr(settings, "projects_dir", None), progress=progress,
+                      order=reihenfolge.VisionOrder(conn, getattr(settings, "projects_dir", None),
+                                                    getattr(settings, "index_folder_order", ()))).run()

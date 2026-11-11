@@ -24,11 +24,12 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from markupsafe import Markup, escape
 
-from . import __version__, db, inbox, structure, zeitleiste
+from . import __version__, db, inbox, reihenfolge, structure, zeitleiste
 from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .config import DEFAULT_PROJECT_NUMBER_PATTERN
 from .db import BAUVORHABEN
+from .extract import extraction_profile
 from .registry import as_tree, children, get_project, list_projects, number_regex, project_folders
 from .search import hybrid_search
 from .webtext import (SNIPPET_CHARS, breakable_path, highlight, join_spaced_codes, matcher, parse_blocks, passage,
@@ -1160,10 +1161,13 @@ def document_file(request: Request, doc_id: int, filename: str = ""):
 
 # ------------------------------------------------------------------------------------- status
 @router.get("/status", response_class=HTMLResponse)
-def status_page(request: Request):
+def status_page(request: Request, tab: str = "", q: str = ""):
     from .api import status as api_status
 
-    return render(request, "status.html", st=api_status(request))
+    st = api_status(request)
+    with db.session(_settings(request).db_path) as conn:
+        rf = reihenfolge_context(request, conn, tab, q)
+    return render(request, "status.html", st=st, rf=rf)
 
 
 @router.get("/status/dienste", response_class=HTMLResponse)
@@ -1229,3 +1233,182 @@ def layout_recheck(request: Request, ablehnung: str = Form("")):
     rejected proposal again."""
     return _layout_decision(request, lambda conn, s, user: structure.request_recheck(
         conn, s, forget_rejection=ablehnung == "aufheben"))
+
+
+# --- Reihenfolge: order of the documents pass (reihenfolge.py) – folders, the project being read, the queue
+RF_ANCHOR = "reihenfolge"
+RF_TABS = {"warteschlange": "Warteschlange", "fertig": "Fertig", "alle": "Alle"}
+RF_MAX_ROWS = 50  # rows of the project list; a number typed in the search finds any project
+RF_POLL_RUNNING = 4  # seconds between two updates of "Wird gerade gelesen" while a pass runs
+RF_POLL_IDLE = 30
+
+
+def current_profile(request: Request) -> str:
+    """The extraction profile of this app's model: a project is done only with it (reihenfolge.py)."""
+    ai = getattr(request.app.state, "ai", None)
+    return extraction_profile(getattr(ai, "llm", None))
+
+
+def rf_view(request: Request, conn) -> reihenfolge.View:
+    s = _settings(request)
+    return reihenfolge.view(conn, s.projects_dir, current_profile(request), getattr(s, "index_folder_order", ()))
+
+
+def rf_url(tab: str = "", q: str = "", partial: bool = False) -> str:
+    params = {k: v for k, v in (("tab", tab if tab != "warteschlange" else ""), ("q", q)) if v}
+    base = "/status/reihenfolge/liste" if partial else "/status"
+    return base + (f"?{urlencode(params)}" if params else "") + ("" if partial else f"#{RF_ANCHOR}")
+
+
+def _rf_tab(tab: str) -> str:
+    return tab if tab in RF_TABS else "warteschlange"
+
+
+def _rf_query(q: str) -> str:
+    return (q or "").strip()[:100]
+
+
+def _rf_now(conn, view: reihenfolge.View | None, request: Request) -> dict:
+    """The card "Wird gerade gelesen": the project of the running pass, its files, the phase, the next three."""
+    snap = reihenfolge.LIVE.snapshot()
+    project = snap["project"]
+    if project and not project.get("name"):  # Bildauswertung: only the number is known
+        row = conn.execute("SELECT name FROM projects WHERE number = ?", (project["number"],)).fetchone()
+        project["name"] = row[0] if row else ""
+    if project:
+        project["folder_label"] = reihenfolge.folder_label(project["folder"])
+    if snap["running"]:  # the next projects of this pass – as sorted again after a change meanwhile
+        stale = snap["pending"] and snap["version"] != reihenfolge.version(conn)
+        if stale and view is None:
+            view = rf_view(request, conn)
+        upcoming = reihenfolge.upcoming(snap, view if stale else None)
+    else:  # waiting: the head of the queue for the next pass
+        view = view if view is not None else rf_view(request, conn)
+        upcoming = [e["number"] for e in view.queue[:3]]
+    phase = (snap["phase"] or "").split(" – ")[0]
+    return {"running": snap["running"], "phase": phase, "phase_detail": snap["phase"], "project": project,
+            "seen": snap["seen"], "total": snap["total"], "upcoming": upcoming,
+            "poll": RF_POLL_RUNNING if snap["running"] else RF_POLL_IDLE}
+
+
+def _rf_match(number: str, q: str) -> tuple[str, str, str] | None:
+    """The number split around the searched part (marked in the list)."""
+    i = number.casefold().find(q.casefold()) if q else -1
+    return (number[:i], number[i:i + len(q)], number[i + len(q):]) if i >= 0 else None
+
+
+def reihenfolge_context(request: Request, conn, tab: str = "", q: str = "", note: str = "",
+                        problem: bool = False, limit: int = RF_MAX_ROWS) -> dict:
+    """Everything the section "Reihenfolge" of the status page shows – one pass over the projects (one
+    query, sorted in Python), file counts only for the rows shown."""
+    tab, q = _rf_tab(tab), _rf_query(q)
+    v = rf_view(request, conn)
+    now = _rf_now(conn, v, request)
+    running = now["project"]["number"] if now["running"] and now["project"] and now["phase"] == "Dokumente" else None
+    queue = v.queue
+    done = v.done
+    if running:  # the project being read leads the queue (also one already done that is checked again)
+        queue = [e for e in queue if e["number"] == running] + [e for e in queue if e["number"] != running]
+    rows = {"warteschlange": queue, "fertig": done, "alle": queue + done}[tab]
+    if q:
+        needle = q.casefold()
+        rows = [e for e in rows if needle in e["number"].casefold()]
+    shown = rows[:max(1, limit)]
+    numbers = [e["number"] for e in shown]
+    files: dict[str, int] = {}
+    if numbers:
+        marks = ",".join("?" * len(numbers))
+        files = {r[0]: r[1] for r in conn.execute(
+            f"SELECT project, COUNT(*) FROM documents WHERE mail_id IS NULL AND project IN ({marks}) GROUP BY project",
+            numbers)}
+    position = {e["number"]: i + 1 for i, e in enumerate(queue)}
+    out = []
+    for e in shown:
+        state = ("run" if e["number"] == running else "pin" if e["pinned"] is not None
+                 else "done" if e["done"] else "wait")
+        out.append({"number": e["number"], "name": e["name"], "kind": e["kind"],
+                    "folder": reihenfolge.folder_label(e["folder"]), "files": files.get(e["number"], 0),
+                    "state": state, "done_at": e["done_at"], "skipped": e["done_skipped"] or 0,
+                    "position": position.get(e["number"]) if not (e["done"] and e["pinned"] is None) else None,
+                    "match": _rf_match(e["number"], q)})
+    return {"tab": tab, "q": q, "rows": out, "total": len(rows), "shown": len(out), "queue_count": len(queue),
+            "done_count": len(done), "folders": v.folders, "customized": v.customized, "now": now, "note": note,
+            "problem": problem, "default_order": list(getattr(_settings(request), "index_folder_order", ()))}
+
+
+@router.get("/status/reihenfolge/liste", response_class=HTMLResponse)
+def rf_list(request: Request, tab: str = "", q: str = ""):
+    """The project list (tabs, search) – HTMX swaps it; without JavaScript the status page itself."""
+    if not is_htmx(request):
+        return RedirectResponse(rf_url(_rf_tab(tab), _rf_query(q)), status_code=303)
+    with db.session(_settings(request).db_path) as conn:
+        rf = reihenfolge_context(request, conn, tab, q)
+    return templates.TemplateResponse(request, "_reihenfolge_liste.html", {"rf": rf, "is_partial": True})
+
+
+@router.get("/status/reihenfolge/jetzt", response_class=HTMLResponse)
+def rf_now(request: Request):
+    """The card "Wird gerade gelesen" (polled by HTMX: every few seconds during a pass, rarely otherwise)."""
+    with db.session(_settings(request).db_path) as conn:
+        now = _rf_now(conn, None, request)
+    return templates.TemplateResponse(request, "_reihenfolge_jetzt.html", {"now": now})
+
+
+def _rf_change(request: Request, action, tab: str, q: str):
+    """Run ``action(conn, settings) -> note`` and show the section again: HTMX gets it as a fragment, a
+    form without JavaScript is sent back to the status page (post/redirect/get). Login and the cross-site
+    check are done for every POST route by the middleware (main.access_control)."""
+    s = _settings(request)
+    tab, q = _rf_tab(tab), _rf_query(q)
+    try:
+        with db.session(s.db_path) as conn:
+            note, problem = action(conn, s), False
+    except reihenfolge.OrderError as exc:
+        note, problem = str(exc), True
+    except sqlite3.OperationalError as exc:
+        if not inbox.is_db_busy(exc):
+            raise
+        log.warning("Reihenfolge nicht gespeichert – Datenbank belegt: %s", exc)
+        note, problem = ("Die Datenbank ist gerade belegt (die Indexierung schreibt) – die Änderung wurde nicht "
+                         "gespeichert. Bitte in einigen Sekunden erneut versuchen."), True
+        if not is_htmx(request):
+            return render(request, "error.html", status_code=503, headers={"Retry-After": str(BUSY_RETRY_AFTER)},
+                          title="Bitte gleich noch einmal", message=note, back=rf_url(tab, q),
+                          back_label="Zur Statusseite")
+    if not is_htmx(request):
+        if problem:
+            return render(request, "error.html", status_code=409, title="Reihenfolge nicht geändert", message=note,
+                          back=rf_url(tab, q), back_label="Zur Statusseite")
+        return RedirectResponse(rf_url(tab, q), status_code=303)
+    with db.session(s.db_path) as conn:
+        rf = reihenfolge_context(request, conn, tab, q, note=note, problem=problem)
+    return templates.TemplateResponse(request, "_reihenfolge.html", {"rf": rf})
+
+
+@router.post("/status/reihenfolge/ordner")
+def rf_folder(request: Request, ordner: str = Form(""), aktion: str = Form(""), tab: str = Form(""), q: str = Form("")):
+    """Move a top-level folder up or down, switch it off or on (``aktion``: hoch, runter, aus, an)."""
+    return _rf_change(request, lambda conn, s: reihenfolge.change_folder(
+        conn, s.projects_dir, s.index_folder_order, ordner, aktion), tab, q)
+
+
+@router.post("/status/reihenfolge/standard")
+def rf_reset(request: Request, tab: str = Form(""), q: str = Form("")):
+    """Back to INDEX_FOLDER_ORDER and the default order."""
+    def action(conn, s):
+        reihenfolge.reset_folders(conn)
+        return "Ordner-Reihenfolge auf den Standard zurückgesetzt."
+    return _rf_change(request, action, tab, q)
+
+
+@router.post("/status/reihenfolge/vorziehen")
+def rf_pin(request: Request, nummer: str = Form(""), tab: str = Form(""), q: str = Form("")):
+    return _rf_change(request, lambda conn, s: reihenfolge.pin(conn, nummer), tab, q)
+
+
+@router.post("/status/reihenfolge/zurueck")
+def rf_unpin(request: Request, nummer: str = Form(""), tab: str = Form(""), q: str = Form("")):
+    return _rf_change(request, lambda conn, s: reihenfolge.unpin(conn, nummer), tab, q)
+
+
+templates.env.globals.update(rf_url=rf_url, RF_TABS=RF_TABS)

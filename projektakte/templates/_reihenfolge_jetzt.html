@@ -1,0 +1,18 @@
+{#- Card "Wird gerade gelesen": refreshed by HTMX every few seconds while a pass runs, rarely otherwise. -#}
+<div id="rf-jetzt" class="rf-now" hx-get="/status/reihenfolge/jetzt" hx-trigger="every {{ now.poll }}s" hx-swap="outerHTML">
+  {% if now.running %}
+  <span class="rf-spin" aria-hidden="true"></span>
+  <div class="rf-now-body">
+    {% if now.project %}
+    <div><span class="rf-num">{{ now.project.number }}</span> {{ now.project.name }} <span class="small muted">· Ordner {{ now.project.folder_label }}</span></div>
+    {% endif %}
+    <div class="small muted rf-files">{% if now.project and now.total %}{{ now.seen|de_num }} von {{ now.total|plural('Datei', 'Dateien') }} · {% endif %}<span class="pill">{{ now.phase or 'startet' }}</span>{% if now.phase_detail != now.phase %} <span>{{ now.phase_detail[now.phase|length + 3:] }}</span>{% endif %}</div>
+    {% if now.project and now.total %}<progress class="rf-bar run" max="{{ now.total }}" value="{{ now.seen }}">{{ now.seen }} von {{ now.total }}</progress>{% endif %}
+    {% if now.upcoming %}<div class="small muted rf-next">Danach: {% for n in now.upcoming %}<span class="rf-chip">{{ n }}</span>{{ ' ' if not loop.last }}{% endfor %}</div>{% endif %}
+  </div>
+  {% elif now.upcoming %}
+  <p class="muted">Gerade läuft keine Indexierung. Als Nächstes: {% for n in now.upcoming %}<span class="rf-chip">{{ n }}</span>{{ ' ' if not loop.last }}{% endfor %}</p>
+  {% else %}
+  <p class="muted">Alles gelesen.</p>
+  {% endif %}
+</div>

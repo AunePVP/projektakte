@@ -278,6 +278,9 @@ class Settings:
     # access control
     # folder names whose photos are not sent to the vision model ("Bilder" also matches 263900-Bilder)
     vision_skip_folders: tuple[str, ...] = ()
+    # top-level folders under PROJECTS_DIR whose projects are read first, in this order (INDEX_FOLDER_ORDER);
+    # only a default until someone sets the order on the status page (reihenfolge.py)
+    index_folder_order: tuple[str, ...] = ()
     auth_users: str = field(default="", repr=False)
     auth_users_file: str = ""
     auth_disabled: bool = False
@@ -422,6 +425,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         vision_concurrency=_vision_concurrency(e, warnings),
         vision_pass_seconds=_vision_pass_seconds(e, warnings),
         vision_skip_folders=tuple(w.strip() for w in (e.get("VISION_SKIP_FOLDERS") or "").split(",") if w.strip()),
+        index_folder_order=tuple(dict.fromkeys(w.strip().strip("/") for w in (e.get("INDEX_FOLDER_ORDER") or "").split(",")
+                                               if w.strip().strip("/"))),
         llm_timeout=_timeout(e, "LLM_TIMEOUT", 120.0, warnings),
         llm_max_tokens=_int(e.get("LLM_MAX_TOKENS"), 800),
         llm_extra_body=extra_body,
