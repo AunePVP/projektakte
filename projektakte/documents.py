@@ -24,7 +24,7 @@ from . import dokumentarten, extract_worker, reihenfolge
 from .vectors import CHUNKS_WAITING
 from .db import BAUVORHABEN
 from .chunking import Chunk, chunk_pages
-from .extract import IMAGE_EXT, SUPPORTED_EXT, Extracted, Page, extract, extraction_profile
+from .extract import IMAGE_EXT, SUPPORTED_EXT, Extracted, Page, extract, extraction_profile, profile_key
 from .textutil import find_date, fold
 
 log = logging.getLogger("projektakte.documents")
@@ -105,7 +105,8 @@ def reprocess_due(row, profile: str, now: str, limits: extract_worker.Limits | N
     """Should an unchanged file be extracted again?
 
     Only incomplete results (scan without vision, failed model call, error) are: when the extraction
-    profile changed (e.g. LLM_VISION switched on, another model), when their retry time is due, or – for
+    profile changed (e.g. LLM_VISION switched on, Tesseract installed – not merely another vision model, see
+    extract.profile_key), when their retry time is due, or – for
     a result cut short by a limit of the extraction worker (EXTRACT_CPU_SECONDS, EXTRACT_MEMORY_MB) –
     when ``limits``, those the file would be read under now (None: none, it is read in this process),
     raise that limit."""
@@ -113,7 +114,12 @@ def reprocess_due(row, profile: str, now: str, limits: extract_worker.Limits | N
         return False
     base, marked, limit = (row["extract_profile"] or "").partition(LIMIT_MARK)
     if base != profile:
-        return True
+        # another vision model alone, with scan pages still waiting for stage 2: that phase goes on with the
+        # new model – stage 1 (Tesseract) is not repeated. A file the old model answered emptily or not at
+        # all (images read in one go) is read again with the new one.
+        pending = row["vision_pending"] if "vision_pending" in row.keys() else 0
+        if not (pending and profile_key(base) == profile_key(profile)):
+            return True
     if marked and (limits is None or limits.lifts(limit)):
         return True
     return bool(row["retry_after"]) and row["retry_after"] <= now
@@ -518,7 +524,7 @@ class _ProjectState:
 
     def __init__(self, conn: sqlite3.Connection, number: str, folders: list[Path]):
         self.by_path = {r["path"]: dict(r) for r in conn.execute(
-            "SELECT id, path, rel_path, size, mtime, sha256, incomplete, extract_profile, retry_after "
+            "SELECT id, path, rel_path, size, mtime, sha256, incomplete, extract_profile, retry_after, vision_pending "
             "FROM documents WHERE project = ? AND mail_id IS NULL", (number,))}
         self.by_rel = {r["rel_path"]: r for r in self.by_path.values()}
         self.folders = folders  # the project's current folders, as stored
@@ -812,7 +818,7 @@ def _adopt(conn: sqlite3.Connection, doc_id: int, project: dict, rel_path: str) 
         conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (r["id"],))  # hidden (site inactive) or old title
         add_fts(conn, r["id"], fts_title(r["filename"], number, name, r["heading"]), r["text"])
     return dict(conn.execute(
-        "SELECT id, path, rel_path, size, mtime, sha256, incomplete, extract_profile, retry_after FROM documents "
+        "SELECT id, path, rel_path, size, mtime, sha256, incomplete, extract_profile, retry_after, vision_pending FROM documents "
         "WHERE id = ?", (doc_id,)).fetchone())
 
 
@@ -987,7 +993,7 @@ def reprocess_attachments(conn: sqlite3.Connection, llm=None) -> dict:
     stats = {"reprocessed": 0, "errors": 0}
     rows = conn.execute(
         "SELECT d.id, d.path, d.rel_path, d.project, d.mail_id, d.doc_date, d.cache_path, d.incomplete, "
-        "d.extract_profile, d.retry_after, d.attempts, p.name AS project_name FROM documents d "
+        "d.extract_profile, d.retry_after, d.attempts, d.vision_pending, p.name AS project_name FROM documents d "
         "LEFT JOIN projects p ON p.number = d.project WHERE d.mail_id IS NOT NULL AND d.incomplete = 1"
     ).fetchall()
     for row in rows:

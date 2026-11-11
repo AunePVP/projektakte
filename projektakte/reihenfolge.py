@@ -19,8 +19,8 @@ A site (Bauvorhaben) and its orders stay together: the orders count in the site'
 sorted by the highest order number of the site, and the site's own files come right after its orders.
 
 "Done" (``projects.done_at``) means: a documents pass over all folders of the project ended with the
-current extraction profile (``done_profile``) – a new model or LLM_VISION switched on puts every project
-back into the queue (only incomplete files are read again then). A file that has to be extracted again
+current extraction profile (``done_profile``) – LLM_VISION switched on or Tesseract installed puts every
+project back into the queue (another vision model does not: extract.profile_key) (only incomplete files are read again then). A file that has to be extracted again
 (new, changed, due for a retry) clears ``done_at`` before it is read, so a project interrupted by a restart
 is still in the queue afterwards and is taken first. ``done_skipped`` counts what the project could not read
 (errors, files too large, names in a wrong encoding, folders not listable, documents stored with an error).
@@ -44,6 +44,7 @@ from typing import Iterable
 
 from . import db, zeiten
 from .db import BAUVORHABEN
+from .extract import profile_key
 
 ROOT_FOLDER = ""  # projects that lie directly in PROJECTS_DIR
 ROOT_LABEL = "(direkt im Projektordner)"
@@ -125,7 +126,7 @@ def entries(conn: sqlite3.Connection, projects_dir: Path | str | None, profile: 
     sites = {}
     for e in rows:
         e["folder"] = top_folder(e["path"], projects_dir)
-        e["done"] = bool(e["done_at"]) and (profile is None or e["done_profile"] == profile)
+        e["done"] = bool(e["done_at"]) and (profile is None or profile_key(e["done_profile"] or "") == profile_key(profile))
         e["group"] = e["number"]
         if e["kind"] == BAUVORHABEN:
             sites[e["number"]] = e

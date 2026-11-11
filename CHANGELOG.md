@@ -5,6 +5,8 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- Ein anderes Bildmodell (z. B. ein kleines Abschrift-Modell statt des großen) liest nichts mehr neu: Stufe 1
+  (Tesseract) wird nicht wiederholt, fertige Projekte bleiben fertig; die Bildauswertung macht mit dem neuen Modell weiter.
 - **PDF-Seiten mit Text als Kurven werden gelesen:** Seiten ohne Textebene und ohne Bild (gedruckte Vorschriften
   aus PDF-Druckertreibern, CAD-Pläne mit Text als Umrissen, Schriften ohne Zeichenzuordnung) galten als leer
   („kein Text gefunden“). Jetzt zeichnet PDFium (neue Abhängigkeit `pypdfium2`) die Seite in Graustufen (300 dpi,

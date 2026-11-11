@@ -283,6 +283,17 @@ def extraction_profile(llm, ocr: bool | None = None) -> str:
     return f"v{EXTRACT_VERSION}:text{tail}"
 
 
+_PROFILE_MODEL = re.compile(r":vision:.*?(?=\+ocr|:ohne-fotos|$)")
+
+
+def profile_key(profile: str) -> str:
+    """A profile without the name of the vision model: what decides whether a document or project is read
+    again. The model only reads scan pages in the phase "Bildauswertung" (stage 2), which takes the pages
+    still pending with whatever model is set – another model is no reason to repeat stage 1 (Tesseract)
+    for every incomplete document or to put every finished project back into the queue."""
+    return _PROFILE_MODEL.sub(":vision", profile or "")
+
+
 @dataclass
 class Page:
     number: int | None
