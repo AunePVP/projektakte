@@ -340,6 +340,12 @@ Mit `DEMO_MODE=1` wird der Demo-Datensatz vorher in `$DATA_DIR/demo` erzeugt, fa
 Stand und Zahlen: `GET /api/status`; sofort neu indexieren: `POST /api/reindex` oder
 `python -m projektakte.index` (ein Durchlauf im Vordergrund, ohne Webserver).
 
+**Indexierung pausieren:** Statusseite, Karte „Indexierung“: „Indexierung pausieren“ (oder `POST /api/pause`). Dateien,
+Mails, Bildauswertung, Embeddings und Dokumentarten halten nach dem Schritt an, der gerade läuft (eine Datei, ein Stapel,
+eine Seite); Suche und Fragen funktionieren weiter. „Indexierung fortsetzen“ (`POST /api/resume`) macht an derselben
+Stelle weiter, ein angeforderter Lauf startet dann. Die Pause ist nur im Arbeitsspeicher: nach einem Neustart der
+Anwendung läuft die Indexierung wieder. Dauerhaft nicht lesen: Ordner auf der Statusseite ausschalten.
+
 **Reihenfolge der Projekte:** Jeder Lauf liest die Projekte so: zuerst die vorgezogenen (Statusseite,
 „Vorziehen“), dann die noch nicht fertigen Ordner für Ordner – die obersten Ordner unter `PROJECTS_DIR` in der
 Reihenfolge der Statusseite, sonst `INDEX_FOLDER_ORDER` (z. B. `3,2`), dann die übrigen (nummerierte Ordner
@@ -612,6 +618,7 @@ zugeordnet oder vorgeschlagen, 8 von 8 inhaltlichen Vorschlägen richtig.
 | `GET /health/deps` | Zustand der KI-Dienste und von plMail (erreichbar, Format, Antwortzeit) |
 | `GET /api/status` | Indexierungsstand (Phase, letzter Lauf, Fehler; unter `indexing.vision` und `indexing.embeddings` die Hintergrund-Tätigkeiten) und Zahlen |
 | `POST /api/reindex` | Indexierung sofort anstoßen |
+| `POST /api/pause`, `POST /api/resume` | Indexierung pausieren / fortsetzen (`indexing.pause`: `paused`, `since`) |
 | `GET /api/reihenfolge?tab=&q=&limit=` | Reihenfolge beim Einlesen: `folders` (Name, `enabled`, `rank`, `projects`, `done`), `current` (laufendes Projekt, Phase, `files_done`/`files_total`, `next`, Zeiten in Sekunden: `seconds_running`, `seconds_on_project`, `seconds_per_file_read`, `files_read`, `files_unchanged`, `eta_project_seconds`, `eta_queue_seconds`, `seconds_per_project`), `vision` und `embeddings` (Hintergrund: Stand, Rate, `eta`), `queue`/`done`/`switched_off` (Anzahl) und `projects` des Reiters (`warteschlange`, `fertig`, `alle`; `q` = Teil der Nummer; `limit` höchstens 500) mit `position`, `state` (`run`, `pin`, `wait`, `off`, `done`), `off`, `done_at`, `skipped` |
 | `POST /api/reihenfolge/ordner` | Ordner-Reihenfolge: `{"order": ["3", "2"], "off": ["Archiv"]}` (nicht genannte Ordner danach wie bisher; `off`: wird nicht gelesen) oder `{"reset": true}` (zurück zu `INDEX_FOLDER_ORDER`) |
 | `POST /api/reihenfolge/vorziehen`, `POST /api/reihenfolge/zurueck` | `{"number": "284201"}` vorziehen bzw. wieder an seinen Platz |

@@ -1139,3 +1139,15 @@ Bei rund 3.000 Projekten war die Liste lang und langsam, und die Reihenfolge der
 - *Nur die Anzeige der Reihenfolge gruppiert* (`reihenfolge.group_entries`), nicht der Lauf: Indexer, `Plan`,
   `done_at` je Nummer bleiben, damit bereits Indexiertes gültig ist und nichts neu gelesen wird. Ein Bauvorhaben
   gilt als fertig, wenn alle Mitglieder fertig sind; „Vorziehen“ und „zurück“ wirken auf die ganze Gruppe.
+
+## Indexierung pausieren
+
+Das Einlesen eines großen Bestands dauert Stunden bis Wochen und belastet Dateiserver und KI-Dienste; man will es
+zeitweise anhalten können (Backup, Messung, andere Last).
+- *Ein gemeinsamer Schalter (`pause.PAUSE`)*, den jeder Hintergrund-Thread zwischen zwei Schritten prüft (Datei im
+  Dokument-Lauf, Seite der Bildauswertung, Stapel der Embeddings, Runde der Dokumentarten, Beginn eines Laufs).
+  Kein Abbrechen mitten im Schritt: Ein halb gelesenes Dokument oder ein verworfener Stapel wäre Arbeit für nichts.
+- *Nur im Arbeitsspeicher*: Eine vergessene Pause soll nach einem Neustart nicht den Index still veralten lassen.
+  Für „dauerhaft nicht lesen“ gibt es die Ordner-Schalter.
+- *Beenden löst die Pause*, damit wartende Threads den Stopp sehen und der Container sauber herunterfährt.
+- Suche, Fragen und Mail-Zuordnung von Hand bleiben unberührt.

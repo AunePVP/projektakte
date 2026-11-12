@@ -271,6 +271,19 @@ def reindex(request: Request) -> dict:
     return {"status": "angestoßen"}
 
 
+@router.post("/pause")
+def pause_indexing(request: Request) -> dict:
+    """Pause the indexing between two steps (what is being read finishes first); POST /api/resume goes on."""
+    request.app.state.indexer.pause()
+    return {"status": "pausiert"}
+
+
+@router.post("/resume")
+def resume_indexing(request: Request) -> dict:
+    request.app.state.indexer.resume()
+    return {"status": "läuft"}
+
+
 # -- order of the documents pass (reihenfolge.py; the section "Reihenfolge" of the status page) ---------
 RF_MAX_LIMIT = 500
 

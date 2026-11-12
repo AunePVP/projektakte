@@ -15,6 +15,7 @@ from .ai.services import AIServices
 from .config import Settings
 from .demo_cleanup import demo_purge_note
 from .indexer import run_index
+from .pause import PAUSE
 
 log = logging.getLogger("projektakte.background")
 
@@ -66,6 +67,7 @@ class BackgroundIndexer:
     def stop(self, timeout: float = 10.0) -> None:
         self._stop.set()
         self._wake.set()
+        PAUSE.resume()  # threads waiting in a pause must see the stop
         if self.vision is not None:  # first: no new page images are prepared, answers on their way are dropped
             self.vision.stop(timeout)
         if self.embedder is not None:
@@ -93,7 +95,15 @@ class BackgroundIndexer:
         state["embeddings"] = (embed_worker.LIVE.snapshot() | {"alive": self.embedder.alive}
                                if self.embedder is not None else None)
         state["doc_types"] = dokumentarten.LIVE.snapshot() | {"alive": self.doctypes.alive}
+        state["pause"] = PAUSE.snapshot()
         return state
+
+    def pause(self) -> bool:
+        """Pause all indexing (documents, mails, scan pages, embeddings, document types) between two steps."""
+        return PAUSE.pause()
+
+    def resume(self) -> bool:
+        return PAUSE.resume()
 
     def _set(self, **kw) -> None:
         with self._lock:
@@ -136,6 +146,9 @@ class BackgroundIndexer:
                 log.exception("Demo-Daten konnten nicht erzeugt werden")
                 self._set(last_error=f"Demo-Daten: {exc}")
         while not self._stop.is_set():
+            PAUSE.wait(self._stop)  # no new pass starts while paused
+            if self._stop.is_set():
+                break
             self._wake.clear()
             self.run_once()
             interval = self.settings.index_interval

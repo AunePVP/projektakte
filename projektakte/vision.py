@@ -45,6 +45,7 @@ from .chunking import chunk_pages
 from .documents import (LIMIT_MARK, _read_inside, _sqlite_time, _utcnow, document_date, pending_message, printable,
                         real_folder, retry_delay, sha256, store_page_texts, stored_profile, write_chunks)
 from .extract import IMAGE_EXT, UNCHANGED, Page, extraction_profile, vision_prompt
+from .pause import PAUSE
 
 log = logging.getLogger("projektakte.vision")
 
@@ -202,6 +203,7 @@ class VisionPass:
         return self.clock() < self._end
 
     def _check_stop(self) -> None:
+        PAUSE.wait(self.stop)  # paused: wait here (a page already at the model is finished first)
         if self.stop is not None and self.stop.is_set():  # the app shuts down
             raise extract_worker.ExtractionAborted("Bildauswertung wird beendet")
         worker = extract_worker.current() if self.worker is extract_worker._PASS else self.worker
@@ -702,6 +704,9 @@ class VisionWorker:
         conn = None
         try:
             while not self._stop.is_set():
+                PAUSE.wait(self._stop)
+                if self._stop.is_set():
+                    break
                 documents.VISION_WAITING.clear()
                 try:
                     if conn is None:

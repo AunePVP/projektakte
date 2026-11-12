@@ -35,6 +35,7 @@ import time
 
 from . import db, vectors, zeiten
 from .ai import AIServiceError
+from .pause import PAUSE
 
 log = logging.getLogger("projektakte.embed_worker")
 
@@ -131,6 +132,9 @@ class EmbedWorker:
         conn = None
         try:
             while not self._stop.is_set():
+                PAUSE.wait(self._stop)
+                if self._stop.is_set():
+                    break
                 vectors.CHUNKS_WAITING.clear()
                 try:
                     if conn is None:

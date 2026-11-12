@@ -25,6 +25,7 @@ from .vectors import CHUNKS_WAITING
 from .db import BAUVORHABEN
 from .chunking import Chunk, chunk_pages
 from .extract import IMAGE_EXT, SUPPORTED_EXT, Extracted, Page, extract, extraction_profile, profile_key
+from .pause import PAUSE
 from .textutil import find_date, fold
 
 log = logging.getLogger("projektakte.documents")
@@ -687,6 +688,7 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
         files = []
     run.listed(len(files))
     for f in files:
+        PAUSE.wait()  # a pause on the status page holds the pass between two files
         if not run.step():  # its folder was switched off on the status page: stop after the file read last
             break
         if f.suffix.lower() not in SUPPORTED_EXT:

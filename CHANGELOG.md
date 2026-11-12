@@ -5,6 +5,11 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Indexierung pausieren:** Auf der Statusseite gibt es „Indexierung pausieren“ / „Indexierung fortsetzen“ (API:
+  `POST /api/pause`, `POST /api/resume`). Die Pause gilt für alles Einlesen nebenher – Dateien, Mails, Scan-Seiten
+  der Bildauswertung, Embeddings und Dokumentarten. Was gerade gelesen wird, wird noch fertig; danach wartet alles,
+  und nach dem Fortsetzen geht es an derselben Stelle weiter. Suche und Fragen laufen unverändert. Die Pause gilt
+  nur bis zum Neustart der Anwendung.
 - **Projektübersicht mit Ordneransichten (Einstellung je Person unter „Einstellungen“):** neben der Liste gibt es
   *Kacheln* (erst die Ordner 1–9, ein Klick zeigt 20–29, dann die Projekte) und *Spalten* (Ordner, Unterordner und
   Projekte nebeneinander). Beide laden nur Zählungen, bis ein Ordner geöffnet wird (höchstens 100 Projekte, „Alle

@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from .pause import PAUSE
 from .textutil import STOPWORDS, Synonyms, fold, stem
 
 log = logging.getLogger("projektakte.dokumentarten")
@@ -815,6 +816,9 @@ class DokumentartWorker:
         conn = None
         try:
             while not self._stop.is_set():
+                PAUSE.wait(self._stop)
+                if self._stop.is_set():
+                    break
                 WAITING.clear()
                 pause = 0.0
                 try:

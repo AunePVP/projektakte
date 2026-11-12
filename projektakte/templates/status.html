@@ -6,7 +6,7 @@
   <section class="card">
     <h2>Indexierung</h2>
     <dl class="meta">
-      <dt>Zustand</dt><dd>{{ 'läuft (' ~ st.indexing.phase ~ ')' if st.indexing.running else 'wartet' }}{% if eye %} · Bildauswertung {{ ('läuft, ' ~ eye.concurrency ~ ' gleichzeitig') if eye.busy else ('wartet' if eye.alive else 'beendet') }}{% endif %}{% if emb %} · Embeddings {{ 'laufen' if emb.busy else ('warten' if emb.alive else 'beendet') }}{% endif %}</dd>
+      <dt>Zustand</dt><dd>{% if st.indexing.pause.paused %}<strong>pausiert</strong> seit {{ st.indexing.pause.since|de_date(true) }} (angefangene Schritte werden noch beendet) · {% endif %}{{ 'läuft (' ~ st.indexing.phase ~ ')' if st.indexing.running else 'wartet' }}{% if eye %} · Bildauswertung {{ ('läuft, ' ~ eye.concurrency ~ ' gleichzeitig') if eye.busy else ('wartet' if eye.alive else 'beendet') }}{% endif %}{% if emb %} · Embeddings {{ 'laufen' if emb.busy else ('warten' if emb.alive else 'beendet') }}{% endif %}</dd>
       <dt>Läufe</dt><dd>{{ st.indexing.runs|de_num }}</dd>
       <dt>Letzter Lauf</dt><dd>{{ st.indexing.last_finished|de_date(true) }}</dd>
       <dt>Nächster Lauf</dt><dd>{{ st.indexing.next_run|de_date(true) if st.indexing.next_run else 'auf Anforderung' }}</dd>
@@ -14,6 +14,11 @@
       {% if st.indexing.last_warnings %}<dt>Hinweise</dt><dd>{% for w in st.indexing.last_warnings %}<p class="note warn">{{ w }}</p>{% endfor %}</dd>{% endif %}
     </dl>
     <form method="post" action="/status/neu-indexieren"><button>Jetzt neu indexieren</button></form>
+    {% if st.indexing.pause.paused %}
+    <form method="post" action="/status/fortsetzen"><button>Indexierung fortsetzen</button></form>
+    {% else %}
+    <form method="post" action="/status/pausieren"><button>Indexierung pausieren</button></form>
+    {% endif %}
   </section>
   <section class="card">
     <h2>Bestand</h2>

@@ -1404,6 +1404,18 @@ def reindex_now(request: Request):
     return RedirectResponse("/status", status_code=303)
 
 
+@router.post("/status/pausieren")
+def pause_indexing(request: Request):
+    request.app.state.indexer.pause()
+    return RedirectResponse("/status", status_code=303)
+
+
+@router.post("/status/fortsetzen")
+def resume_indexing(request: Request):
+    request.app.state.indexer.resume()
+    return RedirectResponse("/status", status_code=303)
+
+
 # --- project structure (PROJECT_NUMBER_PATTERN=auto): a person confirms or rejects a proposal
 LAYOUT_ANCHOR = "/status#projektordner"
 
