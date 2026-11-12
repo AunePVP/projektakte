@@ -281,7 +281,29 @@ def test_orders_of_a_site_count_in_the_sites_folder(tmp_path, recorded):
     run_index(s)
     assert recorded == ["101500", "1015", "284205", "284201", "2842"]
     data = client_for(s).get("/api/reihenfolge?tab=alle").json()
-    assert {p["number"]: p["folder"] for p in data["projects"]}["284201"] == "2"
+    # only the sites are projects in the list; their orders belong to them (count in the site's folder)
+    assert {p["number"]: p["folder"] for p in data["projects"]} == {"2842": "2", "1015": "1"}
+    assert {p["number"]: p["orders"] for p in data["projects"]} == {"2842": 2, "1015": 1}
+    assert data["folders"][0]["projects"] == 1 and data["queue"] + data["done"] == 2  # sites, not orders
+
+
+def test_pinning_a_site_pins_its_orders_too(tmp_path):
+    root = tmp_path / "projekte"
+    for o in ("284201_Neubau Kita", "284205_Sporthalle"):
+        (root / "2" / "2842_Wohnanlage" / o).mkdir(parents=True)
+        (root / "2" / "2842_Wohnanlage" / o / "Notiz.txt").write_text("Rettungsweg", encoding="utf-8")
+    s = settings(tmp_path, PROJECT_FOLDER_DEPTH="3", PROJECT_PARENT_DIGITS="4")
+    run_index(s)
+    with db.session(s.db_path) as conn:
+        conn.execute("UPDATE projects SET done_at = NULL")
+    c = client_for(s)
+    c.post("/status/reihenfolge/vorziehen", data={"nummer": "2842"})
+    with db.session(s.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM projects WHERE pinned IS NOT NULL").fetchone()[0] == 3
+    assert [p["state"] for p in c.get("/api/reihenfolge").json()["projects"]] == ["pin"]
+    c.post("/status/reihenfolge/zurueck", data={"nummer": "2842"})
+    with db.session(s.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM projects WHERE pinned IS NOT NULL").fetchone()[0] == 0
 
 
 # -- pinning -----------------------------------------------------------------------------------------------

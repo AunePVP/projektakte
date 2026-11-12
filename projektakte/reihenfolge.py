@@ -137,6 +137,33 @@ def entries(conn: sqlite3.Connection, projects_dir: Path | str | None, profile: 
     return rows
 
 
+def group_entries(items: list[dict]) -> list[dict]:
+    """Collapse each site (Bauvorhaben) and its orders into ONE entry, in the order of ``items`` (the order
+    of the first member). Display only: a site is the project, its orders are only part of it. The entry
+    is the site's row with the state of the whole group: done only when all members are done, pinned when
+    any is, ``done_skipped`` summed, ``done_at`` the latest. ``members`` lists the numbers of the group.
+    Orders without a site row stay entries of their own."""
+    groups: dict[str, list[dict]] = {}
+    for e in items:
+        groups.setdefault(e["group"], []).append(e)
+    out, seen = [], set()
+    for e in items:
+        if e["group"] in seen:
+            continue
+        seen.add(e["group"])
+        members = groups[e["group"]]
+        head = next((m for m in members if m["kind"] == BAUVORHABEN), members[0])
+        pins = [m["pinned"] for m in members if m["pinned"] is not None]
+        done_ats = [m["done_at"] for m in members if m["done_at"]]
+        out.append({**head, "members": [m["number"] for m in members],
+                    "done": all(m["done"] for m in members),
+                    "pinned": min(pins) if pins else None,
+                    "done_at": max(done_ats) if done_ats else None,
+                    "done_skipped": sum(m["done_skipped"] or 0 for m in members),
+                    "off": head.get("off", False)})
+    return out
+
+
 def folders(conn: sqlite3.Connection, present: Iterable[str], default: Iterable[str] = ()) -> list[dict]:
     """The top-level folders holding projects (``present``) in their reading order: as set on the status
     page, else ``default`` (INDEX_FOLDER_ORDER), then the others (:func:`default_key`); switched-off
@@ -212,6 +239,24 @@ class View:
         return sorted((e for e in self.order if e["done"] and e["pinned"] is None),
                       key=lambda e: e["done_at"] or "", reverse=True)
 
+    # Grouped for display: a site with its orders is one project (see group_entries).
+    @property
+    def grouped(self) -> list[dict]:
+        return group_entries(self.order)
+
+    @property
+    def queue_groups(self) -> list[dict]:
+        return [e for e in self.grouped if not e["off"] and (not e["done"] or e["pinned"] is not None)]
+
+    @property
+    def off_groups(self) -> list[dict]:
+        return [e for e in self.grouped if e["off"] and (not e["done"] or e["pinned"] is not None)]
+
+    @property
+    def done_groups(self) -> list[dict]:
+        return sorted((e for e in self.grouped if e["done"] and e["pinned"] is None),
+                      key=lambda e: e["done_at"] or "", reverse=True)
+
 
 def view(conn: sqlite3.Connection, projects_dir: Path | str | None, profile: str | None,
          default: Iterable[str] = ()) -> View:
@@ -220,11 +265,10 @@ def view(conn: sqlite3.Connection, projects_dir: Path | str | None, profile: str
     mark_off(items, folder_list)
     order = ordered(items, folder_list)
     counts: dict[str, list[int]] = {}
-    for e in items:
-        if e["kind"] != BAUVORHABEN:  # "N von M Projekten" like the Bestand card: orders, no sites
-            c = counts.setdefault(e["folder"], [0, 0])
-            c[0] += 1
-            c[1] += e["done"]
+    for e in group_entries(items):  # "N von M Projekten": one per site with its orders, orders do not count
+        c = counts.setdefault(e["folder"], [0, 0])
+        c[0] += 1
+        c[1] += e["done"]
     place = 0
     for i, f in enumerate(folder_list):
         f["label"] = folder_label(f["name"])
@@ -315,26 +359,44 @@ def _active(conn: sqlite3.Connection, number: str) -> sqlite3.Row:
     return row
 
 
+def _group_numbers(conn: sqlite3.Connection, row: sqlite3.Row) -> list[str]:
+    """The project itself, for a site also all its active orders (pinned and unpinned together)."""
+    kind = conn.execute("SELECT kind FROM projects WHERE number = ?", (row["number"],)).fetchone()[0]
+    if kind != BAUVORHABEN:
+        return [row["number"]]
+    kids = [r[0] for r in conn.execute("SELECT number FROM projects WHERE parent = ? AND active = 1 ORDER BY number",
+                                       (row["number"],))]
+    return [row["number"], *kids]
+
+
 def pin(conn: sqlite3.Connection, number: str, projects_dir=None, default: Iterable[str] = ()) -> str:
-    """Move a project to the front: after the running one and the projects pinned before it. Not for a
-    project of a folder switched off (it is not read at all: switch the folder on first)."""
+    """Move a project to the front: after the running one and the projects pinned before it. A site is
+    moved with all its orders. Not for a project of a folder switched off (it is not read at all: switch
+    the folder on first)."""
     row = _active(conn, number)
     items = entries(conn, projects_dir, None)
     folder = next((e["folder"] for e in items if e["number"] == row["number"]), ROOT_FOLDER)
     if any(f["name"] == folder and not f["enabled"] for f in folders(conn, {e["folder"] for e in items}, default)):
         raise OrderError(f"{row['number']} liegt im ausgeschalteten Ordner {folder_label(folder)} und wird nicht "
                          f"gelesen – erst den Ordner einschalten.")
-    if row["pinned"] is None:
-        top = conn.execute("SELECT COALESCE(MAX(pinned), 0) FROM projects").fetchone()[0]
-        conn.execute("UPDATE projects SET pinned = ? WHERE number = ?", (top + 1, row["number"]))
+    changed = False
+    for n in _group_numbers(conn, row):
+        if conn.execute("SELECT pinned FROM projects WHERE number = ?", (n,)).fetchone()[0] is None:
+            top = conn.execute("SELECT COALESCE(MAX(pinned), 0) FROM projects").fetchone()[0]
+            conn.execute("UPDATE projects SET pinned = ? WHERE number = ?", (top + 1, n))
+            changed = True
+    if changed:
         _bump(conn)
     return f"{row['number']} vorgezogen – kommt als Nächstes dran."
 
 
 def unpin(conn: sqlite3.Connection, number: str) -> str:
     row = _active(conn, number)
-    if row["pinned"] is not None:
-        conn.execute("UPDATE projects SET pinned = NULL WHERE number = ?", (row["number"],))
+    changed = False
+    for n in _group_numbers(conn, row):
+        cur = conn.execute("UPDATE projects SET pinned = NULL WHERE number = ? AND pinned IS NOT NULL", (n,))
+        changed = changed or cur.rowcount > 0
+    if changed:
         _bump(conn)
     return f"{row['number']} wieder an seinem Platz."
 

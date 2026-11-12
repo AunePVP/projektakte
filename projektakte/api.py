@@ -282,7 +282,7 @@ def _rf_data(request: Request, tab: str = "", q: str = "", limit: int = 50) -> d
         rf = reihenfolge_context(request, conn, tab, q, limit=max(1, min(limit, RF_MAX_LIMIT)))
     now = rf["now"]
     projects = [{k: p[k] for k in ("position", "number", "name", "kind", "folder", "files", "state", "done_at",
-                                   "skipped", "off")} for p in rf["rows"]]
+                                   "skipped", "off", "orders")} for p in rf["rows"]]
     times = now["times"]
     return structure.clean({
         "folders": [{"name": f["name"], "label": f["label"], "enabled": f["enabled"], "rank": f["rank"],
