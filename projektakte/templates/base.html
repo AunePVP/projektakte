@@ -22,7 +22,7 @@
   </nav>
   <div class="user">
     {% if indexing and indexing.running %}<span class="pill busy" title="Indexierung läuft">Indexiert: {{ indexing.phase }}</span>{% endif %}
-    {% if user %}<span>Angemeldet: {{ user }}</span> <form method="post" action="/logout" class="inline"><button class="link">Abmelden</button></form>{% endif %}
+    {% if user %}<span>Angemeldet: {{ user }}</span> <a href="/einstellungen">Einstellungen</a> <form method="post" action="/logout" class="inline"><button class="link">Abmelden</button></form>{% endif %}
   </div>
 </header>
 {% if (auth_disabled if auth_disabled is defined else auth_disabled_for(request)) %}

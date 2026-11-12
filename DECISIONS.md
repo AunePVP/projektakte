@@ -1126,3 +1126,16 @@ u. Ä.), in denen ebenfalls Ordner mit Projektnummern liegen. Sie sollen nicht g
   Lauf nichts und warnt – wie bei einem leeren Projektordner.
 - Die Strukturerkennung (`PROJECT_NUMBER_PATTERN=auto`, `python -m projektakte.structure`) sieht weiter die ganze
   Freigabe; sie schlägt nur ein Schema vor.
+
+## Projektübersicht: Ordneransichten und Unterprojekte als Teil des Projekts
+
+Bei rund 3.000 Projekten war die Liste lang und langsam, und die Reihenfolge der Indexierung zählte Unterprojekte
+(sechsstellig) als eigene Projekte neben dem vierstelligen Bauvorhaben.
+- *Ansicht je Person, in `meta`* (`ansicht:<Nutzer>`), keine neue Tabelle: Liste (Standard, wie bisher), Kacheln,
+  Spalten. Der Standard bleibt die Liste, damit nichts ungefragt anders aussieht.
+- *Server rendert, Links statt JavaScript*: die Ordneransichten brauchen nur eine gruppierte Zählabfrage und beim
+  Öffnen eines Ordners die Projekte dieses Präfixes (Seitengröße 100).
+- *Ein Projekt = Zeile ohne Bauvorhaben-Elternteil*: Unterprojekte zählen nie mit.
+- *Nur die Anzeige der Reihenfolge gruppiert* (`reihenfolge.group_entries`), nicht der Lauf: Indexer, `Plan`,
+  `done_at` je Nummer bleiben, damit bereits Indexiertes gültig ist und nichts neu gelesen wird. Ein Bauvorhaben
+  gilt als fertig, wenn alle Mitglieder fertig sind; „Vorziehen“ und „zurück“ wirken auf die ganze Gruppe.

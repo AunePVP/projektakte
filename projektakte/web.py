@@ -396,13 +396,100 @@ def _project_rows(conn, q: str, today: date | None = None) -> list[dict]:
 
 
 # ------------------------------------------------------------------------------------- pages
+# -- project overview: three views, chosen per person on /einstellungen --------------------------------
+ANSICHTEN = {"liste": "Liste (alle Projekte untereinander)",
+             "kacheln": "Kacheln (Ordner 1–9, dann 20–29, dann die Projekte)",
+             "spalten": "Spalten (Ordner, Unterordner und Projekte nebeneinander)"}
+DEFAULT_ANSICHT = "liste"
+PAGE_ROWS = 100  # projects shown at once in the folder views
+# A project is a row that is not an order of a site: sites and projects without a site (orders are part of
+# their site, they are never counted as projects of their own).
+_TOP_LEVEL = "active = 1 AND (kind = 'bauvorhaben' OR parent IS NULL OR parent = '')"
+
+
+def _pref_key(user: str | None) -> str:
+    return f"ansicht:{user or ''}"
+
+
+def user_ansicht(conn, user: str | None) -> str:
+    value = db.get_meta(conn, _pref_key(user), DEFAULT_ANSICHT)
+    return value if value in ANSICHTEN else DEFAULT_ANSICHT
+
+
+def _prefix(value: str, length: int) -> str:
+    """A folder prefix from the address: ``length`` characters, no wildcard characters."""
+    value = re.sub(r"[^0-9A-Za-z]", "", value or "")
+    return value[:length] if len(value) >= length else ""
+
+
+def folder_counts(conn, length: int, under: str = "") -> list[dict]:
+    """Projects (not orders) per folder of ``length`` characters of the number, below ``under``. One grouped
+    query – no project is loaded."""
+    rows = conn.execute(f"SELECT substr(number, 1, ?) AS k, COUNT(*) AS n FROM projects WHERE {_TOP_LEVEL} "
+                        "AND number LIKE ? GROUP BY k ORDER BY k", (length, under + "%")).fetchall()
+    return [{"key": r["k"], "count": r["n"]} for r in rows]
+
+
+def folder_projects(conn, prefix: str, limit: int, today: date | None = None) -> tuple[list[dict], int]:
+    """The projects of one folder with their orders (as a tree, like the list), at most ``limit`` projects;
+    plus the number of all projects in the folder."""
+    total = conn.execute(f"SELECT COUNT(*) FROM projects WHERE {_TOP_LEVEL} AND number LIKE ?", (prefix + "%",)).fetchone()[0]
+    sites = [r[0] for r in conn.execute(f"SELECT number FROM projects WHERE {_TOP_LEVEL} AND number LIKE ? "
+                                        "ORDER BY number DESC LIMIT ?", (prefix + "%", limit))]
+    if not sites:
+        return [], total
+    marks = ",".join("?" * len(sites))
+    rows = [dict(r) for r in conn.execute(
+        "SELECT number, name, path, active, parent, kind FROM projects WHERE active = 1 AND "
+        f"(number IN ({marks}) OR parent IN ({marks}))", sites + sites)]
+    rows.sort(key=lambda r: r["number"], reverse=True)
+    return _with_activity(as_tree(rows), _activity(conn, today)), total
+
+
+def _overview(request: Request, conn, ansicht: str, o: str, p: str, sel: str) -> dict:
+    """What the folder views show: level 1 (folders 1–9), level 2 (20–29) or the projects of a folder."""
+    o1 = _prefix(o, 1)
+    o2 = _prefix(p or o, 2)
+    if o2 and o1 and not o2.startswith(o1):
+        o2 = ""
+    ctx: dict = {"ansicht": ansicht, "o1": o1, "o2": o2, "sel": sel}
+    ctx["level1"] = folder_counts(conn, 1)
+    if o1:
+        ctx["level2"] = folder_counts(conn, 2, o1)
+    if o2:
+        ctx["projects"], ctx["total"] = folder_projects(conn, o2, PAGE_ROWS if not request.query_params.get("alle") else 10**6)
+        ctx["more"] = ctx["total"] - sum(1 for x in ctx["projects"] if x["depth"] == 0)
+    return ctx
+
+
 @router.get("/", response_class=HTMLResponse)
-def projects_page(request: Request, q: str = ""):
+def projects_page(request: Request, q: str = "", o: str = "", p: str = "", sel: str = ""):
+    user = getattr(request.state, "user", None)
     with db.session(_settings(request).db_path) as conn:
+        ansicht = user_ansicht(conn, user)
+        if ansicht != "liste" and not q.strip():
+            ctx = _overview(request, conn, ansicht, o, p, sel)
+            return render(request, "projects_ordner.html", q=q, **ctx)
         projects = _project_rows(conn, q)
     if is_htmx(request):
         return templates.TemplateResponse(request, "_project_rows.html", {"projects": projects, "q": q})
-    return render(request, "projects.html", projects=projects, q=q)
+    return render(request, "projects.html", projects=projects, q=q, ansicht=ansicht)
+
+
+@router.get("/einstellungen", response_class=HTMLResponse)
+def settings_page(request: Request, gespeichert: str = ""):
+    with db.session(_settings(request).db_path) as conn:
+        current = user_ansicht(conn, getattr(request.state, "user", None))
+    return render(request, "einstellungen.html", ansichten=ANSICHTEN, current=current, saved=bool(gespeichert))
+
+
+@router.post("/einstellungen")
+def settings_save(request: Request, ansicht: str = Form("")):
+    if ansicht not in ANSICHTEN:
+        raise HTTPException(status_code=400, detail="Unbekannte Ansicht.")
+    with db.session(_settings(request).db_path) as conn:
+        db.set_meta(conn, _pref_key(getattr(request.state, "user", None)), ansicht)
+    return RedirectResponse("/einstellungen?gespeichert=1", status_code=303)
 
 
 def _project_attachments(conn, number: str) -> list[dict]:
@@ -1520,17 +1607,19 @@ def reihenfolge_context(request: Request, conn, tab: str = "", q: str = "", note
     v = rf_view(request, conn)
     now = _rf_now(conn, v, request)
     running = now["project"]["number"] if now["running"] and now["project"] and now["phase"] == "Dokumente" else None
-    queue = v.queue
-    done = v.done
-    off = v.switched_off
+    queue = v.queue_groups  # a site with its orders is one project here (reihenfolge.group_entries)
+    done = v.done_groups
+    off = v.off_groups
+    if running:  # the running order counts as its site
+        running = next((e["number"] for e in v.grouped if running in e["members"]), running)
     if running:  # the project being read leads the queue (also one already done that is checked again)
         queue = [e for e in queue if e["number"] == running] + [e for e in queue if e["number"] != running]
     rows = {"warteschlange": queue, "fertig": done, "alle": queue + off + done}[tab]
     if q:
         needle = q.casefold()
-        rows = [e for e in rows if needle in e["number"].casefold()]
+        rows = [e for e in rows if any(needle in n.casefold() for n in e["members"])]
     shown = rows[:max(1, limit)]
-    numbers = [e["number"] for e in shown]
+    numbers = [n for e in shown for n in e["members"]]
     files: dict[str, int] = {}
     if numbers:
         marks = ",".join("?" * len(numbers))
@@ -1543,7 +1632,8 @@ def reihenfolge_context(request: Request, conn, tab: str = "", q: str = "", note
         state = ("run" if e["number"] == running else "done" if e["done"] and e["pinned"] is None
                  else "off" if e["off"] else "pin" if e["pinned"] is not None else "done" if e["done"] else "wait")
         out.append({"number": e["number"], "name": e["name"], "kind": e["kind"],
-                    "folder": reihenfolge.folder_label(e["folder"]), "files": files.get(e["number"], 0),
+                    "folder": reihenfolge.folder_label(e["folder"]),
+                    "files": sum(files.get(n, 0) for n in e["members"]), "orders": len(e["members"]) - (e["kind"] == "bauvorhaben"),
                     "state": state, "done_at": e["done_at"], "skipped": e["done_skipped"] or 0, "off": e["off"],
                     "position": position.get(e["number"]),
                     "match": _rf_match(e["number"], q)})

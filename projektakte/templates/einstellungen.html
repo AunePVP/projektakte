@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Einstellungen{% endblock %}
+{% block content %}
+<h1>Einstellungen</h1>
+{% if saved %}<div class="notice ok" role="status">Gespeichert.</div>{% endif %}
+<form method="post" action="/einstellungen" class="card">
+  <h2>Ansicht der Projektübersicht</h2>
+  <p class="muted small">Gilt nur für {{ user or 'Sie' }}. Die Ordneransichten laden erst beim Öffnen eines Ordners und sind bei sehr vielen Projekten deutlich schneller.</p>
+  {% for key, label in ansichten.items() %}
+  <p><label><input type="radio" name="ansicht" value="{{ key }}"{% if key == current %} checked{% endif %}> {{ label }}</label></p>
+  {% endfor %}
+  <button>Speichern</button>
+</form>
+{% endblock %}

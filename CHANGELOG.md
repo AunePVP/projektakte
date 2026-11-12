@@ -5,6 +5,15 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Projektübersicht mit Ordneransichten (Einstellung je Person unter „Einstellungen“):** neben der Liste gibt es
+  *Kacheln* (erst die Ordner 1–9, ein Klick zeigt 20–29, dann die Projekte) und *Spalten* (Ordner, Unterordner und
+  Projekte nebeneinander). Beide laden nur Zählungen, bis ein Ordner geöffnet wird (höchstens 100 Projekte, „Alle
+  anzeigen“ für den Rest) – bei rund 3.000 Projekten viel schneller. Standard bleibt die Liste; der Filter
+  „Nummer oder Name“ zeigt in jeder Ansicht die Trefferliste.
+- **Unterprojekte zählen nicht mehr als eigene Projekte:** in der Reihenfolge der Indexierung (Warteschlange, Fertig,
+  Alle, Ordnerzähler „N von M Projekten“, `/api/reihenfolge`) ist ein Bauvorhaben mit seinen Unterprojekten *eine*
+  Zeile („3 Unterprojekte“). „Vorziehen“ zieht das Bauvorhaben mit allen Unterprojekten vor. Das Einlesen selbst ist
+  unverändert (die Datenbank wird nicht angefasst, schon Indexiertes bleibt gültig); nur die Anzeige gruppiert.
 - Anzeige der Bildauswertung: „eine Seite alle 5,2 s (689 Seiten/Std.; einzelne Anfrage Ø 1 Min. 55 s)“ statt „Ø 1 Min. 55 s je Seite“ –
   bei vielen gleichzeitigen Anfragen sagt die Dauer einer Anfrage nichts über den Durchsatz.
 - `TESSERACT=0` schaltet die Texterkennung ab: Scan-Seiten liest dann nur das Bildmodell (Stufe 1 wird viel schneller,
