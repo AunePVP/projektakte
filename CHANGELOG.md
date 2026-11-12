@@ -5,6 +5,8 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- Anzeige der Bildauswertung: „eine Seite alle 5,2 s (689 Seiten/Std.; einzelne Anfrage Ø 1 Min. 55 s)“ statt „Ø 1 Min. 55 s je Seite“ –
+  bei vielen gleichzeitigen Anfragen sagt die Dauer einer Anfrage nichts über den Durchsatz.
 - `TESSERACT=0` schaltet die Texterkennung ab: Scan-Seiten liest dann nur das Bildmodell (Stufe 1 wird viel schneller,
   die Seiten sind erst nach der Bildauswertung durchsuchbar). Ausschalten liest nichts neu.
 - Ein anderes Bildmodell (z. B. ein kleines Abschrift-Modell statt des großen) liest nichts mehr neu: Stufe 1

@@ -24,7 +24,7 @@
   <div class="rf-bg small">
     <span class="pill">Bildauswertung</span>
     {% if v.busy %}läuft, {{ v.in_flight or 0 }} von {{ v.concurrency }} gleichzeitig beim Modell{% if v.document %} · {{ v.document.name }}, Seite {{ v.document.page }}{% endif %}{% if v.project %} · <span class="rf-num">{{ v.project.number }}</span>{% endif %} · {{ v.pending|plural('Seite', 'Seiten') }} ausstehend
-      {%- if v.per_hour %} · Ø {{ v.per_page|je }} je Seite · {{ v.per_hour|round|int|de_num }} Seiten/Std. · fertig grob {{ v.eta|etwa }}{% elif v.per_page %} · Ø {{ v.per_page|je }} je Seite{% endif %}
+      {%- if v.per_hour %} · eine Seite alle {{ (3600 / v.per_hour)|je }} ({{ v.per_hour|round|int|de_num }} Seiten/Std.; einzelne Anfrage Ø {{ v.per_page|je }}) · fertig grob {{ v.eta|etwa }}{% elif v.per_page %} · einzelne Anfrage Ø {{ v.per_page|je }}{% endif %}
     {%- elif v.alive %}wartet – keine Seiten ausstehend{% else %}beendet{% endif %}
     {%- if v.off_pages %} <span class="muted">· {{ v.off_pages|plural('Seite', 'Seiten') }} in ausgeschalteten Ordnern</span>{% endif %}
     {%- if v.error %} <span class="warn">· Fehler: {{ v.error }}</span>{% endif %}
