@@ -337,3 +337,27 @@ table.list.rf-list form { margin: 0; }
   .bt-inline .bt-frame { height: 70vh; }
 }
 @media print { .bt-panel { display: none !important; } }
+
+/* project overview: folder views (tiles, columns) */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: .75rem; margin: .8rem 0; }
+.tile { display: flex; flex-direction: column; gap: .1rem; padding: .9rem 1rem; background: var(--card); border: 1px solid var(--line);
+        border-radius: 10px; color: var(--text); }
+.tile:hover { border-color: var(--accent); text-decoration: none; }
+.tile .big { font-size: 2.3rem; font-weight: 700; color: var(--accent); line-height: 1.1; }
+.tile .rng { font-size: .85rem; color: var(--muted); }
+.tile .cnt { margin-top: .4rem; font-weight: 600; }
+.tile.empty { opacity: .45; pointer-events: none; }
+.ordner-crumbs { margin: .8rem 0; font-size: .95rem; }
+.cols { display: grid; grid-template-columns: 9rem 11rem minmax(0, 1fr); background: var(--card); border: 1px solid var(--line);
+        border-radius: var(--radius); margin-top: .8rem; overflow: hidden; }
+.cols .col { border-right: 1px solid var(--line); max-height: 40rem; overflow-y: auto; min-width: 0; }
+.cols .col:last-child { border-right: 0; }
+.cols h2 { position: sticky; top: 0; margin: 0; padding: .5rem .8rem; font-size: .78rem; letter-spacing: .06em; text-transform: uppercase;
+           color: var(--muted); background: #f0f2f5; border-bottom: 1px solid var(--line); }
+.cols .item { display: flex; justify-content: space-between; padding: .55rem .8rem; border-bottom: 1px solid var(--line); color: var(--text); }
+.cols .item:hover { background: #f7f8fa; text-decoration: none; }
+.cols .item.on { background: #f7e4e2; box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
+.cols .item .c { color: var(--muted); font-size: .85rem; }
+.cols .col-wide table.list { border: 0; }
+.cols .empty { padding: 1.2rem .8rem; }
+@media (max-width: 700px) { .cols { grid-template-columns: 1fr; } .cols .col { border-right: 0; border-bottom: 1px solid var(--line); max-height: 16rem; } }

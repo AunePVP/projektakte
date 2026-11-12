@@ -84,7 +84,7 @@ nur mit `PROJEKTAKTE_INTEGRATION=1` (siehe docs/ki-dienste.md).
 
 ## Oberfläche
 
-- **Projekte** – Liste mit Filter (Nummer/Name) und Suche über alle Projekte; mit
+- **Projekte** – Liste (oder Kacheln bzw. Spalten nach Ordner, einstellbar unter „Einstellungen“) mit Filter (Nummer/Name) und Suche über alle Projekte; mit
   `PROJECT_PARENT_DIGITS` die Unterprojekte eingerückt unter ihrem Bauvorhaben. „Letzte Aktivität“ ist das
   neueste Dokument- oder Mail-Datum, das nicht in der Zukunft liegt (ein Datum aus dem Text wie ein
   geplanter Termin „29.06.2030“ zählt nicht).

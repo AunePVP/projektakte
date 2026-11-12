@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Projekte{% endblock %}
+{#- Folder views of the project overview (chosen on /einstellungen): nothing but counts is loaded until a
+    folder is opened, so 3000 projects do not slow the page down. Plain links, no JavaScript needed. -#}
+{% macro tile(href, big, rng, count, on=false) %}
+<a class="tile{{ ' on' if on }}{{ ' empty' if not count }}" href="{{ href if count else '#' }}"{% if not count %} aria-disabled="true" tabindex="-1"{% endif %}>
+  <span class="big">{{ big }}</span><span class="rng">{{ rng }}</span><span class="cnt">{{ count|plural('Projekt', 'Projekte') }}</span>
+</a>
+{% endmacro %}
+{% macro table() %}
+{% if projects %}
+<div class="table-wrap">
+<table class="list">
+  <thead><tr><th class="w-num">Nummer</th><th>Projekt</th><th class="w-s num">Dokumente</th><th class="w-s num">Mails</th><th class="w-m">Letzte Aktivität</th></tr></thead>
+  <tbody>
+  {% for p in projects %}
+  <tr class="{% if p.kind == 'bauvorhaben' %}site{% elif p.depth %}sub{% endif %}">
+    <td><a href="/projekte/{{ p.number }}"><strong>{{ p.number }}</strong></a></td>
+    <td><a href="/projekte/{{ p.number }}">{{ p.name }}</a>{% if p.kind == 'bauvorhaben' %} <span class="pill">Bauvorhaben</span> <span class="muted small">{{ (p.subprojects or p.children)|length|plural('Unterprojekt', 'Unterprojekte') }}</span>{% endif %}</td>
+    <td class="num">{{ p.docs }}</td><td class="num">{{ p.mails }}</td><td>{{ p.last|de_date }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if more > 0 %}<p class="small muted">{{ more|de_num }} weitere Projekte in diesem Ordner. <a href="/?{{ 'o=%s&p=%s&alle=1'|format(o1, o2) }}">Alle anzeigen</a></p>{% endif %}
+{% else %}<p class="empty">Keine Projekte in diesem Ordner.</p>{% endif %}
+{% endmacro %}
+{% block content %}
+<div class="head-row">
+  <h1>Projekte</h1>
+  <form action="/" method="get" class="search-inline" role="search">
+    <input type="search" name="q" placeholder="Nummer oder Name filtern …" aria-label="Projekte filtern" autocomplete="off">
+  </form>
+</div>
+<form action="/suche" method="get" class="card ask-row">
+  <input type="text" name="q" placeholder="In allen Projekten suchen, z. B. „Druckbelüftung Sicherheitstreppenraum“" aria-label="Volltextsuche">
+  <button>Suchen</button>
+  <button class="secondary" formaction="/fragen" formmethod="post">Frage stellen</button>
+</form>
+
+{% if ansicht == 'kacheln' %}
+<p class="crumbs ordner-crumbs">
+  {% if o1 %}<a href="/">Alle Projekte</a>{% else %}<strong>Alle Projekte</strong>{% endif %}
+  {% if o1 %} › {% if o2 %}<a href="/?o={{ o1 }}">{{ o1 }}</a>{% else %}<strong>{{ o1 }}</strong>{% endif %}{% endif %}
+  {% if o2 %} › <strong>{{ o2 }}</strong>{% endif %}
+</p>
+{% if o2 %}{{ table() }}
+{% elif o1 %}
+<div class="tiles">{% for f in level2 %}{{ tile('/?o=' ~ f.key, f.key, f.key ~ '00–' ~ f.key ~ '99', f.count) }}{% endfor %}</div>
+{% if not level2 %}<p class="empty">Keine Projekte in diesem Ordner.</p>{% endif %}
+{% else %}
+<div class="tiles">{% for f in level1 %}{{ tile('/?o=' ~ f.key, f.key, f.key ~ '000–' ~ f.key ~ '999', f.count) }}{% endfor %}</div>
+{% if not level1 %}<p class="empty">Noch keine Projekte – die Indexierung läuft oder der Projektordner ist leer.</p>{% endif %}
+{% endif %}
+
+{% else %}
+<div class="cols">
+  <div class="col"><h2>Ordner</h2>
+    {% for f in level1 %}<a class="item{{ ' on' if f.key == o1 }}" href="/?o={{ f.key }}"><span class="n">{{ f.key }}</span><span class="c">{{ f.count|de_num }}</span></a>{% endfor %}</div>
+  <div class="col"><h2>Unterordner</h2>
+    {% if o1 %}{% for f in level2 %}<a class="item{{ ' on' if f.key == o2 }}" href="/?o={{ o1 }}&p={{ f.key }}"><span class="n">{{ f.key }}</span><span class="c">{{ f.count|de_num }}</span></a>{% endfor %}
+    {% else %}<p class="empty small muted">Ordner links wählen.</p>{% endif %}</div>
+  <div class="col col-wide"><h2>Projekte</h2>
+    {% if o2 %}{{ table() }}{% else %}<p class="empty small muted">Unterordner wählen, dann erscheinen hier die Projekte.</p>{% endif %}</div>
+</div>
+{% endif %}
+{% endblock %}

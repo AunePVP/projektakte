@@ -15,7 +15,7 @@
     <tr class="{{ 'running' if p.state == 'run' }}{{ ' pinned' if p.state == 'pin' }}">
       <td class="num muted hide-sm">{{ p.position or '' }}</td>
       <td class="rf-num"><a href="/projekte/{{ p.number }}">{% if rf.q and p.match %}{{ p.match[0] }}<mark>{{ p.match[1] }}</mark>{{ p.match[2] }}{% else %}{{ p.number }}{% endif %}</a></td>
-      <td>{{ p.name }}{% if p.kind == 'bauvorhaben' %} <span class="pill">Bauvorhaben</span>{% endif %}</td>
+      <td>{{ p.name }}{% if p.kind == 'bauvorhaben' %} <span class="pill">Bauvorhaben</span>{% if p.orders %} <span class="muted small">{{ p.orders|plural('Unterprojekt', 'Unterprojekte') }}</span>{% endif %}{% endif %}</td>
       <td class="hide-sm"><span class="rf-chip">{{ p.folder }}</span></td>
       <td class="num hide-sm">{{ p.files|de_num }}</td>
       <td>{% if p.state == 'run' %}<span class="rf-st"><span class="rf-spin sm" aria-hidden="true"></span>wird gelesen</span>
