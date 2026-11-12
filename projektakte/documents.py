@@ -117,8 +117,12 @@ def reprocess_due(row, profile: str, now: str, limits: extract_worker.Limits | N
         # another vision model alone, with scan pages still waiting for stage 2: that phase goes on with the
         # new model – stage 1 (Tesseract) is not repeated. A file the old model answered emptily or not at
         # all (images read in one go) is read again with the new one.
+        # Likewise Tesseract switched off (TESSERACT=0): the model reads the pages; only Tesseract switched on
+        # (or installed) reads them again in stage 1.
         pending = row["vision_pending"] if "vision_pending" in row.keys() else 0
-        if not (pending and profile_key(base) == profile_key(profile)):
+        old_key, new_key = profile_key(base), profile_key(profile)
+        lost_ocr_only = old_key.replace("+ocr", "") == new_key.replace("+ocr", "") and "+ocr" not in new_key
+        if not (pending and (old_key == new_key or lost_ocr_only)):
             return True
     if marked and (limits is None or limits.lifts(limit)):
         return True

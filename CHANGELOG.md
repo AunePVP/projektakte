@@ -5,6 +5,8 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- `TESSERACT=0` schaltet die Texterkennung ab: Scan-Seiten liest dann nur das Bildmodell (Stufe 1 wird viel schneller,
+  die Seiten sind erst nach der Bildauswertung durchsuchbar). Ausschalten liest nichts neu.
 - Ein anderes Bildmodell (z. B. ein kleines Abschrift-Modell statt des großen) liest nichts mehr neu: Stufe 1
   (Tesseract) wird nicht wiederholt, fertige Projekte bleiben fertig; die Bildauswertung macht mit dem neuen Modell weiter.
 - **PDF-Seiten mit Text als Kurven werden gelesen:** Seiten ohne Textebene und ohne Bild (gedruckte Vorschriften

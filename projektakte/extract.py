@@ -17,6 +17,7 @@ import hashlib
 import io
 import logging
 import math
+import os
 import re
 import shutil
 import struct
@@ -105,6 +106,9 @@ def ocr_available() -> bool:
 
 
 def _probe_ocr() -> bool:
+    if (os.environ.get("TESSERACT") or "").strip().lower() in ("0", "aus", "off", "false", "nein", "no"):
+        log.info("Texterkennung (Tesseract) ausgeschaltet (TESSERACT=0) – Scans ohne Textebene liest nur das Bildmodell")
+        return False
     exe = shutil.which(OCR_COMMAND)
     if exe is None:
         log.info("Texterkennung (Tesseract) nicht installiert – Scans ohne Textebene liest nur das Bildmodell")

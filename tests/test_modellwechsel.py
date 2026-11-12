@@ -45,3 +45,13 @@ def test_a_finished_project_stays_finished(tmp_path):
     assert done["310100"] is True
     done = {e["number"]: e["done"] for e in reihenfolge.entries(conn, tmp_path, "v7:text+ocr")}
     assert done["310100"] is False
+
+
+def test_tesseract_switched_off_reads_nothing_again(monkeypatch):
+    now = "2026-11-12 10:00:00"
+    assert not reprocess_due(_row("v7:vision:gross+ocr", pending=2), "v7:vision:klein", now)
+    assert reprocess_due(_row("v7:vision:klein", pending=2), "v7:vision:klein+ocr", now)  # switched on again
+    from projektakte import extract
+    monkeypatch.setenv("TESSERACT", "0")
+    monkeypatch.setattr(extract, "_ocr_known", {})
+    assert extract.ocr_available() is False
