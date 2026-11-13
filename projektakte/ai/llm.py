@@ -19,9 +19,11 @@ log = logging.getLogger("projektakte.ai")
 # merely cut short is asked once more with the full amount.
 VISION_MAX_TOKENS = 4000
 PAGE_MIN_TOKENS = 1500
-# Second attempt after a repetition loop: sampling as recommended for Qwen instruct/VL models against endless
-# repetitions (VISION_RETRY_BODY replaces it). Only that page is asked like this; all others keep LLM_EXTRA_BODY.
-DEFAULT_RETRY_BODY = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
+# Second attempt after a repetition loop: other sampling than the near-greedy first one, so the page is not read
+# the same way again (Qwen's recommended temperature/top_p/top_k; VISION_RETRY_BODY replaces it). No presence
+# penalty: measured with Qwen3.5-4B, 1.5 lost about 14 percentage points of a page's words, 0.3 still 3.
+# Only that page is asked like this; all others keep LLM_EXTRA_BODY.
+DEFAULT_RETRY_BODY = {"temperature": 0.7, "top_p": 0.8, "top_k": 20}
 _CHECK_EVERY = 300  # characters streamed in between two looks for a loop
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)

@@ -462,15 +462,19 @@ wachsendem Abstand wiederholt; ihr Text der ersten Stufe bleibt so lange durchsu
 manchmal dieselbe Zeile, bis die Token-Grenze erreicht ist. Jede Seitenantwort wird deshalb gestreamt und mitgelesen
 (`projektakte/ai/repetition.py`: eine Folge von 1–80 Wörtern mindestens sechsmal hintereinander über mindestens 400
 Zeichen). Eine Schleife bricht den Aufruf sofort ab, der Platz auf dem KI-Server wird frei. Die Seite wird einmal
-neu gefragt, mit `VISION_RETRY_BODY` (Voreinstellung `temperature 0.7`, `top_p 0.8`, `top_k 20`,
-`presence_penalty 1.5`, wie Qwen gegen Endlosschleifen empfiehlt; gilt nur für diesen zweiten Versuch). Läuft sie
+neu gefragt, mit `VISION_RETRY_BODY` (Voreinstellung `temperature 0.7`, `top_p 0.8`, `top_k 20` – anders gewürfelt
+als der fast gierige erste Versuch, ohne `presence_penalty`: gemessen mit Qwen3.5-4B fehlen mit 1,5 rund 14
+Prozentpunkte der Wörter einer Seite; gilt nur für diesen zweiten Versuch, eine Penalty aus `LLM_EXTRA_BODY` bleibt). Läuft sie
 wieder in eine Schleife, wird die Antwort verworfen: Die Seite behält den Text der Texterkennung (ohne ihn: den
 Anfang vor der Schleife), das Dokument trägt „Modell-Antwort verworfen (Wiederholungsschleife) …“ und wird nicht
 endlos neu gefragt. Der erste Versuch bekommt Tokens nach der Länge des bekannten Seitentexts (mindestens 1.500,
 höchstens 4.000); eine nur abgeschnittene Antwort wird einmal mit 4.000 neu gefragt. Antworten, die vor dieser Prüfung
 gespeichert wurden, prüft die Bildauswertung einmal nebenbei (DB-Migration 16, ohne Modell); ein Dokument mit
 Schleife wird ganz neu gelesen. Server, die nicht streamen, antworten wie bisher in einem Stück und werden danach
-geprüft.
+geprüft. Kann der KI-Server Wiederholungen selbst erkennen (vLLM `repetition_detection`), ist das die bessere erste
+Abwehr – gemessen ohne gekürzten Text, keine Schleife mehr und fast doppelt so viele Seiten je Minute –, z. B.
+`LLM_EXTRA_BODY={"chat_template_kwargs":{"enable_thinking":false},"presence_penalty":0,"repetition_detection":{"min_pattern_size":8,"max_pattern_size":300,"min_count":4}}`;
+die Prüfung hier bleibt das Sicherheitsnetz.
 `LLM_VISION=0` liest nur Tesseract (das Dokument bleibt unvollständig und wird mit `LLM_VISION=1`
 nachgelesen). Fotos in `VISION_SKIP_FOLDERS` bekommen weder Tesseract noch das Modell.
 
@@ -689,7 +693,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_MODEL` | `qwen3.8-flash-next` | Modellname |
 | `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Scans, Pläne; Phase „Bildauswertung“) |
 | `VISION_CONCURRENCY` | `3` | Gleichzeitige Modellaufrufe der Bildauswertung (ab 1 = nacheinander); der KI-Server nimmt 4, einer bleibt für Fragen frei |
-| `VISION_RETRY_BODY` | Qwen-Empfehlung | Felder (JSON) für den zweiten Versuch einer Seite nach einer Wiederholungsschleife; `{}` = wie der erste |
+| `VISION_RETRY_BODY` | `{"temperature": 0.7, "top_p": 0.8, "top_k": 20}` | Felder (JSON) für den zweiten Versuch einer Seite nach einer Wiederholungsschleife; `{}` = wie der erste |
 | `VISION_PASS_SECONDS` | `1800` | Länge einer Runde der Bildauswertung in Sekunden; danach beginnt sofort die nächste (sie nimmt auch fehlgeschlagene Seiten, deren Wartezeit um ist). Ohne Anwendung (`python -m projektakte.index`): Zeitbudget der Phase am Ende des Laufs. `0` = bis nichts mehr aussteht |
 | `EMBED_CONCURRENCY` | `2` | Stapel (je 32 Abschnitte), die die Embeddings im Hintergrund gleichzeitig an den Embedding-Dienst schicken (1–8) |
 | `DOKUMENTART_KI` | `auto` | Sprachmodell nach der Dokumentart unklarer Dokumente fragen: `auto` = nur mit den echten KI-Diensten (nicht mit `AI_MODE=fake`), `1` = immer, `0` = nie. Ein Aufruf nach dem anderen, nie neben einer Frage (siehe „Suche“) |

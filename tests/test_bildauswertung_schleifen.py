@@ -162,7 +162,17 @@ def test_a_server_without_streaming_answers_in_one_body(server):
     assert _client(srv).describe_image(b"img", "image/png", vision_prompt(LAYER)).text == GOOD
     # a loop in a whole answer is found as well
     assert _client(srv).describe_image(b"img", "image/png", vision_prompt(LAYER)).text == GOOD
-    assert srv.payloads[2]["presence_penalty"] == DEFAULT_RETRY_BODY["presence_penalty"]
+    assert srv.payloads[2]["temperature"] == DEFAULT_RETRY_BODY["temperature"]
+
+
+def test_the_retry_has_no_presence_penalty_and_keeps_the_one_set(server):
+    # measured: a presence penalty costs words of the page – the default retry sets none, and one set in
+    # LLM_EXTRA_BODY (e.g. 0 over the server's default) stays in the second attempt
+    assert "presence_penalty" not in DEFAULT_RETRY_BODY
+    srv = server(("stream", LOOP, "length"), ("stream", GOOD, "stop"))
+    llm = LLMClient(srv.url, "bildmodell", vision=True, timeout=10, extra_body={"presence_penalty": 0})
+    assert llm.describe_image(b"img", "image/png", vision_prompt(LAYER)).text == GOOD
+    assert srv.payloads[1]["presence_penalty"] == 0 and srv.payloads[1]["temperature"] == 0.7
 
 
 def test_the_retry_body_goes_with_the_client_into_the_worker():

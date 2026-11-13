@@ -1159,8 +1159,17 @@ Token-Grenze. Die Antwort wurde trotzdem übernommen und ersetzte den Tesseract-
 gleichzeitigen Plätze des KI-Servers bis zu 4.000 Tokens lang fest.
 - *Erkennen statt nur bestrafen*: Eine `presence_penalty` für alle Seiten verringert Schleifen, bestraft aber auch
   richtige Wiederholungen (Tabellenköpfe, gleiche Maße, Normen, „[handschriftlich: …]“) und kann beim wortgetreuen
-  Abschreiben Werte verfälschen. Darum bleibt der erste Versuch, wie er ist; nur eine Seite, die in eine Schleife
-  lief, wird mit `VISION_RETRY_BODY` (Qwen-Empfehlung gegen Endlosschleifen) neu gefragt.
+  Abschreiben Werte verfälschen. Gemessen mit Qwen3.5-4B an echten Projekt-PDFs (38–76 Seiten je Stufe): mit 1,5
+  fehlen rund 14 Prozentpunkte der Wörter, mit 0,6 noch 6, mit 0,3 noch 3 – und Schleifen verhindert sie trotzdem
+  nicht zuverlässig. Darum bleibt der erste Versuch, wie er ist; nur eine Seite, die in eine Schleife lief, wird mit
+  `VISION_RETRY_BODY` neu gefragt – anders gewürfelt (`temperature 0.7`, `top_p 0.8`, `top_k 20`), ohne Penalty. Der
+  Retry steht in der Anfrage nach `LLM_EXTRA_BODY`; er setzt keine Penalty, damit eine dort gesetzte (z. B. 0 gegen
+  eine Voreinstellung des Servers) bleibt.
+- *Erkennung auf dem Server zuerst*: vLLM `repetition_detection` (`min_pattern_size 8`, `max_pattern_size 300`,
+  `min_count 4`) brachte in derselben Messung 0 Schleifen und 32,7 statt 18,3 Seiten/min, ohne echten Text zu kürzen.
+  Sie wird über `LLM_EXTRA_BODY` eingeschaltet (kein Code); die Prüfung hier bleibt das Sicherheitsnetz für Server
+  ohne sie und repariert die vorher gespeicherten Schleifen. Sie schlägt erst bei sechs Wiederholungen an, nach vLLMs
+  vier also praktisch nie zusätzlich.
 - *Regel* (`ai/repetition.py`): eine Folge von 1–80 Wörtern mindestens sechsmal unmittelbar hintereinander, zusammen
   mindestens 400 Zeichen; Wörter werden genau verglichen (nur ohne Groß-/Kleinschreibung). Zeilen, die sich in einer
   Zahl unterscheiden, sind keine Schleife – hochzählende Schleifen enden an der Token-Grenze und werden als

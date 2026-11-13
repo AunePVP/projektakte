@@ -13,7 +13,8 @@ Roadmap-Schritt.
 - **Schutz vor Wiederholungsschleifen der Bildauswertung:** Jede Seitenantwort des Modells wird gestreamt und
   mitgelesen; wiederholt sich eine Zeile oder Wortfolge immer wieder, bricht der Aufruf sofort ab (der Platz auf dem
   KI-Server ist gleich wieder frei, statt bis 4.000 Tokens zu laufen). Die Seite wird einmal neu gefragt, mit
-  `VISION_RETRY_BODY` (Voreinstellung: Qwen-Empfehlung mit `presence_penalty 1.5`, nur für diesen Versuch). Läuft
+  `VISION_RETRY_BODY` (Voreinstellung: `temperature 0.7`, `top_p 0.8`, `top_k 20`, ohne `presence_penalty` – sie
+  kostet gemessen Text; nur für diesen Versuch, eine Penalty aus `LLM_EXTRA_BODY` bleibt). Läuft
   auch er in eine Schleife, behält die Seite den Text der Texterkennung, und das Dokument trägt „Modell-Antwort
   verworfen“. Bisher wurde eine Schleife als Seitentext gespeichert und ersetzte den Tesseract-Text. Der erste Versuch
   bekommt nur so viele Tokens, wie die Seite nach ihrem bekannten Text braucht (mindestens 1.500). DB-Migration 16:
