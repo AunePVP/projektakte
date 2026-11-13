@@ -35,7 +35,7 @@ import time
 
 from . import db, vectors, zeiten
 from .ai import AIServiceError
-from .pause import PAUSE
+from .pause import EMBED_PAUSE, PAUSE
 
 log = logging.getLogger("projektakte.embed_worker")
 
@@ -133,6 +133,7 @@ class EmbedWorker:
         try:
             while not self._stop.is_set():
                 PAUSE.wait(self._stop)
+                EMBED_PAUSE.wait(self._stop)  # the embeddings alone held back (status page, EMBED_PAUSED)
                 if self._stop.is_set():
                     break
                 vectors.CHUNKS_WAITING.clear()

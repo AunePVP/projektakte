@@ -346,6 +346,13 @@ eine Seite); Suche und Fragen funktionieren weiter. „Indexierung fortsetzen“
 Stelle weiter, ein angeforderter Lauf startet dann. Die Pause ist nur im Arbeitsspeicher: nach einem Neustart der
 Anwendung läuft die Indexierung wieder. Dauerhaft nicht lesen: Ordner auf der Statusseite ausschalten.
 
+**Nur die Embeddings pausieren:** „Embeddings pausieren“ auf derselben Karte (oder `POST /api/embeddings/pause`, weiter
+mit „Embeddings fortsetzen“ bzw. `POST /api/embeddings/resume`) hält nur die Embeddings im Hintergrund an; Einlesen,
+Bildauswertung und Dokumentarten laufen weiter. Bildmodell und Embedding-Dienst teilen sich auf dem KI-Server eine GPU –
+ohne die Embeddings liest die Bildauswertung mehr Seiten je Stunde. Neue Texte findet bis dahin die Volltextsuche, die
+Bedeutungssuche erst mit ihren Vektoren; Fragen funktionieren weiter. Mit `EMBED_PAUSED=1` starten die Embeddings
+pausiert (auch nach einem Neustart), bis jemand „Embeddings fortsetzen“ drückt.
+
 **Reihenfolge der Projekte:** Jeder Lauf liest die Projekte so: zuerst die vorgezogenen (Statusseite,
 „Vorziehen“), dann die noch nicht fertigen Ordner für Ordner – die obersten Ordner unter `PROJECTS_DIR` in der
 Reihenfolge der Statusseite, sonst `INDEX_FOLDER_ORDER` (z. B. `3,2`), dann die übrigen (nummerierte Ordner
@@ -642,6 +649,7 @@ zugeordnet oder vorgeschlagen, 8 von 8 inhaltlichen Vorschlägen richtig.
 | `GET /api/status` | Indexierungsstand (Phase, letzter Lauf, Fehler; unter `indexing.vision` und `indexing.embeddings` die Hintergrund-Tätigkeiten) und Zahlen |
 | `POST /api/reindex` | Indexierung sofort anstoßen |
 | `POST /api/pause`, `POST /api/resume` | Indexierung pausieren / fortsetzen (`indexing.pause`: `paused`, `since`) |
+| `POST /api/embeddings/pause`, `POST /api/embeddings/resume` | Nur die Embeddings pausieren / fortsetzen (`indexing.embeddings.pause`) |
 | `GET /api/reihenfolge?tab=&q=&limit=` | Reihenfolge beim Einlesen: `folders` (Name, `enabled`, `rank`, `projects`, `done`), `current` (laufendes Projekt, Phase, `files_done`/`files_total`, `next`, Zeiten in Sekunden: `seconds_running`, `seconds_on_project`, `seconds_per_file_read`, `files_read`, `files_unchanged`, `eta_project_seconds`, `eta_queue_seconds`, `seconds_per_project`), `vision` und `embeddings` (Hintergrund: Stand, Rate, `eta`), `queue`/`done`/`switched_off` (Anzahl) und `projects` des Reiters (`warteschlange`, `fertig`, `alle`; `q` = Teil der Nummer; `limit` höchstens 500) mit `position`, `state` (`run`, `pin`, `wait`, `off`, `done`), `off`, `done_at`, `skipped` |
 | `POST /api/reihenfolge/ordner` | Ordner-Reihenfolge: `{"order": ["3", "2"], "off": ["Archiv"]}` (nicht genannte Ordner danach wie bisher; `off`: wird nicht gelesen) oder `{"reset": true}` (zurück zu `INDEX_FOLDER_ORDER`) |
 | `POST /api/reihenfolge/vorziehen`, `POST /api/reihenfolge/zurueck` | `{"number": "284201"}` vorziehen bzw. wieder an seinen Platz |
@@ -703,6 +711,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `VISION_RETRY_BODY` | `{"temperature": 0.7, "top_p": 0.8, "top_k": 20}` | Felder (JSON) für den zweiten Versuch einer Seite nach einer Wiederholungsschleife; `{}` = wie der erste |
 | `VISION_PASS_SECONDS` | `1800` | Länge einer Runde der Bildauswertung in Sekunden; danach beginnt sofort die nächste (sie nimmt auch fehlgeschlagene Seiten, deren Wartezeit um ist). Ohne Anwendung (`python -m projektakte.index`): Zeitbudget der Phase am Ende des Laufs. `0` = bis nichts mehr aussteht |
 | `EMBED_CONCURRENCY` | `2` | Stapel (je 32 Abschnitte), die die Embeddings im Hintergrund gleichzeitig an den Embedding-Dienst schicken (1–8) |
+| `EMBED_PAUSED` | `0` | `1`: die Embeddings im Hintergrund starten pausiert (Statusseite: „Embeddings fortsetzen“) – das Bildmodell bekommt die GPU allein |
 | `DOKUMENTART_KI` | `auto` | Sprachmodell nach der Dokumentart unklarer Dokumente fragen: `auto` = nur mit den echten KI-Diensten (nicht mit `AI_MODE=fake`), `1` = immer, `0` = nie. Ein Aufruf nach dem anderen, nie neben einer Frage (siehe „Suche“) |
 | `VISION_SKIP_FOLDERS` | leer | Ordnernamen, deren Fotos nicht an das Modell gehen, mit Komma getrennt; `Bilder` trifft auch `263900-Bilder`. Scans (PDF) werden weiter gelesen; ohne die Einstellung werden die Fotos beim nächsten Lauf nachgelesen |
 | `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | `120` / `800` | Sekunden / Antwortlänge |

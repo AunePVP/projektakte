@@ -284,6 +284,20 @@ def resume_indexing(request: Request) -> dict:
     return {"status": "läuft"}
 
 
+@router.post("/embeddings/pause")
+def pause_embeddings(request: Request) -> dict:
+    """Hold back the background embedding alone (the vision model gets the GPU); POST /api/embeddings/resume
+    goes on. Full-text search finds new text meanwhile, the meaning search only once it has its vectors."""
+    request.app.state.indexer.pause_embeddings()
+    return {"status": "pausiert"}
+
+
+@router.post("/embeddings/resume")
+def resume_embeddings(request: Request) -> dict:
+    request.app.state.indexer.resume_embeddings()
+    return {"status": "läuft"}
+
+
 # -- order of the documents pass (reihenfolge.py; the section "Reihenfolge" of the status page) ---------
 RF_MAX_LIMIT = 500
 

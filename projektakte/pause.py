@@ -56,3 +56,6 @@ class PauseGate:
 
 
 PAUSE = PauseGate()
+# The background embedding alone ("Embeddings pausieren", EMBED_PAUSED=1): the model and the embedding service
+# share one GPU – held back, the vision model reads more pages; full-text search finds new text meanwhile.
+EMBED_PAUSE = PauseGate()

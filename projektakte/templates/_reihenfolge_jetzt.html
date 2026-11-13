@@ -33,7 +33,8 @@
   {% if now.embed %}{% set e = now.embed %}
   <div class="rf-bg small">
     <span class="pill">Embeddings</span>
-    {% if e.busy %}laufen, {{ e.in_flight or 0 }} von {{ e.concurrency }} Stapeln beim Dienst · {{ e.done|de_num }} Abschnitte fertig, {{ e.pending|plural('Abschnitt', 'Abschnitte') }} ohne Vektor
+    {% if e.paused %}<strong>pausiert</strong> seit {{ e.paused_since|de_date(true) }} · {{ e.pending|plural('Abschnitt', 'Abschnitte') }} ohne Vektor (die Volltextsuche findet sie schon){% if e.in_flight %} · {{ e.in_flight }} Stapel noch beim Dienst{% endif %}
+    {%- elif e.busy %}laufen, {{ e.in_flight or 0 }} von {{ e.concurrency }} Stapeln beim Dienst · {{ e.done|de_num }} Abschnitte fertig, {{ e.pending|plural('Abschnitt', 'Abschnitte') }} ohne Vektor
       {%- if e.current %} · zuletzt {% if e.current.project %}<span class="rf-num">{{ e.current.project }}</span> {% endif %}{{ e.current.file or 'Mail' }}{% endif %}
       {%- if e.per_hour %} · {{ e.per_hour|round|int|de_num }} Abschnitte/Std. · fertig grob {{ e.eta|etwa }}{% endif %}
     {%- elif e.alive %}warten – alle Abschnitte haben einen Vektor{% else %}beendet{% endif %}

@@ -30,6 +30,7 @@ from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .config import DEFAULT_PROJECT_NUMBER_PATTERN
 from .db import BAUVORHABEN
+from .pause import EMBED_PAUSE
 from .extract import extraction_profile
 from .registry import as_tree, children, get_project, list_projects, number_regex, project_folders
 from .search import TYPES_TOP, hybrid_search
@@ -1416,6 +1417,18 @@ def resume_indexing(request: Request):
     return RedirectResponse("/status", status_code=303)
 
 
+@router.post("/status/embeddings-pausieren")
+def pause_embeddings(request: Request):
+    request.app.state.indexer.pause_embeddings()
+    return RedirectResponse("/status", status_code=303)
+
+
+@router.post("/status/embeddings-fortsetzen")
+def resume_embeddings(request: Request):
+    request.app.state.indexer.resume_embeddings()
+    return RedirectResponse("/status", status_code=303)
+
+
 # --- project structure (PROJECT_NUMBER_PATTERN=auto): a person confirms or rejects a proposal
 LAYOUT_ANCHOR = "/status#projektordner"
 
@@ -1561,7 +1574,9 @@ def _embed_now(request: Request, conn) -> dict | None:
     if current and current.get("project"):
         row = conn.execute("SELECT name FROM projects WHERE number = ?", (current["project"],)).fetchone()
         current["name"] = row[0] if row else ""
-    return {"busy": bool(worker.alive and (live["busy"] or pending)), "alive": worker.alive,
+    paused = EMBED_PAUSE.snapshot()
+    return {"busy": bool(worker.alive and (live["busy"] or pending)) and not paused["paused"], "alive": worker.alive,
+            "paused": paused["paused"], "paused_since": paused["since"],
             "concurrency": live["concurrency"], "in_flight": live["in_flight"], "done": live["done"],
             "pending": pending, "current": current, "error": live["error"], **rate}
 

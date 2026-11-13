@@ -6,7 +6,7 @@
   <section class="card">
     <h2>Indexierung</h2>
     <dl class="meta">
-      <dt>Zustand</dt><dd>{% if st.indexing.pause.paused %}<strong>pausiert</strong> seit {{ st.indexing.pause.since|de_date(true) }} (angefangene Schritte werden noch beendet) · {% endif %}{{ 'läuft (' ~ st.indexing.phase ~ ')' if st.indexing.running else 'wartet' }}{% if eye %} · Bildauswertung {{ ('läuft, ' ~ eye.concurrency ~ ' gleichzeitig') if eye.busy else ('wartet' if eye.alive else 'beendet') }}{% endif %}{% if emb %} · Embeddings {{ 'laufen' if emb.busy else ('warten' if emb.alive else 'beendet') }}{% endif %}</dd>
+      <dt>Zustand</dt><dd>{% if st.indexing.pause.paused %}<strong>pausiert</strong> seit {{ st.indexing.pause.since|de_date(true) }} (angefangene Schritte werden noch beendet) · {% endif %}{{ 'läuft (' ~ st.indexing.phase ~ ')' if st.indexing.running else 'wartet' }}{% if eye %} · Bildauswertung {{ ('läuft, ' ~ eye.concurrency ~ ' gleichzeitig') if eye.busy else ('wartet' if eye.alive else 'beendet') }}{% endif %}{% if emb %} · Embeddings {{ ('<strong>pausiert</strong>'|safe) if emb.paused else ('laufen' if emb.busy else ('warten' if emb.alive else 'beendet')) }}{% endif %}</dd>
       <dt>Läufe</dt><dd>{{ st.indexing.runs|de_num }}</dd>
       <dt>Letzter Lauf</dt><dd>{{ st.indexing.last_finished|de_date(true) }}</dd>
       <dt>Nächster Lauf</dt><dd>{{ st.indexing.next_run|de_date(true) if st.indexing.next_run else 'auf Anforderung' }}</dd>
@@ -19,6 +19,11 @@
     {% else %}
     <form method="post" action="/status/pausieren"><button>Indexierung pausieren</button></form>
     {% endif %}
+    {% if emb %}{% if emb.paused %}
+    <form method="post" action="/status/embeddings-fortsetzen"><button>Embeddings fortsetzen</button></form>
+    {% else %}
+    <form method="post" action="/status/embeddings-pausieren" title="Nur die Embeddings anhalten: das Bildmodell bekommt die GPU allein. Neue Texte findet bis dahin die Volltextsuche, die Bedeutungssuche erst mit ihren Vektoren."><button>Embeddings pausieren</button></form>
+    {% endif %}{% endif %}
   </section>
   <section class="card">
     <h2>Bestand</h2>

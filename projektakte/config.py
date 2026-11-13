@@ -385,6 +385,8 @@ class Settings:
     vision_pass_seconds: float = 1800.0
     # background embedding (embed_worker.py): batches sent to the embedding service at a time
     embed_concurrency: int = 2
+    # EMBED_PAUSED=1: the background embedding starts held back (status page: "Embeddings fortsetzen")
+    embed_paused: bool = False
     # document types (dokumentarten.py): ask the language model about unclear documents – auto (real AI
     # services only), 1 (always), 0 (never)
     dokumentart_ki: str = "auto"
@@ -481,6 +483,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         vision_concurrency=_vision_concurrency(e, warnings),
         vision_pass_seconds=_vision_pass_seconds(e, warnings),
         embed_concurrency=_embed_concurrency(e, warnings),
+        embed_paused=_bool(e.get("EMBED_PAUSED"), False),
         dokumentart_ki=_dokumentart_ki(e, warnings),
         vision_skip_folders=tuple(w.strip() for w in (e.get("VISION_SKIP_FOLDERS") or "").split(",") if w.strip()),
         index_folder_order=tuple(dict.fromkeys(w.strip().strip("/") for w in (e.get("INDEX_FOLDER_ORDER") or "").split(",")

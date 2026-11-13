@@ -5,6 +5,10 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Nur die Embeddings pausieren:** Auf der Statusseite gibt es „Embeddings pausieren“ / „Embeddings fortsetzen“ (API:
+  `POST /api/embeddings/pause`, `POST /api/embeddings/resume`), getrennt von der Pause der ganzen Indexierung. So
+  bekommt die Bildauswertung die GPU des KI-Servers allein; neue Texte findet bis dahin die Volltextsuche.
+  `EMBED_PAUSED=1` lässt die Embeddings pausiert starten.
 - **Indexierung pausieren:** Auf der Statusseite gibt es „Indexierung pausieren“ / „Indexierung fortsetzen“ (API:
   `POST /api/pause`, `POST /api/resume`). Die Pause gilt für alles Einlesen nebenher – Dateien, Mails, Scan-Seiten
   der Bildauswertung, Embeddings und Dokumentarten. Was gerade gelesen wird, wird noch fertig; danach wartet alles,

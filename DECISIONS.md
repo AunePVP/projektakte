@@ -1216,3 +1216,16 @@ das Lesen von der SMB-Freigabe ist mit 0,55 s je Seite kein Engpass.
 - *Bilddateien bleiben unverändert*: Sie haben keine Seitengröße und gehen ohne Leseprozess an das Modell; sie zu
   verkleinern, hieße sie in der Anwendung zu dekodieren.
 
+## Nur die Embeddings pausieren
+
+Bildmodell und Embedding-Dienst laufen auf demselben KI-Server (eine GPU). Die Embeddings im Hintergrund schickten rund
+30.000 Abschnitte je Stunde (mehrere Millionen Tokens) – mehr Rechenarbeit als die Bildauswertung selbst, die dadurch
+weniger Seiten schaffte. Gewünscht war: erst die Seiten lesen, dann die Vektoren.
+- *Ein eigener Schalter statt einer Reihenfolge im Code*: Die Bildauswertung wird erst fertig, wenn das Einlesen fertig
+  ist (es legt laufend neue Seiten an) – „Embeddings erst danach“ hieße tagelang keine Bedeutungssuche für neue Texte.
+  Ob und wie lange, entscheidet der Betrieb: ein zweites Tor (`pause.EMBED_PAUSE`) nur vor den Embeddings, auf der
+  Statusseite und über die API; `EMBED_PAUSED=1` für den Start.
+- *Wie die allgemeine Pause*: ein Stapel beim Dienst wird fertig, nur im Arbeitsspeicher (das Beenden löst es, damit
+  der Thread den Stopp sieht); die Volltextsuche findet neue Abschnitte sofort, Fragen funktionieren weiter (die
+  Frage-Vektoren macht der Dienst, er läuft ja).
+

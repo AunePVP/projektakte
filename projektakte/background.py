@@ -15,7 +15,7 @@ from .ai.services import AIServices
 from .config import Settings
 from .demo_cleanup import demo_purge_note
 from .indexer import run_index
-from .pause import PAUSE
+from .pause import EMBED_PAUSE, PAUSE
 
 log = logging.getLogger("projektakte.background")
 
@@ -61,6 +61,8 @@ class BackgroundIndexer:
         if self.vision is not None:
             self.vision.start()
         if self.embedder is not None:
+            if getattr(self.settings, "embed_paused", False):  # EMBED_PAUSED=1: held back from the start
+                EMBED_PAUSE.pause()
             self.embedder.start()
         self.doctypes.start()
 
@@ -68,6 +70,7 @@ class BackgroundIndexer:
         self._stop.set()
         self._wake.set()
         PAUSE.resume()  # threads waiting in a pause must see the stop
+        EMBED_PAUSE.resume()
         if self.vision is not None:  # first: no new page images are prepared, answers on their way are dropped
             self.vision.stop(timeout)
         if self.embedder is not None:
@@ -92,7 +95,8 @@ class BackgroundIndexer:
             state = {**self.state, "alive": self.alive, "interval_s": self.settings.index_interval}
         state["vision"] = (vision.LIVE.snapshot() | {"alive": self.vision.alive, "error": self.vision.last_error}
                            if self.vision is not None else None)
-        state["embeddings"] = (embed_worker.LIVE.snapshot() | {"alive": self.embedder.alive}
+        state["embeddings"] = (embed_worker.LIVE.snapshot() | {"alive": self.embedder.alive,
+                                                               "pause": EMBED_PAUSE.snapshot()}
                                if self.embedder is not None else None)
         state["doc_types"] = dokumentarten.LIVE.snapshot() | {"alive": self.doctypes.alive}
         state["pause"] = PAUSE.snapshot()
@@ -104,6 +108,13 @@ class BackgroundIndexer:
 
     def resume(self) -> bool:
         return PAUSE.resume()
+
+    def pause_embeddings(self) -> bool:
+        """Hold back the background embedding alone (a batch at the service is finished first)."""
+        return EMBED_PAUSE.pause()
+
+    def resume_embeddings(self) -> bool:
+        return EMBED_PAUSE.resume()
 
     def _set(self, **kw) -> None:
         with self._lock:
