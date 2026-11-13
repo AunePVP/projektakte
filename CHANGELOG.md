@@ -10,6 +10,11 @@ Roadmap-Schritt.
   der Bildauswertung, Embeddings und Dokumentarten. Was gerade gelesen wird, wird noch fertig; danach wartet alles,
   und nach dem Fortsetzen geht es an derselben Stelle weiter. Suche und Fragen laufen unverändert. Die Pause gilt
   nur bis zum Neustart der Anwendung.
+- **Seitenbilder für das Modell mit 150 dpi (`VISION_DPI`):** Scans gingen bisher in ihrer vollen Auflösung (bis
+  16 Megapixel) an das Bildmodell – ein A4-Scan mit 300 dpi kostete rund 9.900 Bild-Tokens. Jetzt werden sie auf
+  150 dpi der echten Seitengröße verkleinert (A4 rund 2.600 Tokens). Gemessen mit Qwen3.5-4B: gleiche Erkennung,
+  drei- bis viermal mehr Seiten je Minute, keine Zeitüberschreitungen mehr bei großen Seiten. Tesseract bekommt
+  weiter das volle Bild; `VISION_DPI=0` schaltet es ab. Nichts wird neu gelesen.
 - **Schutz vor Wiederholungsschleifen der Bildauswertung:** Jede Seitenantwort des Modells wird gestreamt und
   mitgelesen; wiederholt sich eine Zeile oder Wortfolge immer wieder, bricht der Aufruf sofort ab (der Platz auf dem
   KI-Server ist gleich wieder frei, statt bis 4.000 Tokens zu laufen). Die Seite wird einmal neu gefragt, mit

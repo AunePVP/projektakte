@@ -1191,3 +1191,25 @@ gleichzeitigen Plätze des KI-Servers bis zu 4.000 Tokens lang fest.
   Schleife wird wie bei Migration 12/15 über ein unbekanntes Profil ganz neu gelesen (Tesseract und Bildauswertung
   nur für dieses Dokument).
 
+## Auflösung der Seitenbilder für das Bildmodell (`VISION_DPI`)
+
+Gemessen mit Qwen3.5-4B (vLLM auf dem Spark) an echten Projekt-PDFs – Text mit Textebene, ein gescannter Brief,
+A3-Pläne mit Handschrift, 38–76 Seiten je Stufe, Anteil gefundener Wörter gegen Textebene bzw. Referenz: 150 dpi
+(rund 2.600 Bild-Tokens je A4-Seite) erkennt 94 % bzw. 99 % im Scan bei 30 Seiten/min; 300 dpi (rund 9.900 Tokens)
+erkennt nicht mehr, schafft aber nur 7–10 Seiten/min, die langsamste Seite brauchte 210 s (über `LLM_TIMEOUT`);
+100 dpi liest etwas weniger und schleift öfter. 24 gleichzeitige Aufrufe waren am schnellsten (4–6: 8–13 Seiten/min),
+das Lesen von der SMB-Freigabe ist mit 0,55 s je Seite kein Engpass.
+- *dpi der echten Seitengröße statt einer festen Pixelgrenze*: `MAX_IMAGE_PIXELS` auf 4,5 MP zu senken, gäbe einem
+  A4-Scan rund 215 dpi (4.400 Tokens) und einem A0-Plan viel zu wenig – und dieselbe Grenze gilt für das Bild, das
+  Tesseract bekommt, für das Zusammensetzen gestreifter Scans und das Dekodieren. `RENDER_DPI` betrifft nur Seiten,
+  die PDFium selbst zeichnet (Text als Kurven), nicht Scans. Darum rechnet `extract.vision_pixels` aus der Seitengröße
+  (MediaBox) die Pixel für `VISION_DPI` aus, höchstens `MAX_IMAGE_PIXELS`.
+- *Nur das Bild für das Modell, im Leseprozess*: `page_images` (Phase „Bildauswertung“) und das Lesen in einem Zug
+  verkleinern das fertige Seitenbild unmittelbar vor dem Modell; Tesseract liest in Stufe 1 weiter das volle Bild
+  (bis `OCR_MAX_PIXELS`). JPEG wird mit verringerter Auflösung dekodiert (`draft`) und bleibt JPEG, Schwarzweiß wird
+  in Graustufen verkleinert (Text bleibt lesbar). Bis 15 % über dem Ziel bleibt das Bild, wie es ist.
+- *Aus der Umgebung gelesen* wie `TESSERACT` (der Leseprozess erbt sie), keine Änderung des Extraktionsprofils: Es wird
+  nichts neu gelesen, nur die noch wartenden Seiten gehen kleiner an das Modell.
+- *Bilddateien bleiben unverändert*: Sie haben keine Seitengröße und gehen ohne Leseprozess an das Modell; sie zu
+  verkleinern, hieße sie in der Anwendung zu dekodieren.
+

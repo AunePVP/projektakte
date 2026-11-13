@@ -56,9 +56,11 @@ def test_an_outlined_page_goes_to_tesseract_and_the_model_as_a_rendered_image(te
     r = extract(Path("Auszug.pdf"), outlined_and_blank(), llm=llm, ocr=True)
     assert (r.status, r.incomplete, r.method) == ("ok", False, "vision")
     assert [p.number for p in r.pages] == [1]  # the blank pages stay blank
-    assert len(tesseract) == 1 and llm.images == tesseract  # one rendered page, the same for both
+    assert len(tesseract) == 1 and len(llm.images) == 1  # one rendered page for both
+    with Image.open(io.BytesIO(tesseract[0])) as img:
+        assert img.size == (2479, 3508) and img.mode == "L"  # Tesseract: A4 at 300 dpi, grey
     with Image.open(io.BytesIO(llm.images[0])) as img:
-        assert img.size == (2479, 3508) and img.mode == "L"  # A4 at 300 dpi, grey
+        assert img.size == (1239, 1754) and img.mode == "L"  # the model: at VISION_DPI (150), grey
     assert "Stellplätze Garagen" in llm.prompts[0]  # Tesseract's text goes with the image
 
 

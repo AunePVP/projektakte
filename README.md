@@ -458,6 +458,12 @@ zeigt, wie viele Seiten und Dokumente noch warten; das Protokoll jede gelesene S
 vollständig gelesene PDF-Dateien (ohne Modell gelesen) prüft die Phase nebenbei auf gescannte Seiten
 mit Textebene – deren Handschrift steht nur im Bild. Fällt das Modell aus, wird die Seite mit
 wachsendem Abstand wiederholt; ihr Text der ersten Stufe bleibt so lange durchsuchbar. Mit
+**Auflösung für das Modell (`VISION_DPI`, 150):** Die Seitenbilder gehen mit 150 dpi der echten Seitengröße an das
+Modell (A4 rund 2,2 Megapixel und 2.600 Bild-Tokens, A3 doppelt so viel, große Pläne höchstens 16 Megapixel). Gemessen
+mit Qwen3.5-4B erkennt es so genauso viel wie mit 300 dpi (rund 9.900 Tokens), aber drei- bis viermal schneller;
+100 dpi liest weniger und schleift öfter. Verkleinert wird nur das Bild für das Modell, im Leseprozess; Tesseract
+bekommt in Stufe 1 weiter das volle Bild. Bilddateien (JPG, PNG, …) gehen wie bisher unverändert an das Modell.
+
 **Wiederholungsschleifen:** Kleine Bildmodelle wiederholen beim Abschreiben von Formularen, Tabellen und Plänen
 manchmal dieselbe Zeile, bis die Token-Grenze erreicht ist. Jede Seitenantwort wird deshalb gestreamt und mitgelesen
 (`projektakte/ai/repetition.py`: eine Folge von 1–80 Wörtern mindestens sechsmal hintereinander über mindestens 400
@@ -693,6 +699,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_MODEL` | `qwen3.8-flash-next` | Modellname |
 | `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Scans, Pläne; Phase „Bildauswertung“) |
 | `VISION_CONCURRENCY` | `3` | Gleichzeitige Modellaufrufe der Bildauswertung (ab 1 = nacheinander); der KI-Server nimmt 4, einer bleibt für Fragen frei |
+| `VISION_DPI` | `150` | Auflösung der Seitenbilder für das Bildmodell, bezogen auf die echte Seitengröße (A4 ≈ 2,2 MP, A3 ≈ 4,4 MP); Tesseract bekommt weiter das volle Bild; `0` = aus (bis 16 MP) |
 | `VISION_RETRY_BODY` | `{"temperature": 0.7, "top_p": 0.8, "top_k": 20}` | Felder (JSON) für den zweiten Versuch einer Seite nach einer Wiederholungsschleife; `{}` = wie der erste |
 | `VISION_PASS_SECONDS` | `1800` | Länge einer Runde der Bildauswertung in Sekunden; danach beginnt sofort die nächste (sie nimmt auch fehlgeschlagene Seiten, deren Wartezeit um ist). Ohne Anwendung (`python -m projektakte.index`): Zeitbudget der Phase am Ende des Laufs. `0` = bis nichts mehr aussteht |
 | `EMBED_CONCURRENCY` | `2` | Stapel (je 32 Abschnitte), die die Embeddings im Hintergrund gleichzeitig an den Embedding-Dienst schicken (1–8) |

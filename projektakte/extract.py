@@ -86,6 +86,79 @@ def vision_prompt(known: str = "") -> str:
             "was fehlt. " + _VISION_RULES + "\n\nErkannter Text:\n<<<\n" + known + "\n>>>")
 
 
+# -- page images for the model: VISION_DPI -------------------------------------------------------------------
+# The model gets the page images at this resolution of the real page size (measured with Qwen3.5-4B on scans,
+# letters and A3 plans: 150 dpi reads as much as 300 dpi with about a quarter of the image tokens, 100 dpi
+# reads less and loops more). Only the images for the model: Tesseract keeps the full page image. 0 = off.
+VISION_DPI_DEFAULT = 150
+_VISION_SCALE_SLACK = 1.15  # an image at most this much larger than the target is sent as it is
+
+
+def vision_dpi() -> int:
+    """VISION_DPI from the environment (read by the extraction worker as well): whole number, 0 = off."""
+    raw = (os.environ.get("VISION_DPI") or "").strip()
+    if not raw:
+        return VISION_DPI_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        return VISION_DPI_DEFAULT
+    return value if value >= 0 else VISION_DPI_DEFAULT
+
+
+def vision_pixels(width_pt: float, height_pt: float) -> int | None:
+    """Pixels of a page of that size (PDF points) at VISION_DPI, at most MAX_IMAGE_PIXELS – None: no bound."""
+    dpi = vision_dpi()
+    try:
+        w, h = abs(float(width_pt)), abs(float(height_pt))
+    except (TypeError, ValueError):
+        return None
+    if not dpi or not (w > 0 and h > 0):
+        return None
+    return max(1, int(min(MAX_IMAGE_PIXELS, (w / 72 * dpi) * (h / 72 * dpi))))
+
+
+def for_model(mime: str, data: bytes, pixels: int | None) -> tuple[str, bytes]:
+    """A prepared page image (JPEG/PNG of at most MAX_IMAGE_PIXELS) scaled down to ``pixels`` for the model;
+    as it is if it is not much larger, cannot be read or ``pixels`` is None."""
+    if pixels is None:
+        return mime, data
+    from PIL import Image
+
+    try:
+        img = Image.open(io.BytesIO(data))
+        width, height = img.size
+        if width * height <= pixels * _VISION_SCALE_SLACK:
+            return mime, data
+        f = (pixels / (width * height)) ** 0.5
+        size = (max(1, int(width * f)), max(1, int(height * f)))
+        was_jpeg = img.format == "JPEG"
+        if was_jpeg:
+            img.draft(img.mode, size)  # decoded at a reduced scale right away
+        img.load()
+        if img.mode == "1":
+            img = img.convert("L")  # scaling bilevel scans keeps text readable in grey
+        img = img.resize(size, Image.Resampling.LANCZOS)
+        if was_jpeg and img.mode in ("L", "RGB"):  # a grey JPEG scan stays a JPEG (PNG of its noise is large)
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=90)
+            out, out_mime = buf.getvalue(), "image/jpeg"
+        else:
+            out, out_mime = _encode(img)
+    except Exception as exc:  # noqa: BLE001 – the image as it is: the model reads it anyway
+        log.warning("Seitenbild nicht verkleinert (%s)", exc)
+        return mime, data
+    return out_mime, out
+
+
+def _page_box(page) -> tuple[float, float] | None:
+    try:
+        box = page.mediabox
+        return float(box.width), float(box.height)
+    except Exception:  # noqa: BLE001 – a broken page box: no bound
+        return None
+
+
 # -- Tesseract (optional): the text of scanned pages without a text layer, before the model reads them ------
 OCR_COMMAND = "tesseract"
 OCR_LANGUAGE = "deu"
@@ -1917,7 +1990,9 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
                 else:
                     doc.vision_calls += 1
                     try:
-                        text = llm.describe_image(job.data, job.mime, vision_prompt(known)).text or ""
+                        box = _page_box(page)
+                        mime, data = for_model(job.mime, job.data, vision_pixels(*box) if box else None)
+                        text = llm.describe_image(data, mime, vision_prompt(known)).text or ""
                     except Exception as exc:  # noqa: BLE001
                         log.warning("%s Seite %d: Bildauswertung fehlgeschlagen (%s)", name, i, exc)
                         failed += 1
@@ -2033,6 +2108,10 @@ def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
                 _SHORTAGE.reset(token)
             if shortage.met and MEMORY_LIMIT_MB and (page.problem or page.partial):
                 page.limit = f"memory={MEMORY_LIMIT_MB}"  # more memory may read it
+            if page.images:  # at VISION_DPI of the page's size
+                box = _page_box(reader.pages[n - 1])
+                pixels = vision_pixels(*box) if box else None
+                page.images = [for_model(m, d, pixels) for m, d in page.images]
             out_pages.append(page)
             _progress()
         return out_pages

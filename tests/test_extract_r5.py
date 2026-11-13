@@ -4,6 +4,7 @@ the content walk and putting a page together are bounded, one document reads eac
 bounds of its own, and large JPEGs are decoded at reduced scale (memory of an A0 plan)."""
 import io
 import json
+import os
 import resource
 import subprocess
 import sys
@@ -146,9 +147,10 @@ def grid(n: int, size: float = 25):
 
 
 # -- one image object under many names, in many forms -------------------------------------------------------
-def test_one_image_under_many_names_and_forms_is_decoded_and_sent_once(decodes):
+def test_one_image_under_many_names_and_forms_is_decoded_and_sent_once(decodes, monkeypatch):
     """Before: dedup by resource name – 200 names of one 3000×3000 object were decoded 16 times (until the
     declared 150 MP were used up), 777 MB RSS for RGB, and the page was "184 Bild(er) nicht ausgewertet"."""
+    monkeypatch.setenv("VISION_DPI", "0")  # the image as decoded (not scaled for the model)
     doc = Doc()
     img = doc.image(flate(scan((3000, 3000))), (3000, 3000))
     names = {f"X{k}": img for k in range(200)}
@@ -601,7 +603,8 @@ def _limit_memory():  # a regression fails with MemoryError instead of swapping 
 
 def child(script: str, *args: str) -> str:
     proc = subprocess.run([sys.executable, "-c", script, *args], capture_output=True, text=True, cwd=ROOT,
-                          env={"PYTHONPATH": str(ROOT), "PATH": "/usr/bin:/bin"}, timeout=120,
+                          env={"PYTHONPATH": str(ROOT), "PATH": "/usr/bin:/bin",
+                               **{k: v for k, v in os.environ.items() if k == "VISION_DPI"}}, timeout=120,
                           preexec_fn=_limit_memory)
     assert proc.returncode == 0, proc.stderr[-2000:]
     return proc.stdout
@@ -613,9 +616,10 @@ def measure(path: Path) -> dict:
     return json.loads(child(_MEASURE, str(path)).strip().splitlines()[-1])
 
 
-def test_honest_a0_plan_in_colour_stays_well_below_500_mb(tmp_path):
+def test_honest_a0_plan_in_colour_stays_well_below_500_mb(tmp_path, monkeypatch):
     """An A0 plan scanned at 300 dpi in colour (9933×14043 JPEG, 139 MP): before, about 1.1 GB RSS; now the
     JPEG is decoded at half scale (35 MP) and sent at the full 16 MP."""
+    monkeypatch.setenv("VISION_DPI", "0")  # the test PDF's page box is A4: the decoded image, not scaled for the model
     path = tmp_path / "A0.pdf"
     child(_A0_PLAN, str(path), str(Path(__file__).parent))
     result = measure(path)
