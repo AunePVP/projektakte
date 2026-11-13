@@ -439,6 +439,9 @@ def _serve(conn, limits: Limits, parent: int) -> None:  # pragma: no cover - run
     root = logging.getLogger()
     root.handlers[:] = [forward]
     logging.captureWarnings(True)  # Pillow's and pypdf's warnings go to the app's log as well
+    from .logsetup import PYPDF_LOGGER, pypdf_level
+
+    logging.getLogger(PYPDF_LOGGER).setLevel(pypdf_level(os.environ.get("LOG_LEVEL") or "INFO"))
     _end_with_app(parent)
     from . import extract
     from .ai.llm import LLMClient

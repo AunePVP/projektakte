@@ -5,9 +5,12 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
-- Bilder unter 32 Pixel Kantenlänge (Linien, Streifen) gehen nicht mehr an das Bildmodell: vLLM wies sie mit HTTP 400
-  ab („Failed to apply Qwen3VLProcessor“), und die Seite wurde immer wieder vergeblich versucht. Die Seite behält ihren
-  Text und trägt „Bild zu schmal für das Modell“.
+- Ruhigeres Protokoll: Die Reparaturhinweise von pypdf zu beschädigten PDF-Dateien („incorrect startxref pointer“,
+  „Ignoring wrong pointing object“, „Multiple definitions in dictionary“) erscheinen nur noch mit `LOG_LEVEL=DEBUG`.
+  Dateien, die sich nicht lesen lassen, meldet weiter „Extraktion fehlgeschlagen“.
+- Bilder unter 32 Pixel Kantenlänge (Linien, Streifen) gehen auf einem weißen Streifen von 32 Pixeln an das Bildmodell:
+  vLLM wies sie mit HTTP 400 ab („Failed to apply Qwen3VLProcessor“), und die Seite wurde immer wieder vergeblich
+  versucht.
 - **KI-Dienste „ausgelastet“ statt „nicht erreichbar“:** Die Statusseite prüft jeden Dienst mit einer Testanfrage (3 s).
   Arbeitete der Dienst gerade Seiten oder Embedding-Stapel ab, wartete die Testanfrage in seiner Schlange, und er galt
   als „nicht erreichbar“, obwohl er lief (plMail und Projektakte arbeiteten mit ihm). Läuft die Testanfrage ab, der

@@ -55,6 +55,14 @@ class DropHealthProbes(logging.Filter):
         return not self._PROBE.search(record.getMessage())
 
 
+PYPDF_LOGGER = "pypdf"
+
+
+def pypdf_level(level: str) -> str:
+    """pypdf's repair notes only with LOG_LEVEL=DEBUG; its errors always."""
+    return "DEBUG" if (level or "").upper() == "DEBUG" else "ERROR"
+
+
 def logging_config(level: str = "INFO") -> dict:
     """dictConfig: everything goes through the root handler (same format); uvicorn's loggers
     propagate instead of using their own handlers and colours."""
@@ -71,6 +79,10 @@ def logging_config(level: str = "INFO") -> dict:
             "uvicorn": {"level": level, "handlers": [], "propagate": True},
             "uvicorn.error": {"level": level, "handlers": [], "propagate": True},
             "uvicorn.access": {"level": level, "handlers": [], "propagate": True, "filters": ["drop_probes", "strip_query"]},
+            # pypdf notes every repair of a broken file ("incorrect startxref pointer", "Object 814 0 not defined",
+            # "Multiple definitions in dictionary") – thousands on a real share, none actionable; a file that
+            # cannot be read is logged by projektakte.extract. Visible with LOG_LEVEL=DEBUG.
+            PYPDF_LOGGER: {"level": pypdf_level(level), "propagate": True},
         },
     }
 
