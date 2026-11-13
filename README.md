@@ -473,8 +473,8 @@ als der fast gierige erste Versuch, ohne `presence_penalty`: gemessen mit Qwen3.
 Prozentpunkte der Wörter einer Seite; gilt nur für diesen zweiten Versuch, eine Penalty aus `LLM_EXTRA_BODY` bleibt). Läuft sie
 wieder in eine Schleife, wird die Antwort verworfen: Die Seite behält den Text der Texterkennung (ohne ihn: den
 Anfang vor der Schleife), das Dokument trägt „Modell-Antwort verworfen (Wiederholungsschleife) …“ und wird nicht
-endlos neu gefragt. Der erste Versuch bekommt Tokens nach der Länge des bekannten Seitentexts (mindestens 1.500,
-höchstens 4.000); eine nur abgeschnittene Antwort wird einmal mit 4.000 neu gefragt. Antworten, die vor dieser Prüfung
+endlos neu gefragt. Der erste Versuch bekommt Tokens nach der Länge des bekannten Seitentexts (mindestens 2.000,
+höchstens 4.000; Seiten ohne bekannten Text, etwa Pläne, gleich 4.000); eine nur abgeschnittene Antwort wird einmal mit 4.000 neu gefragt. Antworten, die vor dieser Prüfung
 gespeichert wurden, prüft die Bildauswertung einmal nebenbei (DB-Migration 16, ohne Modell); ein Dokument mit
 Schleife wird ganz neu gelesen. Server, die nicht streamen, antworten wie bisher in einem Stück und werden danach
 geprüft. Kann der KI-Server Wiederholungen selbst erkennen (vLLM `repetition_detection`), ist das die bessere erste

@@ -1182,9 +1182,12 @@ gleichzeitigen Plätze des KI-Servers bis zu 4.000 Tokens lang fest.
 - *Lieber ablehnen als falsch*: Schleift auch der zweite Versuch, gilt der Text der ersten Stufe (Textebene oder
   Tesseract); nur ohne ihn wird der Anfang vor der Schleife übernommen. Die Seite wird nicht von selbst neu gefragt
   (das Modell schliffe wieder), das Dokument gilt als unvollständig mit Hinweis.
-- *Tokens je Seite*: erster Versuch etwa Prompt-Zeichen/2 + 500 Tokens (mindestens 1.500, höchstens 4.000) – deutscher
+- *Tokens je Seite*: erster Versuch etwa Prompt-Zeichen/2 + 500 Tokens (mindestens 2.000, höchstens 4.000) – deutscher
   Text hat 3–4 Zeichen je Token, die Antwort ist etwa so lang wie der bekannte Text plus Handschrift. Eine nur
-  abgeschnittene Antwort wird einmal mit 4.000 Tokens und den üblichen Einstellungen neu gefragt.
+  abgeschnittene Antwort wird einmal mit 4.000 Tokens und den üblichen Einstellungen neu gefragt (das Protokoll nennt
+  `finish_reason`, Länge und Grenze). Seiten ohne bekannten Text (Pläne, auf denen Tesseract nichts fand) bekommen
+  gleich 4.000: Zuerst waren es 1.500 – im Betrieb liefen beschriftete Pläne darüber, jeder zweite Versuch kostete
+  das ganze Prefill noch einmal.
 - *Gespeicherte Schleifen*: Nach der Bildauswertung werden `page_texts` gelöscht; geprüft werden darum die Abschnitte
   der Dokumente mit `method = 'vision'` (Migration 16 markiert sie, `loop_check`). Die Prüfung braucht kein Modell und
   läuft in Paketen von 200 Dokumenten zu Beginn jeder Runde und nebenbei, während das Modell rechnet. Ein Dokument mit

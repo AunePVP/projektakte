@@ -14,11 +14,13 @@ from .repetition import STREAM_WINDOW, before_loop, find_loop
 log = logging.getLogger("projektakte.ai")
 
 # Reading one page image (describe_image): its answer may use at most VISION_MAX_TOKENS (or LLM_MAX_TOKENS if
-# higher). The first call gets less, measured on the prompt – which holds the page's text so far: a page
-# answer is about as long as that text plus the handwriting. A loop then ends early; an answer that was
-# merely cut short is asked once more with the full amount.
+# higher). With the page's text so far in the prompt (between <<< and >>>, see extract.vision_prompt) the first
+# call gets less, measured on the prompt: a page answer is about as long as that text plus the handwriting. A
+# loop then ends early; an answer that was merely cut short is asked once more with the full amount. Without a
+# text so far (a plan Tesseract found nothing on) nothing tells the length: the full amount at once.
 VISION_MAX_TOKENS = 4000
-PAGE_MIN_TOKENS = 1500
+PAGE_MIN_TOKENS = 2000
+_KNOWN_TEXT = "\n<<<\n"
 # Second attempt after a repetition loop: other sampling than the near-greedy first one, so the page is not read
 # the same way again (Qwen's recommended temperature/top_p/top_k; VISION_RETRY_BODY replaces it). No presence
 # penalty: measured with Qwen3.5-4B, 1.5 lost about 14 percentage points of a page's words, 0.3 still 3.
@@ -183,8 +185,9 @@ class LLMClient:
         if _usable(first):
             return first
         retry = self.retry_body if first.loop else {}
-        log.info("Bildauswertung: %s – neuer Versuch%s", "Wiederholungsschleife" if first.loop else
-                 "Antwort abgeschnitten", " mit VISION_RETRY_BODY" if retry else " mit mehr Tokens")
+        log.info("Bildauswertung: %s (finish_reason %s, %d Zeichen, max_tokens %d) – neuer Versuch%s",
+                 "Wiederholungsschleife" if first.loop else "Antwort abgeschnitten", first.finish_reason,
+                 len(first.raw_text), page_tokens(prompt, full), " mit VISION_RETRY_BODY" if retry else " mit mehr Tokens")
         second = self._read_page(messages, full, retry)
         if _usable(second):
             return second
@@ -274,8 +277,11 @@ class LLMClient:
 
 
 def page_tokens(prompt: str, full: int) -> int:
-    """Tokens for the first reading of a page: about twice the prompt's characters in tokens plus room for
-    the handwriting (German text has 3 to 4 characters per token), at least PAGE_MIN_TOKENS, at most ``full``."""
+    """Tokens for the first reading of a page: with the page's text so far, about twice the prompt's characters in
+    tokens plus room for the handwriting (German text has 3 to 4 characters per token), at least PAGE_MIN_TOKENS;
+    without it ``full``."""
+    if _KNOWN_TEXT not in prompt:
+        return full
     return max(min(PAGE_MIN_TOKENS, full), min(full, len(prompt) // 2 + 500))
 
 

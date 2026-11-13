@@ -39,7 +39,9 @@ def test_real_pages_are_no_loop():
 
 
 def test_the_first_reading_gets_tokens_after_the_pages_text():
-    assert page_tokens(vision_prompt(""), 4000) == PAGE_MIN_TOKENS
+    # a plan without a text so far: nothing tells the length – the full amount at once
+    assert page_tokens(vision_prompt(""), 4000) == 4000
+    assert page_tokens(vision_prompt("kurz"), 4000) == PAGE_MIN_TOKENS
     assert page_tokens(vision_prompt("x" * 4000), 4000) > 2500
     assert page_tokens(vision_prompt("x" * 12000), 4000) == 4000
     assert page_tokens("kurz", 800) == 800
@@ -147,13 +149,13 @@ def test_a_page_that_loops_twice_is_dropped_with_what_came_before(server):
 
 def test_an_answer_cut_short_is_asked_again_with_more_tokens_only(server):
     srv = server(("stream", "Anfang der Seite", "length"), ("stream", GOOD, "stop"))
-    res = _client(srv, retry_body={"presence_penalty": 2}).describe_image(b"img", "image/png", vision_prompt(""))
+    res = _client(srv, retry_body={"presence_penalty": 2}).describe_image(b"img", "image/png", vision_prompt("kurz"))
     assert res.text == GOOD
     assert srv.payloads[0]["max_tokens"] == PAGE_MIN_TOKENS and srv.payloads[1]["max_tokens"] == 4000
     assert "presence_penalty" not in srv.payloads[1]  # no loop: the usual sampling
     srv = server(("stream", "Anfang", "length"), ("stream", "Anfang der langen Seite", "length"))
     with pytest.raises(IncompleteAnswer) as err:
-        _client(srv).describe_image(b"img", "image/png", vision_prompt(""))
+        _client(srv).describe_image(b"img", "image/png", vision_prompt("kurz"))
     assert not err.value.loop and err.value.text == "Anfang der langen Seite"
 
 

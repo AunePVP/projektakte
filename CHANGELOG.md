@@ -22,7 +22,7 @@ Roadmap-Schritt.
   kostet gemessen Text; nur für diesen Versuch, eine Penalty aus `LLM_EXTRA_BODY` bleibt). Läuft
   auch er in eine Schleife, behält die Seite den Text der Texterkennung, und das Dokument trägt „Modell-Antwort
   verworfen“. Bisher wurde eine Schleife als Seitentext gespeichert und ersetzte den Tesseract-Text. Der erste Versuch
-  bekommt nur so viele Tokens, wie die Seite nach ihrem bekannten Text braucht (mindestens 1.500). DB-Migration 16:
+  bekommt nur so viele Tokens, wie die Seite nach ihrem bekannten Text braucht (mindestens 2.000; Seiten ohne bekannten Text gleich 4.000). DB-Migration 16:
   Dokumente, die das Modell schon gelesen hat, werden einmal auf gespeicherte Schleifen geprüft (ohne Modell) und
   mit Schleife ganz neu gelesen.
 - **Projektübersicht mit Ordneransichten (Einstellung je Person unter „Einstellungen“):** neben der Liste gibt es
