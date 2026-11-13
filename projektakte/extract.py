@@ -121,6 +121,7 @@ def vision_pixels(width_pt: float, height_pt: float) -> int | None:
 def for_model(mime: str, data: bytes, pixels: int | None) -> tuple[str, bytes]:
     """A prepared page image (JPEG/PNG of at most MAX_IMAGE_PIXELS) scaled down to ``pixels`` for the model;
     as it is if it is not much larger, cannot be read or ``pixels`` is None."""
+    mime, data = _padded(mime, data)
     if pixels is None:
         return mime, data
     from PIL import Image
@@ -147,6 +148,33 @@ def for_model(mime: str, data: bytes, pixels: int | None) -> tuple[str, bytes]:
             out, out_mime = _encode(img)
     except Exception as exc:  # noqa: BLE001 – the image as it is: the model reads it anyway
         log.warning("Seitenbild nicht verkleinert (%s)", exc)
+        return mime, data
+    return out_mime, out
+
+
+# Images narrower or flatter than this are put onto a white strip of this size before they go to the model: a
+# vision model cuts an image into patches of about 28–32 pixels, and vLLM's Qwen3-VL processor rejects a thinner
+# one with HTTP 400 (seen: a 1979×3 line) – again on every retry of the page.
+MIN_MODEL_SIDE = 32
+
+
+def _padded(mime: str, data: bytes) -> tuple[str, bytes]:
+    """The image on white, at least MIN_MODEL_SIDE pixels on both sides (as it is if it is that large already
+    or cannot be read)."""
+    from PIL import Image
+
+    try:
+        img = Image.open(io.BytesIO(data))
+        width, height = img.size
+        if min(width, height) >= MIN_MODEL_SIDE:
+            return mime, data
+        img.load()
+        if img.mode not in ("L", "RGB"):
+            img = img.convert("RGB" if img.mode in ("P", "RGBA", "CMYK") else "L")
+        base = Image.new(img.mode, (max(width, MIN_MODEL_SIDE), max(height, MIN_MODEL_SIDE)), "white")
+        base.paste(img, (0, 0))
+        out, out_mime = _encode(base)
+    except Exception:  # noqa: BLE001 – as it is: the model answers or the page is retried later
         return mime, data
     return out_mime, out
 

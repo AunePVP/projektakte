@@ -470,6 +470,8 @@ Modell (A4 rund 2,2 Megapixel und 2.600 Bild-Tokens, A3 doppelt so viel, große 
 mit Qwen3.5-4B erkennt es so genauso viel wie mit 300 dpi (rund 9.900 Tokens), aber drei- bis viermal schneller;
 100 dpi liest weniger und schleift öfter. Verkleinert wird nur das Bild für das Modell, im Leseprozess; Tesseract
 bekommt in Stufe 1 weiter das volle Bild. Bilddateien (JPG, PNG, …) gehen wie bisher unverändert an das Modell.
+Bilder unter 32 Pixel Kantenlänge (z. B. eine Linie von 1979 × 3 Pixeln) gehen auf einem weißen Streifen von 32 Pixeln
+an das Modell – vLLMs Qwen3-VL weist sie sonst mit HTTP 400 ab.
 
 **Wiederholungsschleifen:** Kleine Bildmodelle wiederholen beim Abschreiben von Formularen, Tabellen und Plänen
 manchmal dieselbe Zeile, bis die Token-Grenze erreicht ist. Jede Seitenantwort wird deshalb gestreamt und mitgelesen

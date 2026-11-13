@@ -93,3 +93,25 @@ def test_tesseract_keeps_the_full_image(monkeypatch):
     assert seen == [(2480, 3508)]
     (w, h), = llm.sizes
     assert w * h <= A4_150 * 1.01
+
+
+# -- images too thin for the model --------------------------------------------------------------------------
+def test_a_thin_line_goes_to_the_model_on_a_white_strip():
+    """vLLM's Qwen3-VL processor rejected an image of 1979×3 pixels with HTTP 400 – again on every retry."""
+    line = jpeg(Image.new("L", (1979, 3), 0))
+    mime, data = for_model("image/jpeg", line, int(A4_150))
+    assert _size(data) == (1979, 32)
+    assert _size(for_model("image/png", line, None)[1]) == (1979, 32)  # also with VISION_DPI=0
+    doc = Doc()
+    img = doc.image(line, (1979, 3), filt=b"/DCTDecode")
+    doc.page(draw("Im1", (595, 0, 0, 842, 0, 0)), {"Im1": img})
+    (page,) = page_images(doc.build(), [1], "Linie.pdf")
+    assert min(_size(page.images[0][1])) >= 32
+
+
+def test_pypdf_repair_notes_stay_out_of_the_log():
+    from projektakte.logsetup import logging_config, pypdf_level
+
+    assert logging_config("INFO")["loggers"]["pypdf"]["level"] == "ERROR"
+    assert logging_config("DEBUG")["loggers"]["pypdf"]["level"] == "DEBUG"
+    assert pypdf_level("warning") == "ERROR"
