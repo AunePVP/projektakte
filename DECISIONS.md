@@ -1229,3 +1229,16 @@ weniger Seiten schaffte. Gewünscht war: erst die Seiten lesen, dann die Vektore
   der Thread den Stopp sieht); die Volltextsuche findet neue Abschnitte sofort, Fragen funktionieren weiter (die
   Frage-Vektoren macht der Dienst, er läuft ja).
 
+## „Ausgelastet“ statt „nicht erreichbar“
+
+Die Statusseite prüft die KI-Dienste mit je einer kleinen Testanfrage und `HEALTH_TIMEOUT` (3 s). Mit 22 Seiten beim
+Bildmodell und zwei Embedding-Stapeln beim Embedding-Dienst steht die Testanfrage hinten in deren Schlange und läuft
+ab – der Dienst hieß „nicht erreichbar“, obwohl er arbeitete.
+- *Nicht einfach länger warten*: Ein größeres `HEALTH_TIMEOUT` machte die Statusseite langsam (sie wartet auf die
+  Prüfung) und hilft nur, solange die Schlange kürzer ist.
+- *Echte Arbeit zählt*: Jeder Client merkt sich, wann er zuletzt eine echte Anfrage erfolgreich beantwortet bekam
+  (`last_ok_at`: Seiten, Embedding-Stapel, Fragen, Reranking). Läuft die Testanfrage ab und liegt diese Antwort höchstens
+  2 Minuten zurück, ist der Dienst „ausgelastet“ – er zählt als erreichbar, ohne Rückfall-Hinweis. Nur eine
+  Zeitüberschreitung kann das sein: abgewiesene Verbindung oder Fehlerantwort bleibt „nicht erreichbar“, ebenso ein
+  Dienst ohne Antwort in den letzten 2 Minuten.
+

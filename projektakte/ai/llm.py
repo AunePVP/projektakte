@@ -106,6 +106,7 @@ class LLMClient:
         self._lock = threading.Lock()
         self.last_error: str | None = None
         self.last_error_at: float | None = None
+        self.last_ok_at: float | None = None  # last answer to real work (the status page: busy, not down)
 
     def config(self) -> dict:
         """What this client was built with (plain data, contains the API key): the extraction worker
@@ -151,6 +152,7 @@ class LLMClient:
         except AIServiceError as exc:
             self._note_error(str(exc))
             raise
+        self.last_ok_at = time.time()
         return ChatResult(
             text=strip_think(raw),
             raw_text=raw,
@@ -240,6 +242,7 @@ class LLMClient:
         except AIServiceError as exc:
             self._note_error(str(exc))
             raise
+        self.last_ok_at = time.time()
         raw = "".join(content)
         text = strip_think(raw)
         think = "".join(reasoning)

@@ -5,6 +5,11 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **KI-Dienste „ausgelastet“ statt „nicht erreichbar“:** Die Statusseite prüft jeden Dienst mit einer Testanfrage (3 s).
+  Arbeitete der Dienst gerade Seiten oder Embedding-Stapel ab, wartete die Testanfrage in seiner Schlange, und er galt
+  als „nicht erreichbar“, obwohl er lief (plMail und Projektakte arbeiteten mit ihm). Läuft die Testanfrage ab, der
+  Dienst hat aber in den letzten 2 Minuten echte Anfragen beantwortet, steht er jetzt als „ausgelastet“ da (ohne
+  Rückfall-Hinweis). Abgewiesene Verbindungen und Fehlerantworten bleiben „nicht erreichbar“.
 - **Nur die Embeddings pausieren:** Auf der Statusseite gibt es „Embeddings pausieren“ / „Embeddings fortsetzen“ (API:
   `POST /api/embeddings/pause`, `POST /api/embeddings/resume`), getrennt von der Pause der ganzen Indexierung. So
   bekommt die Bildauswertung die GPU des KI-Servers allein; neue Texte findet bis dahin die Volltextsuche.

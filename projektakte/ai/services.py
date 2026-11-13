@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 
@@ -17,6 +18,9 @@ from .rerank import RerankClient
 
 log = logging.getLogger("projektakte.ai")
 _fake_lock = threading.Lock()
+# A service whose test request ran out of time but that answered real work (pages, embeddings, questions)
+# this recently is busy, not down: its queue is full of our own requests (the status page says "ausgelastet").
+BUSY_SECONDS = 120.0
 _fake_server = None
 
 
@@ -69,10 +73,15 @@ class AIServices:
             }
             services = {name: f.result() for name, f in futures.items()}
         # what happened during normal operation (e.g. reranker fallback in search)
+        now = time.time()
         for name, client in (("llm", self.llm), ("embeddings", self.embed),
                              ("reranker", self.rerank)):
             services[name]["last_error"] = client.last_error
             services[name]["last_error_at"] = client.last_error_at
+            busy = busy_note(services[name], getattr(client, "last_ok_at", None), now, t)
+            if busy:
+                services[name].update(ok=True, busy=True, note=busy)
+                services[name].pop("error", None)
         if not services["reranker"]["ok"]:
             services["reranker"]["fallback"] = "Suche ohne Reranker (Reihenfolge der hybriden Suche)"
         if not services["embeddings"]["ok"]:
@@ -81,3 +90,17 @@ class AIServices:
             services["llm"]["fallback"] = "Fragen: 'KI-Dienst nicht erreichbar', Suche geht weiter"
         ok = all(s["ok"] for s in services.values())
         return {"status": "ok" if ok else "degraded", "services": services}
+
+
+def busy_note(info: dict, last_ok_at: float | None, now: float, timeout: float) -> str | None:
+    """The note for a service that is busy rather than down: its test request timed out, but it answered real
+    work within BUSY_SECONDS. None otherwise (refused, an error answer, or no recent answer: really down)."""
+    if info.get("ok") or "Zeitüberschreitung" not in str(info.get("error") or ""):
+        return None
+    if last_ok_at is None or now - last_ok_at > BUSY_SECONDS:
+        return None
+    from .http import seconds_text
+
+    return (f"ausgelastet: Testanfrage nach {seconds_text(timeout)} s ohne Antwort, die letzte echte Anfrage "
+            f"beantwortete der Dienst vor {int(max(0.0, now - last_ok_at))} s")
+

@@ -726,7 +726,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `RERANK_MODEL` | – | nur falls der Server ein `model`-Feld verlangt |
 | `RERANK_TIMEOUT` / `RERANK_TOP_K` | `30` / `30` | Sekunden / Kandidaten für das Reranking |
 | `LLM_API_KEY`, `EMBED_API_KEY`, `RERANK_API_KEY` | – | optionale Bearer-Tokens (Secrets) |
-| `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps` |
+| `HEALTH_TIMEOUT` | `3` | Timeout je Dienst für `/health/deps`; läuft er ab, obwohl der Dienst in den letzten 2 Minuten echte Anfragen beantwortet hat, heißt er „ausgelastet“ statt „nicht erreichbar“ |
 | `INDEX_INTERVAL` | `300` | Sekunden zwischen Indexierungsläufen (`0` = nur beim Start/auf Anforderung) |
 | `INDEX_FOLDER_ORDER` | leer | Oberste Ordner unter `PROJECTS_DIR`, deren Projekte zuerst gelesen werden, mit Komma getrennt (`3,2`: erst Ordner 3, dann 2, dann die übrigen). Nur Voreinstellung: Sobald jemand die Reihenfolge auf der Statusseite ändert, gilt die dort gespeicherte |
 | `PROJECTS_TOP_FOLDERS` | leer (alle) | Nur diese obersten Ordner unter `PROJECTS_DIR` nach Projekten durchsuchen, mit Komma getrennt (`1,2,3,4,5,6,7,8,9`). Andere Ordner dort (Vorlagen, Archiv, lose Projektordner direkt in `PROJECTS_DIR`) werden nicht gelesen; schon bekannte Projekte daraus werden inaktiv und ihre Dateien aus dem Index genommen. Liegt keiner der Ordner da, bleibt alles unverändert (Warnung) |

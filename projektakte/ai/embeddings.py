@@ -47,6 +47,7 @@ class EmbeddingClient:
         self.dim: int | None = None
         self.last_error: str | None = None
         self.last_error_at: float | None = None
+        self.last_ok_at: float | None = None  # last answer to real work (the status page: busy, not down)
 
     # -- formats -----------------------------------------------------------------------------
     def _call(self, fmt: str, texts: list[str], timeout: float) -> list[list[float]]:
@@ -115,6 +116,7 @@ class EmbeddingClient:
             raise
         if out:
             self.dim = len(out[0])
+        self.last_ok_at = time.time()
         return out
 
     def embed_query(self, query: str, *, timeout: float | None = None) -> list[float]:

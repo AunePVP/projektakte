@@ -6,12 +6,13 @@
   {% for name, s in deps.services.items() %}
   <tr>
     <td>{{ {'llm': 'Sprachmodell', 'embeddings': 'Embeddings', 'reranker': 'Reranker'}.get(name, name) }}</td>
-    <td>{% if s.ok %}<span class="pill assigned">erreichbar</span>{% else %}<span class="pill warn">nicht erreichbar</span>{% endif %}</td>
+    <td>{% if s.busy %}<span class="pill busy">ausgelastet</span>{% elif s.ok %}<span class="pill assigned">erreichbar</span>{% else %}<span class="pill warn">nicht erreichbar</span>{% endif %}</td>
     <td class="hide-sm">{{ s.format or '–' }}{% if s.response_format and s.response_format != s.format %} / {{ s.response_format }}{% endif %}</td>
     <td class="num hide-sm">{{ s.latency_ms|de_num(1) if s.latency_ms is defined and s.latency_ms is not none else '–' }}</td>
     <td class="small keep-sm">{% if fake %}<span class="pill busy">simuliert</span> Fake-Dienst im Demo-Betrieb – keine echte KI{% else %}{{ s.url }}{% if s.model %} · {{ s.model }}{% endif %}{% endif %}{% if s.dim %} · {{ s.dim|de_num }} Dim.{% endif %}
       {% if s.hint and not fake %}<br><span class="muted">{{ s.hint }}</span>{% endif %}
       {% if s.error %}<br><span class="warn-text">{{ s.error }}</span>{% endif %}
+      {% if s.note %}<br><span class="muted">{{ s.note }}</span>{% endif %}
       {% if s.fallback %}<br><em>Rückfall: {{ s.fallback }}</em>{% endif %}</td>
   </tr>
   {% endfor %}
