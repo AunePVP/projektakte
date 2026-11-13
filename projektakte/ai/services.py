@@ -47,7 +47,8 @@ class AIServices:
         return cls(
             llm=LLMClient(s.llm_url, s.llm_model, timeout=s.llm_timeout,
                           max_tokens=s.llm_max_tokens, vision=s.llm_vision,
-                          api_key=s.llm_api_key, extra_body=s.llm_extra_body),
+                          api_key=s.llm_api_key, extra_body=s.llm_extra_body,
+                          retry_body=getattr(s, "vision_retry_body", None)),
             embed=EmbeddingClient(s.embed_url, s.embed_model, fmt=s.embed_format,
                                   timeout=s.embed_timeout, batch_size=s.embed_batch,
                                   query_instruction=s.embed_query_instruction,

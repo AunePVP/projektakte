@@ -242,6 +242,15 @@ MIGRATIONS: list[str] = [
        OR (status = 'ok' AND incomplete = 0
            AND pages > (SELECT COUNT(DISTINCT c.page) FROM chunks c WHERE c.doc_id = documents.id)));
     """,
+    # 16 – answers of the vision model are checked for repetition loops (ai.repetition): a loop is dropped and
+    #      the page keeps its text so far. Documents the model read before are marked (``loop_check``) and
+    #      checked by the phase "Bildauswertung" (vision.VisionPass._loop_check, no model needed); one whose
+    #      sections hold a loop is read again in full.
+    """
+    ALTER TABLE documents ADD COLUMN loop_check INTEGER NOT NULL DEFAULT 0;
+    UPDATE documents SET loop_check = 1 WHERE method = 'vision';
+    CREATE INDEX documents_loop_check ON documents(id) WHERE loop_check = 1;
+    """,
 ]
 
 # projects.kind

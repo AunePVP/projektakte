@@ -64,6 +64,30 @@ class CallBudget:
         return timeout_error(self.timeout, text.split(": ", 1)[1] if ": " in text else self.url)
 
 
+def _open(method: str, url: str, payload: Any, timeout: float, headers: dict[str, str] | None, accept: str):
+    data = None
+    hdrs = {"Accept": accept, "User-Agent": "projektakte"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        hdrs["Content-Type"] = "application/json"
+    hdrs.update(headers or {})
+    req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
+    try:
+        return _OPENER.open(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace") if exc.fp else ""
+        raise HTTPStatusError(exc.code, body, url) from None
+    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
+        raise _network_error(exc, timeout, url) from None
+
+
+def _network_error(exc: BaseException, timeout: float, url: str) -> AIServiceError:
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(reason):
+        return timeout_error(timeout, url)
+    return AIServiceError(f"nicht erreichbar: {url} ({reason})")
+
+
 def request(
     method: str,
     url: str,
@@ -73,25 +97,81 @@ def request(
     headers: dict[str, str] | None = None,
 ) -> tuple[bytes, dict[str, str]]:
     """Raw request; returns (body, headers). Raises AIServiceError / HTTPStatusError."""
-    data = None
-    hdrs = {"Accept": "application/json", "User-Agent": "projektakte"}
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-        hdrs["Content-Type"] = "application/json"
-    hdrs.update(headers or {})
-    req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
     end = time.monotonic() + timeout
+    resp = _open(method, url, payload, timeout, headers, "application/json")
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with resp:
             return _read_until(resp, end, timeout, url), {k.lower(): v for k, v in resp.headers.items()}
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace") if exc.fp else ""
-        raise HTTPStatusError(exc.code, body, url) from None
-    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
-        reason = getattr(exc, "reason", exc)
-        if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(reason):
-            raise timeout_error(timeout, url) from None
-        raise AIServiceError(f"nicht erreichbar: {url} ({reason})") from None
+    except AIServiceError:
+        raise
+    except (socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
+        raise _network_error(exc, timeout, url) from None
+
+
+class EventStream:
+    """The answer of a streaming POST (server-sent events), read line by line within the timeout of the
+    whole request. A server that ignores ``"stream": true`` answers with one JSON body instead:
+    :attr:`is_stream` tells which, :meth:`json` reads that body. Leaving the ``with`` block closes the
+    connection – a vLLM or llama.cpp server then stops generating for this request."""
+
+    def __init__(self, resp, end: float, timeout: float, url: str):
+        self._resp, self._end, self._timeout, self.url = resp, end, timeout, url
+        self.is_stream = "text/event-stream" in (resp.headers.get("Content-Type") or "").lower()
+
+    def __enter__(self) -> "EventStream":
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        self._resp.close()
+        return False
+
+    def json(self) -> Any:
+        try:
+            body = _read_until(self._resp, self._end, self._timeout, self.url)
+        except AIServiceError:
+            raise
+        except (socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
+            raise _network_error(exc, self._timeout, self.url) from None
+        try:
+            return json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise AIServiceError(f"keine gültige JSON-Antwort von {self.url}") from None
+
+    def events(self):
+        """The ``data:`` payloads of the stream, decoded from JSON, until ``[DONE]`` or its end."""
+        sock = getattr(getattr(getattr(self._resp, "fp", None), "raw", None), "_sock", None)
+        while True:
+            rest = self._end - time.monotonic()
+            if rest <= 0:
+                raise timeout_error(self._timeout, self.url)
+            if sock is not None:
+                try:
+                    sock.settimeout(rest)
+                except OSError:
+                    sock = None
+            try:
+                line = self._resp.readline()
+            except (socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
+                raise _network_error(exc, self._timeout, self.url) from None
+            if not line:
+                return
+            line = line.strip()
+            if not line.startswith(b"data:"):
+                continue  # comments, event names, blank separators
+            data = line[5:].strip()
+            if data == b"[DONE]":
+                return
+            try:
+                yield json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                raise AIServiceError(f"ungültiges Ereignis im Datenstrom von {self.url}") from None
+
+
+def post_stream(url: str, payload: Any, *, timeout: float, headers: dict[str, str] | None = None) -> EventStream:
+    """POST that asks for a streamed answer (see :class:`EventStream`)."""
+    end = time.monotonic() + timeout
+    resp = _open("POST", url, payload, timeout, headers, "text/event-stream, application/json")
+    return EventStream(resp, end, timeout, url)
 
 
 def _read_until(resp, end: float, timeout: float, url: str) -> bytes:

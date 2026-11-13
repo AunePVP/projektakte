@@ -1151,3 +1151,34 @@ zeitweise anhalten können (Backup, Messung, andere Last).
   Für „dauerhaft nicht lesen“ gibt es die Ordner-Schalter.
 - *Beenden löst die Pause*, damit wartende Threads den Stopp sehen und der Container sauber herunterfährt.
 - Suche, Fragen und Mail-Zuordnung von Hand bleiben unberührt.
+
+## Wiederholungsschleifen der Bildauswertung
+
+Ein kleines Bildmodell (4B) schrieb beim Abschreiben von Formularen und Tabellen manchmal dieselbe Zeile bis zur
+Token-Grenze. Die Antwort wurde trotzdem übernommen und ersetzte den Tesseract-Text, und jede Schleife hielt einen der
+gleichzeitigen Plätze des KI-Servers bis zu 4.000 Tokens lang fest.
+- *Erkennen statt nur bestrafen*: Eine `presence_penalty` für alle Seiten verringert Schleifen, bestraft aber auch
+  richtige Wiederholungen (Tabellenköpfe, gleiche Maße, Normen, „[handschriftlich: …]“) und kann beim wortgetreuen
+  Abschreiben Werte verfälschen. Darum bleibt der erste Versuch, wie er ist; nur eine Seite, die in eine Schleife
+  lief, wird mit `VISION_RETRY_BODY` (Qwen-Empfehlung gegen Endlosschleifen) neu gefragt.
+- *Regel* (`ai/repetition.py`): eine Folge von 1–80 Wörtern mindestens sechsmal unmittelbar hintereinander, zusammen
+  mindestens 400 Zeichen; Wörter werden genau verglichen (nur ohne Groß-/Kleinschreibung). Zeilen, die sich in einer
+  Zahl unterscheiden, sind keine Schleife – hochzählende Schleifen enden an der Token-Grenze und werden als
+  „abgeschnitten“ erkannt. Eine echte Seite mit sechs gleichen Zeilen über 400 Zeichen ist kaum denkbar; träfe es
+  sie, behielte sie nur den Tesseract-Text (kein falscher Text, nur keine Handschrift).
+- *Streaming*: Die Antwort wird mitgelesen (alle 300 Zeichen die letzten 600 Wörter, wenige Millisekunden); bei einer
+  Schleife schließt der Client die Verbindung, vLLM und llama.cpp brechen die Anfrage dann ab. Ein Server, der
+  `stream` nicht kennt, antwortet in einem Stück und wird danach geprüft. Nur die Bildauswertung streamt; Fragen
+  bleiben unverändert.
+- *Lieber ablehnen als falsch*: Schleift auch der zweite Versuch, gilt der Text der ersten Stufe (Textebene oder
+  Tesseract); nur ohne ihn wird der Anfang vor der Schleife übernommen. Die Seite wird nicht von selbst neu gefragt
+  (das Modell schliffe wieder), das Dokument gilt als unvollständig mit Hinweis.
+- *Tokens je Seite*: erster Versuch etwa Prompt-Zeichen/2 + 500 Tokens (mindestens 1.500, höchstens 4.000) – deutscher
+  Text hat 3–4 Zeichen je Token, die Antwort ist etwa so lang wie der bekannte Text plus Handschrift. Eine nur
+  abgeschnittene Antwort wird einmal mit 4.000 Tokens und den üblichen Einstellungen neu gefragt.
+- *Gespeicherte Schleifen*: Nach der Bildauswertung werden `page_texts` gelöscht; geprüft werden darum die Abschnitte
+  der Dokumente mit `method = 'vision'` (Migration 16 markiert sie, `loop_check`). Die Prüfung braucht kein Modell und
+  läuft in Paketen von 200 Dokumenten zu Beginn jeder Runde und nebenbei, während das Modell rechnet. Ein Dokument mit
+  Schleife wird wie bei Migration 12/15 über ein unbekanntes Profil ganz neu gelesen (Tesseract und Bildauswertung
+  nur für dieses Dokument).
+

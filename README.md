@@ -458,6 +458,19 @@ zeigt, wie viele Seiten und Dokumente noch warten; das Protokoll jede gelesene S
 vollständig gelesene PDF-Dateien (ohne Modell gelesen) prüft die Phase nebenbei auf gescannte Seiten
 mit Textebene – deren Handschrift steht nur im Bild. Fällt das Modell aus, wird die Seite mit
 wachsendem Abstand wiederholt; ihr Text der ersten Stufe bleibt so lange durchsuchbar. Mit
+**Wiederholungsschleifen:** Kleine Bildmodelle wiederholen beim Abschreiben von Formularen, Tabellen und Plänen
+manchmal dieselbe Zeile, bis die Token-Grenze erreicht ist. Jede Seitenantwort wird deshalb gestreamt und mitgelesen
+(`projektakte/ai/repetition.py`: eine Folge von 1–80 Wörtern mindestens sechsmal hintereinander über mindestens 400
+Zeichen). Eine Schleife bricht den Aufruf sofort ab, der Platz auf dem KI-Server wird frei. Die Seite wird einmal
+neu gefragt, mit `VISION_RETRY_BODY` (Voreinstellung `temperature 0.7`, `top_p 0.8`, `top_k 20`,
+`presence_penalty 1.5`, wie Qwen gegen Endlosschleifen empfiehlt; gilt nur für diesen zweiten Versuch). Läuft sie
+wieder in eine Schleife, wird die Antwort verworfen: Die Seite behält den Text der Texterkennung (ohne ihn: den
+Anfang vor der Schleife), das Dokument trägt „Modell-Antwort verworfen (Wiederholungsschleife) …“ und wird nicht
+endlos neu gefragt. Der erste Versuch bekommt Tokens nach der Länge des bekannten Seitentexts (mindestens 1.500,
+höchstens 4.000); eine nur abgeschnittene Antwort wird einmal mit 4.000 neu gefragt. Antworten, die vor dieser Prüfung
+gespeichert wurden, prüft die Bildauswertung einmal nebenbei (DB-Migration 16, ohne Modell); ein Dokument mit
+Schleife wird ganz neu gelesen. Server, die nicht streamen, antworten wie bisher in einem Stück und werden danach
+geprüft.
 `LLM_VISION=0` liest nur Tesseract (das Dokument bleibt unvollständig und wird mit `LLM_VISION=1`
 nachgelesen). Fotos in `VISION_SKIP_FOLDERS` bekommen weder Tesseract noch das Modell.
 
@@ -676,6 +689,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_MODEL` | `qwen3.8-flash-next` | Modellname |
 | `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Scans, Pläne; Phase „Bildauswertung“) |
 | `VISION_CONCURRENCY` | `3` | Gleichzeitige Modellaufrufe der Bildauswertung (ab 1 = nacheinander); der KI-Server nimmt 4, einer bleibt für Fragen frei |
+| `VISION_RETRY_BODY` | Qwen-Empfehlung | Felder (JSON) für den zweiten Versuch einer Seite nach einer Wiederholungsschleife; `{}` = wie der erste |
 | `VISION_PASS_SECONDS` | `1800` | Länge einer Runde der Bildauswertung in Sekunden; danach beginnt sofort die nächste (sie nimmt auch fehlgeschlagene Seiten, deren Wartezeit um ist). Ohne Anwendung (`python -m projektakte.index`): Zeitbudget der Phase am Ende des Laufs. `0` = bis nichts mehr aussteht |
 | `EMBED_CONCURRENCY` | `2` | Stapel (je 32 Abschnitte), die die Embeddings im Hintergrund gleichzeitig an den Embedding-Dienst schicken (1–8) |
 | `DOKUMENTART_KI` | `auto` | Sprachmodell nach der Dokumentart unklarer Dokumente fragen: `auto` = nur mit den echten KI-Diensten (nicht mit `AI_MODE=fake`), `1` = immer, `0` = nie. Ein Aufruf nach dem anderen, nie neben einer Frage (siehe „Suche“) |

@@ -213,6 +213,23 @@ def _dokumentart_ki(env: Mapping[str, str], warnings: list[str]) -> str:
     return "auto"
 
 
+def _retry_body(env: Mapping[str, str], warnings: list[str]) -> dict | None:
+    """VISION_RETRY_BODY: request fields (JSON object) for the second attempt at a page whose answer fell
+    into a repetition loop, e.g. sampling with a presence penalty; ``{}`` asks again with the usual ones.
+    Unset or invalid: the default of ai.llm (None)."""
+    raw = (env.get("VISION_RETRY_BODY") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        value = None
+    if not isinstance(value, dict):
+        warnings.append("VISION_RETRY_BODY ist kein gültiges JSON-Objekt – es gilt die Voreinstellung")
+        return None
+    return value
+
+
 def _vision_pass_seconds(env: Mapping[str, str], warnings: list[str]) -> float:
     """VISION_PASS_SECONDS: time budget of the phase "Bildauswertung" per indexing pass; 0 = no limit."""
     raw = (env.get("VISION_PASS_SECONDS") or "").strip()
@@ -284,6 +301,8 @@ class Settings:
     llm_timeout: float
     llm_max_tokens: int
     llm_extra_body: dict
+    # second attempt at a page after a repetition loop (VISION_RETRY_BODY, None: ai.llm.DEFAULT_RETRY_BODY)
+    vision_retry_body: dict | None
     embed_url: str
     embed_model: str
     embed_format: str  # auto | openai | tei
@@ -430,6 +449,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             extra_body = {}
     except json.JSONDecodeError:
         extra_body = {}
+    retry_body = _retry_body(e, warnings)
     app_env = (e.get("APP_ENV") or "dev").strip().lower()
     # computed before Settings(...): their warnings must be in config_warnings
     vector_search = _vector_search(e.get("VECTOR_SEARCH"), warnings)
@@ -470,6 +490,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         llm_timeout=_timeout(e, "LLM_TIMEOUT", 120.0, warnings),
         llm_max_tokens=_int(e.get("LLM_MAX_TOKENS"), 800),
         llm_extra_body=extra_body,
+        vision_retry_body=retry_body,
         embed_url=(e.get("EMBED_URL") or "http://192.168.178.62:8001").rstrip("/"),
         embed_model=e.get("EMBED_MODEL") or "qwen3-embedding-4b",
         embed_format=(e.get("EMBED_FORMAT") or "auto").lower(),

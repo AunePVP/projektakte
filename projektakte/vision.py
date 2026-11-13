@@ -41,6 +41,8 @@ from . import db, documents, zeiten
 from . import extract as extract_mod
 from . import extract_worker, reihenfolge
 from .ai.http import seconds_text
+from .ai.llm import IncompleteAnswer
+from .ai.repetition import find_loop
 from .chunking import chunk_pages
 from .documents import (LIMIT_MARK, _read_inside, _sqlite_time, _utcnow, document_date, pending_message, printable,
                         real_folder, retry_delay, sha256, store_page_texts, stored_profile, write_chunks)
@@ -54,6 +56,10 @@ _WAIT_SECONDS = 1.0  # waiting for a model answer in slices (the app's shutdown 
 _RECHECK_BATCH = 100  # candidates for the re-check fetched at a time
 WAITING = ("pending", "failed")  # page states that still wait for the model
 NO_TEXT = "kein Text"  # note of a page the model read without finding text (its text so far stands)
+# note of a page whose answer was dropped (repetition loop or cut off, also on the second attempt): the text
+# so far stands – or, without one, what the model wrote before its loop
+DROPPED = "Modell-Antwort verworfen"
+_LOOP_CHECK_BATCH = 200  # documents read by the model earlier checked for a stored loop at a time
 
 
 def pending_counts(conn) -> dict:
@@ -122,7 +128,7 @@ class VisionPass:
         self.extract = extract or extract_mod.extract
         self.profile = extraction_profile(llm)
         self.stats = {"pages": 0, "failed": 0, "not_readable": 0, "documents": 0, "checked": 0, "found": 0,
-                      "discarded": 0, "stopped": False}
+                      "discarded": 0, "dropped": 0, "loops_found": 0, "stopped": False}
         self._ids: deque = deque()
         self._seen: set[int] = set()
         self._doc: _Doc | None = None
@@ -132,10 +138,12 @@ class VisionPass:
         self._recheck: deque = deque()
         self._recheck_seen: set[int] = set()
         self._recheck_done = False
+        self._loops_done = False
         self._end = 0.0
 
     # -- the run -------------------------------------------------------------------------------------
     def run(self) -> dict:
+        self._loop_check()  # no model needed: a batch at every start, more while the model works
         counts = pending_counts(self.conn)
         if not counts["pages"] and not counts["recheck"]:
             if self.live is not None:
@@ -159,11 +167,11 @@ class VisionPass:
                 if self.live is not None:
                     self.live.calls(len(inflight), task.name, task.page)
             if not inflight:
-                if self._time_left() and self._recheck_one():
+                if self._time_left() and (self._loop_check() or self._recheck_one()):
                     continue
                 break
             # the model is busy: meanwhile an older file is checked for scan pages (cheap, no model)
-            if len(inflight) >= self.concurrency and self._time_left() and self._recheck_one():
+            if len(inflight) >= self.concurrency and self._time_left() and (self._loop_check() or self._recheck_one()):
                 done = [f for f in inflight if f.done()]
             else:
                 done, _pending = wait(inflight, timeout=_WAIT_SECONDS, return_when=FIRST_COMPLETED)
@@ -223,16 +231,28 @@ class VisionPass:
         row = self.conn.execute("SELECT sha256 FROM documents WHERE id = ?", (doc_id,)).fetchone()
         return row is not None and row[0] == sha
 
-    def _call(self, task: _Task) -> tuple[str, float]:
-        """In a thread of the pool: the model reads the page (each image of it, with the page's text)."""
+    def _call(self, task: _Task) -> tuple[str, float, str | None]:
+        """In a thread of the pool: the model reads the page (each image of it, with the page's text).
+        Returns the text, the seconds and a note if an answer was dropped (see DROPPED)."""
         started = time.monotonic()
         answers = []
+        dropped: IncompleteAnswer | None = None
         prompt = vision_prompt(task.known)
         for mime, data in task.images:
-            text = (self.llm.describe_image(data, mime, prompt).text or "").strip()
+            try:
+                text = (self.llm.describe_image(data, mime, prompt).text or "").strip()
+            except IncompleteAnswer as exc:
+                dropped = exc
+                text = (exc.text or "").strip()
             if text:
                 answers.append(text)
-        return "\n".join(answers), time.monotonic() - started
+        seconds = time.monotonic() - started
+        if dropped is None:
+            return "\n".join(answers), seconds, None
+        why = "Wiederholungsschleife" if dropped.loop else "Antwort zu lang"
+        if task.known.strip():  # rather the text of the first stage than a doubtful answer
+            return task.known, seconds, f"{DROPPED} ({why}) – Text der Texterkennung behalten"
+        return "\n".join(answers), seconds, f"{DROPPED} ({why}) – nur der Anfang übernommen"
 
     # -- preparing the pages -----------------------------------------------------------------------------
     def _next_task(self) -> _Task | None:
@@ -345,15 +365,22 @@ class VisionPass:
     # -- results -----------------------------------------------------------------------------------------
     def _finish(self, task: _Task, future: Future) -> None:
         try:
-            text, seconds = future.result()
+            text, seconds, dropped = future.result()
         except Exception as exc:  # noqa: BLE001 – the model failed (timeout, server down): later again
             log.warning("Bildauswertung: %s Seite %d fehlgeschlagen (%s)", task.name, task.page, exc)
             self._store(task.doc_id, task.page, error=str(exc), sha=task.sha)
         else:
-            log.info("Bildauswertung: %s Seite %d gelesen (%.0f s)%s", task.name, task.page, seconds,
-                     "" if text else " – kein Text")
-            self._store(task.doc_id, task.page, text=text, partial=task.partial, retry=task.retry, limit=task.limit,
-                        sha=task.sha, seconds=seconds)
+            if dropped:
+                self.stats["dropped"] += 1
+                log.warning("Bildauswertung: %s Seite %d – %s", task.name, task.page, dropped)
+            else:
+                log.info("Bildauswertung: %s Seite %d gelesen (%.0f s)%s", task.name, task.page, seconds,
+                         "" if text else " – kein Text")
+            partial = "; ".join(n for n in (task.partial, dropped) if n) or None
+            # a dropped answer is not asked again by itself (the model would loop again): retry only as the
+            # page's images left out say
+            self._store(task.doc_id, task.page, text=text, partial=partial, retry=task.retry and bool(task.partial),
+                        limit=task.limit, sha=task.sha, seconds=seconds)
         doc = self._docs.get(task.doc_id)
         if doc is not None:
             doc.open -= 1
@@ -479,6 +506,36 @@ class VisionPass:
         if not waiting:
             self.conn.execute("DELETE FROM page_texts WHERE doc_id = ?", (doc_id,))
             self.stats["documents"] += 1
+
+    # -- answers stored before the loop guard: repetition loops ---------------------------------------------
+    def _loop_check(self) -> bool:
+        """Check a batch of documents the model read before answers were checked for repetition loops (DB
+        migration 16 marks them, ``loop_check``): a document whose sections hold a loop is read again in full
+        – an unknown profile makes it due for the documents pass, its scan pages then wait for the model
+        anew. Returns False once none is left."""
+        if self._loops_done:
+            return False
+        rows = self.conn.execute("SELECT id, rel_path FROM documents WHERE loop_check = 1 LIMIT ?",
+                                 (_LOOP_CHECK_BATCH,)).fetchall()
+        if not rows:
+            self._loops_done = True
+            return False
+        found = []
+        for row in rows:
+            texts = self.conn.execute("SELECT text FROM chunks WHERE doc_id = ?", (row["id"],)).fetchall()
+            if any(find_loop(t[0]) is not None for t in texts):
+                found.append(row)
+        self._begin()
+        self.conn.executemany("UPDATE documents SET loop_check = 0 WHERE id = ?", [(r["id"],) for r in rows])
+        self.conn.executemany(
+            "UPDATE documents SET incomplete = 1, extract_profile = '', retry_after = NULL WHERE id = ?",
+            [(r["id"],) for r in found])
+        self.conn.commit()
+        for row in found:
+            log.warning("Bildauswertung: %s enthält eine Wiederholungsschleife aus einer früheren Auswertung – "
+                        "wird neu gelesen", printable(row["rel_path"]))
+        self.stats["loops_found"] += len(found)
+        return True
 
     # -- older PDFs: scan pages with a text layer ---------------------------------------------------------
     def _recheck_one(self) -> bool:
