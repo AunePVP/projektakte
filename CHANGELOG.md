@@ -5,6 +5,9 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- Die Statusseite zeigt unter „Bildauswertung“, wie viele Seiten das Modell bisher gelesen hat (auch wenn nichts mehr
+  aussteht; `/api/reihenfolge`: `vision.samples`). Gezählt wird jede beantwortete Seite seit Einführung der
+  Zeitschätzung.
 - **Messung: wo die Bildauswertung stockt.** Dauert ein Schritt des Ablaufs, der die Seiten losschickt (nächste Seite
   vorbereiten, Antwort speichern, Nebenprüfung), 5 s oder länger, während ein Platz beim Modell frei ist, steht im
   Protokoll „Nachschub stockte … s“ mit den langsamsten Teilen (Datei gelesen, Seiten vorbereitet, Schreibsperre der

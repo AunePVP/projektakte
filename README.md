@@ -473,6 +473,8 @@ bekommt in Stufe 1 weiter das volle Bild. Bilddateien (JPG, PNG, …) gehen wie 
 Bilder unter 32 Pixel Kantenlänge (z. B. eine Linie von 1979 × 3 Pixeln) gehen auf einem weißen Streifen von 32 Pixeln
 an das Modell – vLLMs Qwen3-VL weist sie sonst mit HTTP 400 ab.
 
+Die Statusseite zeigt unter „Bildauswertung“ auch, wie viele Seiten das Modell bisher gelesen hat.
+
 **Wenn der Nachschub stockt:** Ein Ablauf schickt die Seiten los, nimmt die Antworten an und bereitet die nächsten
 Seiten vor (Datei vom Dateiserver lesen, Seitenbilder im Leseprozess) – solange ein Schritt davon dauert, geht keine neue
 Seite an das Modell. Dauert ein Schritt 5 s oder länger, während ein Platz beim Modell frei ist, steht im Protokoll

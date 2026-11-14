@@ -584,3 +584,17 @@ def test_embed_concurrency_setting(tmp_path):
     assert load_settings({"DATA_DIR": str(tmp_path), "EMBED_CONCURRENCY": "1"}).embed_concurrency == 1
     s = load_settings({"DATA_DIR": str(tmp_path), "EMBED_CONCURRENCY": "20"})
     assert s.embed_concurrency == 2 and any("EMBED_CONCURRENCY" in w for w in s.config_warnings)
+
+
+def test_the_status_page_counts_the_pages_the_model_read(tmp_path, fake_ai, monkeypatch):
+    s = _settings(fake_ai, tmp_path, LLM_VISION=1)
+    monkeypatch.setattr(vision.VisionWorker, "alive", property(lambda self: True))
+    with TestClient(create_app(s, background=False)) as client:
+        assert "vom Modell gelesen" not in client.get("/status").text  # none yet
+        conn = db.connect(s.db_path)
+        for _ in range(1234):
+            zeiten.add(conn, zeiten.PAGE_KEY, 40.0)
+        conn.commit()
+        conn.close()
+        assert "1.234 Seiten vom Modell gelesen" in client.get("/status").text  # also with nothing pending
+        assert client.get("/api/reihenfolge").json()["vision"]["samples"] == 1234
