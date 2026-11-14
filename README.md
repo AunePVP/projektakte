@@ -481,6 +481,9 @@ Seite an das Modell. Dauert ein Schritt 5 s oder länger, während ein Platz bei
 „Bildauswertung: Nachschub stockte 23 s – nächste Seite vorbereiten: 4 Seite(n) vorbereitet: … 19 s; Datei gelesen: …
 3 s (5 von 22 Plätzen frei)“; genannt werden auch Nebenprüfungen, das Speichern einer Antwort, das Warten auf die
 Schreibsperre der Datenbank und am Rundenende die Zeit ohne neue Seiten. Die letzte Zeile einer Runde zählt die Fälle.
+Weil kurze Lücken unter 5 s so nicht auffallen, steht alle 10 Minuten und am Ende der Runde auch, wie viele Plätze im
+Schnitt belegt waren („in den letzten 10 Min. im Schnitt 19,4 von 22 Plätzen belegt (88 %)“) – gezählt, solange Seiten
+warten und das Zeitbudget der Runde läuft.
 
 **Wiederholungsschleifen:** Kleine Bildmodelle wiederholen beim Abschreiben von Formularen, Tabellen und Plänen
 manchmal dieselbe Zeile, bis die Token-Grenze erreicht ist. Jede Seitenantwort wird deshalb gestreamt und mitgelesen

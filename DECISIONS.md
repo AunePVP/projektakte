@@ -1253,6 +1253,11 @@ Plätze leer, danach gehen alle auf einmal los und lesen gemeinsam ein.
 - *Messen statt raten*: Welcher Schritt bei der echten Ablage zählt, ist offen (große Plan-PDFs, CAD-Seiten, Sperren).
   Ein Umbau (Seiten im Voraus in einem eigenen Thread vorbereiten, Nebenprüfungen dorthin) ist größer; erst das
   Protokoll soll zeigen, ob und wo.
+- *Belegte Plätze im Schnitt*: Viele CAD-Seiten brauchen beim Vorbereiten je 2–4 s – unter der Schwelle, aber in
+  Summe sichtbar (nach dem Start waren 3 Minuten lang nur 12 von 22 Plätzen belegt). Darum zählt die Runde zusätzlich
+  die belegten Plätze über die Zeit (Mittel aus zwei Blicken mal Sekunden dazwischen, ein Blick je Durchgang der
+  Schleife, mindestens jede Sekunde) und loggt den Schnitt alle 10 Minuten und am Ende (erst ab 60 s gezählter Zeit).
+  Nicht gezählt: Zeit ohne wartende Seite (kein Verlust) und das Rundenende (eigene Zeile).
 - *Nur, was die GPU warten lässt*: Gezählt wird ein Schritt ab 5 s, wenn danach ein Platz frei ist (oder es die ganze
   Zeit war) – ein langsamer Schritt bei voll belegten Plätzen hält nichts auf. Die Teile werden ab 1 s genannt, die drei
   langsamsten im Log.

@@ -307,3 +307,58 @@ def test_no_stall_is_logged_while_every_place_is_busy(caplog):
         assert vp.stats["stalls"] == 1
     finally:
         vision_mod.STALL_SECONDS = old
+
+
+def test_the_mean_of_places_taken_is_counted_and_logged(monkeypatch, caplog):
+    """Places taken over time, also the short gaps the stall log leaves out: every OCCUPANCY_SECONDS and at the end."""
+    import logging
+    from concurrent.futures import Future
+
+    from projektakte import vision as vision_mod
+
+    now = [0.0]
+    monkeypatch.setattr(vision_mod.time, "monotonic", lambda: now[0])
+    vp = VisionPass.__new__(VisionPass)
+    vp.concurrency, vp._no_work, vp._end, vp.clock = 4, False, float("inf"), lambda: 0.0
+    vp._occ = {"area": 0.0, "time": 0.0, "w_area": 0.0, "w_time": 0.0, "w_start": None, "last_t": None,
+               "last_busy": 0, "counting": False}
+    busy = [Future() for _ in range(4)]
+    caplog.set_level(logging.INFO, logger="projektakte.vision")
+    vp._occupancy({f: None for f in busy})  # 4 taken
+    now[0] = 300.0
+    vp._occupancy({f: None for f in busy})  # 4 for 300 s
+    now[0] = 600.0
+    vp._occupancy({f: None for f in busy[:2]})  # from 4 to 2 over 300 s: 3 on average
+    assert abs(vp._occ["area"] / vp._occ["time"] - 3.5) < 1e-9
+    assert any("in den letzten 10 Min. im Schnitt 3,5 von 4 Plätzen belegt (88 %)" in r.getMessage()
+               for r in caplog.records)
+    # nothing to send: no loss, not counted
+    vp._no_work = True
+    vp._occupancy({})
+    now[0] = 900.0
+    vp._occupancy({})
+    assert vp._occ["time"] == 600.0
+
+
+def test_the_run_reports_its_mean_of_places(tmp_path, caplog, monkeypatch):
+    import logging
+
+    from projektakte import vision as vision_mod
+
+    from .test_bildauswertung_stufen import Vision
+
+    conn, root = _setup(tmp_path, {"Protokoll.pdf": ocr_layer_scan(), "Zweites.pdf": ocr_layer_scan()})
+    llm = Vision(delay=0.3)
+    _stage1(conn, root, llm)
+    caplog.set_level(logging.INFO, logger="projektakte.vision")
+    # a run of a few seconds: no mean (it would say nothing)
+    stats = VisionPass(conn, llm, projects_dir=root).run()
+    assert stats["occupancy"] is None
+    assert "Plätzen belegt" not in [r.getMessage() for r in caplog.records if "Seite(n) gelesen," in r.getMessage()][-1]
+    # counted from the start: the time while the pages were with the model
+    conn2, root2 = _setup(tmp_path / "b", {"Protokoll.pdf": ocr_layer_scan(), "Zweites.pdf": ocr_layer_scan()})
+    _stage1(conn2, root2, llm)
+    monkeypatch.setattr(vision_mod, "_OCCUPANCY_MIN_SECONDS", 0.0)
+    stats = VisionPass(conn2, llm, projects_dir=root2).run()
+    assert stats["occupancy"] is not None and 0 < stats["occupancy"] <= 3
+    assert "Plätzen belegt" in [r.getMessage() for r in caplog.records if "Seite(n) gelesen," in r.getMessage()][-1]

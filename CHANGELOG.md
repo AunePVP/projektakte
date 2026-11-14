@@ -8,6 +8,9 @@ Roadmap-Schritt.
 - Die Statusseite zeigt unter „Bildauswertung“, wie viele Seiten das Modell bisher gelesen hat (auch wenn nichts mehr
   aussteht; `/api/reihenfolge`: `vision.samples`). Gezählt wird jede beantwortete Seite seit Einführung der
   Zeitschätzung.
+- **Messung: wie viele Plätze beim Modell belegt sind.** Alle 10 Minuten und am Ende einer Runde steht im Protokoll
+  „im Schnitt 19,4 von 22 Plätzen belegt (88 %)“ – auch die kurzen Lücken, die „Nachschub stockte“ (ab 5 s) nicht
+  meldet. Gezählt wird, solange Seiten warten und das Zeitbudget der Runde läuft.
 - **Messung: wo die Bildauswertung stockt.** Dauert ein Schritt des Ablaufs, der die Seiten losschickt (nächste Seite
   vorbereiten, Antwort speichern, Nebenprüfung), 5 s oder länger, während ein Platz beim Modell frei ist, steht im
   Protokoll „Nachschub stockte … s“ mit den langsamsten Teilen (Datei gelesen, Seiten vorbereitet, Schreibsperre der

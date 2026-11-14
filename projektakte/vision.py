@@ -64,7 +64,11 @@ _LOOP_CHECK_BATCH = 200
 # A step of the dispatcher (preparing the next page, storing an answer, a side check) that takes this long while a
 # place at the model is free is logged with what took the time: meanwhile no page is sent to the model.
 STALL_SECONDS = 5.0
-_PART_SECONDS = 1.0  # parts of such a step named in the log line from this long on  # documents read by the model earlier checked for a stored loop at a time
+_PART_SECONDS = 1.0  # parts of such a step named in the log line from this long on
+# How many places at the model were taken on average (also the short gaps below STALL_SECONDS): logged this often
+# and at the end of a run. Counted only while there are pages to send and the time budget lasts.
+OCCUPANCY_SECONDS = 600.0
+_OCCUPANCY_MIN_SECONDS = 60.0  # documents read by the model earlier checked for a stored loop at a time
 
 
 def pending_counts(conn) -> dict:
@@ -134,8 +138,12 @@ class VisionPass:
         self.profile = extraction_profile(llm)
         self.stats = {"pages": 0, "failed": 0, "not_readable": 0, "documents": 0, "checked": 0, "found": 0,
                       "discarded": 0, "dropped": 0, "loops_found": 0, "stalls": 0, "stall_seconds": 0.0,
-                      "drain_seconds": 0.0, "stopped": False}
+                      "drain_seconds": 0.0, "occupancy": None, "stopped": False}
         self._parts: list[tuple[str, float]] = []  # slow parts of the step being timed (see _timed)
+        # places taken over time (see _occupancy): the whole run and the current window
+        self._occ = {"area": 0.0, "time": 0.0, "w_area": 0.0, "w_time": 0.0, "w_start": None, "last_t": None,
+                     "last_busy": 0, "counting": False}
+        self._no_work = False  # the last look for a page found none (nothing to send: no loss)
         self._ids: deque = deque()
         self._seen: set[int] = set()
         self._doc: _Doc | None = None
@@ -167,8 +175,10 @@ class VisionPass:
         drain: float | None = None  # when the time budget ran out with pages still at the model
         while True:
             self._check_stop()
+            self._occupancy(inflight)
             while len(inflight) < self.concurrency and self._time_left():
                 task = self._timed("nächste Seite vorbereiten", inflight, self._next_task)
+                self._no_work = task is None
                 if task is None:
                     break
                 inflight[pool.submit(self._call, task)] = task
@@ -192,6 +202,10 @@ class VisionPass:
                 self._timed("Antwort speichern", inflight, lambda f=future: self._finish(inflight.pop(f), f))
             if done and self.live is not None:
                 self.live.calls(len(inflight))
+        self._occupancy(inflight)
+        occ = self._occ
+        # a mean over a few seconds says nothing (a run that found little to do)
+        self.stats["occupancy"] = occ["area"] / occ["time"] if occ["time"] >= _OCCUPANCY_MIN_SECONDS else None
         if drain is not None:  # the end of a run waits for the pages at the model: nothing new is sent meanwhile
             self.stats["drain_seconds"] = time.monotonic() - drain
             log.info("Bildauswertung: Rundenende – %.0f s ohne neue Seiten, bis die letzten Antworten da waren",
@@ -206,8 +220,10 @@ class VisionPass:
                  self.stats["pages"], f", {self.stats['failed']} fehlgeschlagen" if self.stats["failed"] else "",
                  f", {self.stats['checked']} ältere PDF-Datei(en) geprüft ({self.stats['found']} mit Scans)"
                  if self.stats["checked"] else "",
-                 f", Nachschub stockte {self.stats['stalls']}-mal (zusammen {self.stats['stall_seconds']:.0f} s)"
-                 if self.stats["stalls"] else "", counts["pages"], counts["documents"],
+                 (f", Nachschub stockte {self.stats['stalls']}-mal (zusammen {self.stats['stall_seconds']:.0f} s)"
+                  if self.stats["stalls"] else "") + (f", {_places(self.stats['occupancy'], self.concurrency)}"
+                                                      if self.stats["occupancy"] is not None else ""),
+                 counts["pages"], counts["documents"],
                  " – Zeitbudget erreicht, weiter im nächsten Durchlauf" if self.stats["stopped"] and counts["pages"]
                  else "")
         return self.stats
@@ -254,6 +270,30 @@ class VisionPass:
                 parts = sorted(self._parts, key=lambda p: -p[1])[:3]
                 log.info("Bildauswertung: Nachschub stockte %.0f s – %s%s (%d von %d Plätzen frei)", took, what,
                          f": {'; '.join(f'{w} {s:.0f} s' for w, s in parts)}" if parts else "", free, self.concurrency)
+
+    def _occupancy(self, inflight: dict) -> None:
+        """Add the places taken since the last look (the mean of then and now, times the seconds between), while
+        there are pages to send and the time budget lasts; log the mean every OCCUPANCY_SECONDS."""
+        occ = self._occ
+        now = time.monotonic()
+        busy = sum(1 for f in inflight if not f.done())
+        if occ["last_t"] is not None and occ["counting"]:
+            dt = now - occ["last_t"]
+            area = (occ["last_busy"] + busy) / 2 * dt
+            occ["area"] += area
+            occ["time"] += dt
+            occ["w_area"] += area
+            occ["w_time"] += dt
+        if occ["w_start"] is None:
+            occ["w_start"] = now
+        occ["last_t"], occ["last_busy"] = now, busy
+        occ["counting"] = self._time_left() and not self._no_work
+        if now - occ["w_start"] >= OCCUPANCY_SECONDS:
+            if occ["w_time"] > 0:
+                log.info("Bildauswertung: in den letzten %s %s", _minutes(now - occ["w_start"]),
+                         _places(occ["w_area"] / occ["w_time"], self.concurrency))
+            occ["w_area"] = occ["w_time"] = 0.0
+            occ["w_start"] = now
 
     def _time_left(self) -> bool:
         return self.clock() < self._end
@@ -644,6 +684,16 @@ class VisionPass:
             self.conn.execute("UPDATE documents SET extract_profile = ? WHERE id = ?", (self.profile, row["id"]))
         self.conn.commit()  # anything else (worker failure): checked again in a later pass
         return True
+
+
+def _places(mean: float, concurrency: int) -> str:
+    """'im Schnitt 19,4 von 22 Plätzen belegt (88 %)'."""
+    return (f"im Schnitt {mean:.1f} von {concurrency} Plätzen belegt ({100 * mean / max(1, concurrency):.0f} %)"
+            .replace(".", ","))
+
+
+def _minutes(seconds: float) -> str:
+    return f"{seconds / 60:.0f} Min."
 
 
 class _Pool:
