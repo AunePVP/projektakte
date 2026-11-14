@@ -251,3 +251,59 @@ def test_migration_16_marks_the_documents_the_model_read(tmp_path):
     db.init_db(path)
     conn = db.connect(path)
     assert dict(conn.execute("SELECT rel_path, loop_check FROM documents").fetchall()) == {"a": 1, "b": 0}
+
+
+# -- measuring stalls of the dispatcher -----------------------------------------------------------------------
+def test_a_slow_preparation_is_logged_with_what_took_the_time(tmp_path, monkeypatch, caplog):
+    """While the next page is prepared (file read, page images), no page goes to the model: a step of 5 s or more
+    is logged with its slowest parts, and the run's last line counts them."""
+    import logging
+    import time as time_mod
+
+    from projektakte import vision as vision_mod
+    from projektakte.extract import page_images as real_page_images
+
+    from .test_bildauswertung_stufen import Vision
+
+    monkeypatch.setattr(vision_mod, "STALL_SECONDS", 0.2)
+    monkeypatch.setattr(vision_mod, "_PART_SECONDS", 0.1)
+    conn, root = _setup(tmp_path, {"Protokoll.pdf": ocr_layer_scan()})
+    llm = Vision()
+    _stage1(conn, root, llm)
+
+    def slow(*args, **kwargs):
+        time_mod.sleep(0.3)
+        return real_page_images(*args, **kwargs)
+
+    caplog.set_level(logging.INFO, logger="projektakte.vision")
+    stats = VisionPass(conn, llm, projects_dir=root, prepare=slow).run()
+    lines = [r.getMessage() for r in caplog.records if "Nachschub stockte" in r.getMessage()]
+    assert stats["stalls"] >= 1 and stats["stall_seconds"] >= 0.3
+    assert any("nächste Seite vorbereiten" in m and "Seite(n) vorbereitet: Protokoll.pdf" in m
+               and "Plätzen frei" in m for m in lines)
+    last = [r.getMessage() for r in caplog.records if "Seite(n) gelesen" in r.getMessage()][-1]
+    assert f"Nachschub stockte {stats['stalls']}-mal" in last
+
+
+def test_no_stall_is_logged_while_every_place_is_busy(caplog):
+    """A slow step while all places at the model are taken delays nothing: not logged."""
+    import logging
+    from concurrent.futures import Future
+
+    from projektakte import vision as vision_mod
+
+    vp = VisionPass.__new__(VisionPass)
+    vp.concurrency, vp.stats, vp._parts = 2, {"stalls": 0, "stall_seconds": 0.0}, []
+    busy = {Future(): None, Future(): None}
+    caplog.set_level(logging.INFO, logger="projektakte.vision")
+    old = vision_mod.STALL_SECONDS
+    vision_mod.STALL_SECONDS = 0.0
+    try:
+        vp._timed("Nebenprüfung", busy, lambda: None)
+        assert vp.stats["stalls"] == 0
+        done = Future()
+        done.set_result(None)
+        vp._timed("Nebenprüfung", {next(iter(busy)): None, done: None}, lambda: None)  # one became free meanwhile
+        assert vp.stats["stalls"] == 1
+    finally:
+        vision_mod.STALL_SECONDS = old

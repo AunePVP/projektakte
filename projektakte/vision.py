@@ -33,6 +33,7 @@ import logging
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,7 +60,11 @@ NO_TEXT = "kein Text"  # note of a page the model read without finding text (its
 # note of a page whose answer was dropped (repetition loop or cut off, also on the second attempt): the text
 # so far stands – or, without one, what the model wrote before its loop
 DROPPED = "Modell-Antwort verworfen"
-_LOOP_CHECK_BATCH = 200  # documents read by the model earlier checked for a stored loop at a time
+_LOOP_CHECK_BATCH = 200
+# A step of the dispatcher (preparing the next page, storing an answer, a side check) that takes this long while a
+# place at the model is free is logged with what took the time: meanwhile no page is sent to the model.
+STALL_SECONDS = 5.0
+_PART_SECONDS = 1.0  # parts of such a step named in the log line from this long on  # documents read by the model earlier checked for a stored loop at a time
 
 
 def pending_counts(conn) -> dict:
@@ -128,7 +133,9 @@ class VisionPass:
         self.extract = extract or extract_mod.extract
         self.profile = extraction_profile(llm)
         self.stats = {"pages": 0, "failed": 0, "not_readable": 0, "documents": 0, "checked": 0, "found": 0,
-                      "discarded": 0, "dropped": 0, "loops_found": 0, "stopped": False}
+                      "discarded": 0, "dropped": 0, "loops_found": 0, "stalls": 0, "stall_seconds": 0.0,
+                      "drain_seconds": 0.0, "stopped": False}
+        self._parts: list[tuple[str, float]] = []  # slow parts of the step being timed (see _timed)
         self._ids: deque = deque()
         self._seen: set[int] = set()
         self._doc: _Doc | None = None
@@ -157,38 +164,50 @@ class VisionPass:
         self._load_ids()
         pool = _Pool()  # (app shutdown: answers still on their way are not waited for – daemon threads)
         inflight: dict[Future, _Task] = {}
+        drain: float | None = None  # when the time budget ran out with pages still at the model
         while True:
             self._check_stop()
             while len(inflight) < self.concurrency and self._time_left():
-                task = self._next_task()
+                task = self._timed("nächste Seite vorbereiten", inflight, self._next_task)
                 if task is None:
                     break
                 inflight[pool.submit(self._call, task)] = task
                 if self.live is not None:
                     self.live.calls(len(inflight), task.name, task.page)
             if not inflight:
+                self._parts = []  # nothing at the model and nothing to prepare: a side check stalls nothing
                 if self._time_left() and (self._loop_check() or self._recheck_one()):
                     continue
                 break
+            if drain is None and not self._time_left():
+                drain = time.monotonic()
             # the model is busy: meanwhile an older file is checked for scan pages (cheap, no model)
-            if len(inflight) >= self.concurrency and self._time_left() and (self._loop_check() or self._recheck_one()):
+            if len(inflight) >= self.concurrency and self._time_left() and self._timed(
+                    "Nebenprüfung, während alle Plätze belegt waren", inflight,
+                    lambda: self._loop_check() or self._recheck_one()):
                 done = [f for f in inflight if f.done()]
             else:
                 done, _pending = wait(inflight, timeout=_WAIT_SECONDS, return_when=FIRST_COMPLETED)
             for future in done:
-                self._finish(inflight.pop(future), future)
+                self._timed("Antwort speichern", inflight, lambda f=future: self._finish(inflight.pop(f), f))
             if done and self.live is not None:
                 self.live.calls(len(inflight))
+        if drain is not None:  # the end of a run waits for the pages at the model: nothing new is sent meanwhile
+            self.stats["drain_seconds"] = time.monotonic() - drain
+            log.info("Bildauswertung: Rundenende – %.0f s ohne neue Seiten, bis die letzten Antworten da waren",
+                     self.stats["drain_seconds"])
         for doc_id in sorted(self._touched):
             self._write(doc_id)
         self.stats["stopped"] = not self._time_left()
         counts = pending_counts(self.conn)
         self.stats.update(pending_pages=counts["pages"], pending_documents=counts["documents"],
                           recheck=counts["recheck"])
-        log.info("Bildauswertung: %d Seite(n) gelesen%s%s, noch %d Seite(n) in %d Dokument(en) ausstehend%s",
+        log.info("Bildauswertung: %d Seite(n) gelesen%s%s%s, noch %d Seite(n) in %d Dokument(en) ausstehend%s",
                  self.stats["pages"], f", {self.stats['failed']} fehlgeschlagen" if self.stats["failed"] else "",
                  f", {self.stats['checked']} ältere PDF-Datei(en) geprüft ({self.stats['found']} mit Scans)"
-                 if self.stats["checked"] else "", counts["pages"], counts["documents"],
+                 if self.stats["checked"] else "",
+                 f", Nachschub stockte {self.stats['stalls']}-mal (zusammen {self.stats['stall_seconds']:.0f} s)"
+                 if self.stats["stalls"] else "", counts["pages"], counts["documents"],
                  " – Zeitbudget erreicht, weiter im nächsten Durchlauf" if self.stats["stopped"] and counts["pages"]
                  else "")
         return self.stats
@@ -207,6 +226,35 @@ class VisionPass:
             pages = sum(r[3] for r in rows if r[0] in kept)
             self.live.pending(pages, sum(r[3] for r in rows) - pages)
 
+    # -- measuring where the dispatcher spends its time ---------------------------------------------------
+    @contextmanager
+    def _part(self, what: str):
+        """Time a part of the step being timed (reading a file, preparing pages, waiting for the database)."""
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            took = time.monotonic() - started
+            if took >= _PART_SECONDS:
+                self._parts.append((what, took))
+
+    def _timed(self, what: str, inflight: dict, step):
+        """Run one step of the dispatcher; if it took STALL_SECONDS or more while a place at the model was free
+        (or became free meanwhile), log it with its slowest parts – no page was sent to the model meanwhile."""
+        self._parts = []
+        started = time.monotonic()
+        try:
+            return step()
+        finally:
+            took = time.monotonic() - started
+            free = self.concurrency - sum(1 for f in inflight if not f.done())
+            if took >= STALL_SECONDS and free > 0:
+                self.stats["stalls"] += 1
+                self.stats["stall_seconds"] += took
+                parts = sorted(self._parts, key=lambda p: -p[1])[:3]
+                log.info("Bildauswertung: Nachschub stockte %.0f s – %s%s (%d von %d Plätzen frei)", took, what,
+                         f": {'; '.join(f'{w} {s:.0f} s' for w, s in parts)}" if parts else "", free, self.concurrency)
+
     def _time_left(self) -> bool:
         return self.clock() < self._end
 
@@ -223,7 +271,8 @@ class VisionPass:
         together: the documents pass may write the same document meanwhile)."""
         if self.conn.in_transaction:
             self.conn.commit()
-        self.conn.execute("BEGIN IMMEDIATE")
+        with self._part("auf die Datenbank gewartet (Schreibsperre)"):
+            self.conn.execute("BEGIN IMMEDIATE")
 
     def _same_file(self, doc_id: int, sha: str | None) -> bool:
         if sha is None:
@@ -270,7 +319,8 @@ class VisionPass:
         now = _sqlite_time(_utcnow())
         while True:
             if self.refresh > 0 and self.clock() - self._loaded >= self.refresh:
-                self._load_ids()  # new documents of the documents pass running meanwhile, in their place
+                with self._part("Liste der wartenden Dokumente neu geladen"):
+                    self._load_ids()  # new documents of the documents pass running meanwhile, in their place
             elif self.order is not None and self.order.stale():  # the order was changed on the status page
                 self._ids = deque(self.order.sort([(i, *self._project.get(i, (None, None))) for i in self._ids]))
             if not self._ids:
@@ -297,7 +347,8 @@ class VisionPass:
                     self._touched.add(doc_id)
                     self._write(doc_id)
                 continue
-            data = self._read(dict(row))
+            with self._part(f"Datei gelesen: {printable(row['rel_path'])}"):
+                data = self._read(dict(row))
             if data is None:
                 continue
             doc = _Doc(dict(row), data, deque((r["page"], r["text"]) for r in due))
@@ -347,8 +398,9 @@ class VisionPass:
             return
         batch = [doc.due.popleft() for _ in range(min(BATCH_PAGES, len(doc.due)))]
         known = dict(batch)
-        prepared = extract_worker.page_images(row["filename"], doc.data, [n for n, _t in batch], self.prepare,
-                                              worker=self.worker)
+        with self._part(f"{len(batch)} Seite(n) vorbereitet: {name}"):
+            prepared = extract_worker.page_images(row["filename"], doc.data, [n for n, _t in batch], self.prepare,
+                                                  worker=self.worker)
         for page in prepared:
             if page.images:
                 self._queue(doc, _Task(row["id"], page.number, name, known.get(page.number, ""), row["sha256"],
@@ -443,7 +495,8 @@ class VisionPass:
         self._touched.discard(doc_id)
         self._begin()
         try:
-            self._write_document(doc_id)
+            with self._part(f"Dokument {doc_id} zusammengesetzt (Abschnitte, Volltext)"):
+                self._write_document(doc_id)
         finally:
             if self.conn.in_transaction:
                 self.conn.commit()
@@ -521,10 +574,11 @@ class VisionPass:
             self._loops_done = True
             return False
         found = []
-        for row in rows:
-            texts = self.conn.execute("SELECT text FROM chunks WHERE doc_id = ?", (row["id"],)).fetchall()
-            if any(find_loop(t[0]) is not None for t in texts):
-                found.append(row)
+        with self._part(f"{len(rows)} gespeicherte Dokumente auf Schleifen geprüft"):
+            for row in rows:
+                texts = self.conn.execute("SELECT text FROM chunks WHERE doc_id = ?", (row["id"],)).fetchall()
+                if any(find_loop(t[0]) is not None for t in texts):
+                    found.append(row)
         self._begin()
         self.conn.executemany("UPDATE documents SET loop_check = 0 WHERE id = ?", [(r["id"],) for r in rows])
         self.conn.executemany(
@@ -558,13 +612,15 @@ class VisionPass:
             self._recheck_seen.add(row["id"])
             if self.order is not None and self.order.skipped(row["project"], row["mail_id"]):
                 continue  # a file of a folder switched off: not read
-            data = self._read(row)
+            with self._part(f"Datei gelesen: {printable(row['rel_path'])}"):
+                data = self._read(row)
             if data is None:
                 continue
             break
         self._check_stop()
-        result = extract_worker.extract_file(row["filename"], data, self.llm, self.extract, defer_vision=True,
-                                             recheck=True, worker=self.worker)
+        with self._part(f"ältere PDF auf Scanseiten geprüft: {printable(row['rel_path'])}"):
+            result = extract_worker.extract_file(row["filename"], data, self.llm, self.extract, defer_vision=True,
+                                                 recheck=True, worker=self.worker)
         self.stats["checked"] += 1
         profile = stored_profile(self.profile, result)
         self._begin()

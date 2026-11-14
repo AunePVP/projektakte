@@ -1242,3 +1242,18 @@ ab – der Dienst hieß „nicht erreichbar“, obwohl er arbeitete.
   Zeitüberschreitung kann das sein: abgewiesene Verbindung oder Fehlerantwort bleibt „nicht erreichbar“, ebenso ein
   Dienst ohne Antwort in den letzten 2 Minuten.
 
+## Erst messen, wo die Bildauswertung stockt
+
+Im vLLM-Log fiel die Zahl der laufenden Anfragen zeitweise weit unter `VISION_CONCURRENCY`, und der Decode stand kurz
+bei 0. Im Code tut ein einziger Ablauf alles nacheinander: Seiten losschicken, Antworten speichern (Schreibsperre der
+Datenbank, die Einlesen und Embeddings teilen), die nächste Seite vorbereiten (ganze Datei vom Dateiserver lesen und
+prüfen, vier Seitenbilder im Leseprozess) und, wenn alle Plätze belegt sind, Nebenprüfungen (ältere PDF auf Scanseiten,
+gespeicherte Schleifen). Am Rundenende wartet er, bis alle Antworten da sind. Jeder langsame Schritt lässt frei gewordene
+Plätze leer, danach gehen alle auf einmal los und lesen gemeinsam ein.
+- *Messen statt raten*: Welcher Schritt bei der echten Ablage zählt, ist offen (große Plan-PDFs, CAD-Seiten, Sperren).
+  Ein Umbau (Seiten im Voraus in einem eigenen Thread vorbereiten, Nebenprüfungen dorthin) ist größer; erst das
+  Protokoll soll zeigen, ob und wo.
+- *Nur, was die GPU warten lässt*: Gezählt wird ein Schritt ab 5 s, wenn danach ein Platz frei ist (oder es die ganze
+  Zeit war) – ein langsamer Schritt bei voll belegten Plätzen hält nichts auf. Die Teile werden ab 1 s genannt, die drei
+  langsamsten im Log.
+

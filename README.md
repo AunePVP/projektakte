@@ -473,6 +473,13 @@ bekommt in Stufe 1 weiter das volle Bild. Bilddateien (JPG, PNG, …) gehen wie 
 Bilder unter 32 Pixel Kantenlänge (z. B. eine Linie von 1979 × 3 Pixeln) gehen auf einem weißen Streifen von 32 Pixeln
 an das Modell – vLLMs Qwen3-VL weist sie sonst mit HTTP 400 ab.
 
+**Wenn der Nachschub stockt:** Ein Ablauf schickt die Seiten los, nimmt die Antworten an und bereitet die nächsten
+Seiten vor (Datei vom Dateiserver lesen, Seitenbilder im Leseprozess) – solange ein Schritt davon dauert, geht keine neue
+Seite an das Modell. Dauert ein Schritt 5 s oder länger, während ein Platz beim Modell frei ist, steht im Protokoll
+„Bildauswertung: Nachschub stockte 23 s – nächste Seite vorbereiten: 4 Seite(n) vorbereitet: … 19 s; Datei gelesen: …
+3 s (5 von 22 Plätzen frei)“; genannt werden auch Nebenprüfungen, das Speichern einer Antwort, das Warten auf die
+Schreibsperre der Datenbank und am Rundenende die Zeit ohne neue Seiten. Die letzte Zeile einer Runde zählt die Fälle.
+
 **Wiederholungsschleifen:** Kleine Bildmodelle wiederholen beim Abschreiben von Formularen, Tabellen und Plänen
 manchmal dieselbe Zeile, bis die Token-Grenze erreicht ist. Jede Seitenantwort wird deshalb gestreamt und mitgelesen
 (`projektakte/ai/repetition.py`: eine Folge von 1–80 Wörtern mindestens sechsmal hintereinander über mindestens 400

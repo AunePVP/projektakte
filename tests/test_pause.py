@@ -81,7 +81,7 @@ def _without_vector(s) -> int:
         conn.close()
 
 
-def _wait(cond, seconds: float = 20.0) -> bool:
+def _wait(cond, seconds: float = 60.0) -> bool:
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         if cond():

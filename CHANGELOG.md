@@ -5,6 +5,11 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Messung: wo die Bildauswertung stockt.** Dauert ein Schritt des Ablaufs, der die Seiten losschickt (nächste Seite
+  vorbereiten, Antwort speichern, Nebenprüfung), 5 s oder länger, während ein Platz beim Modell frei ist, steht im
+  Protokoll „Nachschub stockte … s“ mit den langsamsten Teilen (Datei gelesen, Seiten vorbereitet, Schreibsperre der
+  Datenbank, Dokument zusammengesetzt …) und wie viele Plätze frei waren. Am Rundenende wird die Zeit ohne neue Seiten
+  genannt, in der letzten Zeile einer Runde die Zahl der Fälle. Grundlage für den Umbau (Seiten im Voraus vorbereiten).
 - Ruhigeres Protokoll: Die Reparaturhinweise von pypdf zu beschädigten PDF-Dateien („incorrect startxref pointer“,
   „Ignoring wrong pointing object“, „Multiple definitions in dictionary“) erscheinen nur noch mit `LOG_LEVEL=DEBUG`.
   Dateien, die sich nicht lesen lassen, meldet weiter „Extraktion fehlgeschlagen“.
