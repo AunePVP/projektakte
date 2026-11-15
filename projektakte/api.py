@@ -322,7 +322,8 @@ def _rf_data(request: Request, tab: str = "", q: str = "", limit: int = 50) -> d
                     "seconds_per_file_read": times["per_file"], "eta_project_seconds": times["project_eta"],
                     "eta_queue_seconds": times["queue_eta"], "seconds_per_project": times["per_project"]},
         "vision": now["vision"], "embeddings": now["embed"],
-        "queue": rf["queue_count"], "done": rf["done_count"], "switched_off": rf["off_count"], "tab": rf["tab"], "q": rf["q"],
+        "queue": rf["queue_count"], "done": rf["done_count"], "vision_waiting": rf["eye_count"],
+        "switched_off": rf["off_count"], "tab": rf["tab"], "q": rf["q"],
         "total": rf["total"], "count": len(projects), "projects": projects})
 
 

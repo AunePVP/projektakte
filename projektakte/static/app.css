@@ -187,7 +187,7 @@ blockquote { margin: .25rem 0 0; padding: .3rem .6rem; border-left: 3px solid va
 .actions { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
 .actions form { margin: 0; display: flex; gap: .3rem; flex-wrap: wrap; }
 .assign-form select, .assign-form input[type=text] { width: 16rem; max-width: 100%; }
-dl.meta { display: grid; grid-template-columns: 8rem 1fr; gap: .2rem .8rem; margin: .6rem 0; }
+dl.meta { display: grid; grid-template-columns: minmax(8rem, max-content) 1fr; gap: .2rem .8rem; margin: .6rem 0; }
 dl.meta dt { color: var(--muted); } dl.meta dd { margin: 0; }
 pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; margin: 0; }
 pre.mailbody { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: .8rem 1rem; }
@@ -282,7 +282,7 @@ table.list.rf-list tr.pinned td:first-child { box-shadow: inset 3px 0 0 var(--in
 table.list.rf-list form { margin: 0; }
 .rf-st { display: inline-flex; align-items: center; gap: .35rem; font-size: .87rem; white-space: nowrap; }
 .rf-st.ok { color: var(--ok); } .rf-st.warn { color: var(--warn); } .rf-st.wait { color: var(--muted); }
-.rf-st.pin { color: var(--info); }
+.rf-st.pin { color: var(--info); } .rf-st.eye { color: var(--info); white-space: normal; }
 .rf-st.off { color: var(--muted); font-style: italic; }
 @media (max-width: 700px) {
   /* the project list keeps Stand and the button; #, Ordner and Dateien give way */
@@ -361,3 +361,15 @@ table.list.rf-list form { margin: 0; }
 .cols .col-wide table.list { border: 0; }
 .cols .empty { padding: 1.2rem .8rem; }
 @media (max-width: 700px) { .cols { grid-template-columns: 1fr; } .cols .col { border-right: 0; border-bottom: 1px solid var(--line); max-height: 16rem; } }
+
+/* buttons of a card in one row (status page) */
+.actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .7rem; }
+.actions form { margin: 0; }
+/* card "Wird gerade gelesen": one block per activity – label, main line, details */
+.rf-act { margin-top: .6rem; padding-top: .5rem; border-top: 1px solid var(--line); }
+.rf-act:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.rf-act-head { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; }
+.rf-act-head .pill { flex: none; }
+.rf-act-main { font-weight: 600; }
+.rf-act .detail { margin-top: .15rem; overflow-wrap: anywhere; }
+.rf-act .warn { color: var(--warn); }

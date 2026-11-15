@@ -313,7 +313,7 @@ def test_status_page_shows_what_waits(tmp_path, fake_ai):
         counts = client.get("/api/status").json()["counts"]
         assert (counts["vision_pending_pages"], counts["vision_pending_documents"]) == (3, 2)
         page = client.get("/status").text
-        assert "Bildauswertung" in page and "3 Seiten in 2 Dokumenten ausstehend" in page
+        assert "Bildauswertung" in page and '3 Seiten offen <span class="muted small">in 2 Dokumenten' in page
 
 
 def test_missing_tesseract_falls_back_to_the_model_alone(tmp_path):

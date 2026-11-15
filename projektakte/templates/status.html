@@ -6,35 +6,36 @@
   <section class="card">
     <h2>Indexierung</h2>
     <dl class="meta">
-      <dt>Zustand</dt><dd>{% if st.indexing.pause.paused %}<strong>pausiert</strong> seit {{ st.indexing.pause.since|de_date(true) }} (angefangene Schritte werden noch beendet) · {% endif %}{{ 'läuft (' ~ st.indexing.phase ~ ')' if st.indexing.running else 'wartet' }}{% if eye %} · Bildauswertung {{ ('läuft, ' ~ eye.concurrency ~ ' gleichzeitig') if eye.busy else ('wartet' if eye.alive else 'beendet') }}{% endif %}{% if emb %} · Embeddings {{ ('<strong>pausiert</strong>'|safe) if emb.paused else ('laufen' if emb.busy else ('warten' if emb.alive else 'beendet')) }}{% endif %}</dd>
-      <dt>Läufe</dt><dd>{{ st.indexing.runs|de_num }}</dd>
-      <dt>Letzter Lauf</dt><dd>{{ st.indexing.last_finished|de_date(true) }}</dd>
-      <dt>Nächster Lauf</dt><dd>{{ st.indexing.next_run|de_date(true) if st.indexing.next_run else 'auf Anforderung' }}</dd>
+      <dt>Einlesen</dt><dd>{% if st.indexing.pause.paused %}<strong>pausiert</strong> <span class="muted small">seit {{ st.indexing.pause.since|de_date(true) }} – angefangene Schritte werden beendet</span>{% elif st.indexing.running %}läuft <span class="muted small">({{ st.indexing.phase }})</span>{% else %}wartet{% endif %}</dd>
+      {% if eye %}<dt>Bildauswertung</dt><dd>{{ ('läuft · ' ~ eye.concurrency ~ ' gleichzeitig') if eye.busy else ('wartet' if eye.alive else 'beendet') }}</dd>{% endif %}
+      {% if emb %}<dt>Embeddings</dt><dd>{{ ('<strong>pausiert</strong>'|safe) if emb.paused else ('laufen' if emb.busy else ('warten' if emb.alive else 'beendet')) }}</dd>{% endif %}
+      {% if st.indexing.last_finished %}<dt>Letzter Lauf</dt><dd>{{ st.indexing.last_finished|de_date(true) }} <span class="muted small">· {{ st.indexing.runs|plural('Lauf', 'Läufe') }} seit dem Start</span></dd>{% endif %}
+      {% if st.indexing.next_run %}<dt>Nächster Lauf</dt><dd>{{ st.indexing.next_run|de_date(true) }}</dd>{% endif %}
       {% if st.indexing.last_error %}<dt>Fehler</dt><dd><p class="note warn">{{ st.indexing.last_error }}</p></dd>{% endif %}
       {% if st.indexing.last_warnings %}<dt>Hinweise</dt><dd>{% for w in st.indexing.last_warnings %}<p class="note warn">{{ w }}</p>{% endfor %}</dd>{% endif %}
     </dl>
-    <form method="post" action="/status/neu-indexieren"><button>Jetzt neu indexieren</button></form>
-    {% if st.indexing.pause.paused %}
-    <form method="post" action="/status/fortsetzen"><button>Indexierung fortsetzen</button></form>
-    {% else %}
-    <form method="post" action="/status/pausieren"><button>Indexierung pausieren</button></form>
-    {% endif %}
-    {% if emb %}{% if emb.paused %}
-    <form method="post" action="/status/embeddings-fortsetzen"><button>Embeddings fortsetzen</button></form>
-    {% else %}
-    <form method="post" action="/status/embeddings-pausieren" title="Nur die Embeddings anhalten: das Bildmodell bekommt die GPU allein. Neue Texte findet bis dahin die Volltextsuche, die Bedeutungssuche erst mit ihren Vektoren."><button>Embeddings pausieren</button></form>
-    {% endif %}{% endif %}
+    <div class="actions">
+      <form method="post" action="/status/neu-indexieren"><button>Jetzt neu indexieren</button></form>
+      {% if st.indexing.pause.paused %}
+      <form method="post" action="/status/fortsetzen"><button class="secondary">Indexierung fortsetzen</button></form>
+      {% else %}
+      <form method="post" action="/status/pausieren"><button class="secondary">Indexierung pausieren</button></form>
+      {% endif %}
+      {% if emb %}{% if emb.paused %}
+      <form method="post" action="/status/embeddings-fortsetzen"><button class="secondary">Embeddings fortsetzen</button></form>
+      {% else %}
+      <form method="post" action="/status/embeddings-pausieren" title="Nur die Embeddings anhalten: das Bildmodell bekommt die GPU allein. Neue Texte findet bis dahin die Volltextsuche, die Bedeutungssuche erst mit ihren Vektoren."><button class="secondary">Embeddings pausieren</button></form>
+      {% endif %}{% endif %}
+    </div>
   </section>
   <section class="card">
     <h2>Bestand</h2>
     <dl class="meta">
-      <dt>Projekte</dt><dd>{{ st.counts.projects|de_num }}</dd>
-      {% if st.counts.bauvorhaben %}<dt>Bauvorhaben</dt><dd>{{ st.counts.bauvorhaben|de_num }} (fassen die Projekte als Unterprojekte zusammen)</dd>{% endif %}
-      <dt>Dokumente</dt><dd>{{ st.counts.documents|de_num }} ({{ st.counts.documents_skipped|de_num }} übersprungen/fehlerhaft)</dd>
-      <dt>Mails</dt><dd>{{ st.counts.mails|de_num }} ({{ st.counts.inbox|de_num }} im Eingang{% if st.counts.plmail_open %}, {{ st.counts.plmail_open|de_num }} in plMail noch nicht zugeordnet{% endif %})</dd>
-      <dt>Zuordnung</dt><dd>{{ 'von Hand (Mails aus plMail werden in plMail zugeordnet)' if st.assign_mode == 'manual' else 'automatisch über die Projektnummer, sonst Vorschlag' }}</dd>
-      <dt>Abschnitte</dt><dd>{{ st.counts.chunks|de_num }} ({{ st.counts.chunks_without_vector|de_num }} ohne Vektor{% if emb and emb.busy and emb.per_hour %} – {{ emb.per_hour|round|int|de_num }} je Stunde, fertig grob {{ emb.eta|etwa }}{% endif %})</dd>
-      {% if st.counts.vision_pending_pages or st.counts.vision_recheck or (eye and eye.samples) %}<dt>Bildauswertung</dt><dd>{% if eye and eye.samples %}{{ eye.samples|plural('Seite', 'Seiten') }} vom Modell gelesen{% if st.counts.vision_pending_pages or st.counts.vision_recheck %}; {% endif %}{% endif %}{% if st.counts.vision_pending_pages %}{{ st.counts.vision_pending_pages|plural('Seite', 'Seiten') }} in {{ st.counts.vision_pending_documents|plural('Dokument', 'Dokumenten') }} ausstehend (bis dahin durchsuchbar, soweit die PDF eine Textebene hat oder die Texterkennung sie gelesen hat){% if eye and eye.per_hour %} – eine Seite alle {{ (3600 / eye.per_hour)|je }} ({{ eye.per_hour|round|int|de_num }} Seiten/Std.; einzelne Anfrage Ø {{ eye.per_page|je }}), fertig grob {{ eye.eta|etwa }}{% endif %}{% if eye and eye.off_pages %}, davon {{ eye.off_pages|de_num }} in ausgeschalteten Ordnern (werden nicht ausgewertet){% endif %}{% endif %}{% if st.counts.vision_pending_pages and st.counts.vision_recheck %}; {% endif %}{% if st.counts.vision_recheck %}{{ st.counts.vision_recheck|plural('ältere PDF-Datei', 'ältere PDF-Dateien') }} noch auf gescannte Seiten zu prüfen{% endif %}</dd>{% endif %}
+      <dt>Projekte</dt><dd>{{ st.counts.projects|de_num }}{% if st.counts.bauvorhaben %} <span class="muted small">· {{ st.counts.bauvorhaben|plural('Bauvorhaben', 'Bauvorhaben') }}</span>{% endif %}</dd>
+      <dt>Dokumente</dt><dd>{{ st.counts.documents|de_num }}{% if st.counts.documents_skipped %} <span class="muted small">· {{ st.counts.documents_skipped|de_num }} nicht gelesen oder fehlerhaft</span>{% endif %}</dd>
+      <dt>Mails</dt><dd>{{ st.counts.mails|de_num }}{% if st.counts.inbox %} <span class="muted small">· {{ st.counts.inbox|de_num }} im Eingang</span>{% endif %}{% if st.counts.plmail_open %} <span class="muted small">· {{ st.counts.plmail_open|de_num }} in plMail nicht zugeordnet</span>{% endif %}</dd>
+      <dt>Abschnitte</dt><dd>{{ st.counts.chunks|de_num }}{% if st.counts.chunks_without_vector %} <span class="muted small">· {{ st.counts.chunks_without_vector|de_num }} ohne Vektor</span>{% endif %}</dd>
+      {% if st.counts.vision_pending_pages or st.counts.vision_recheck or (eye and eye.samples) %}<dt>Bildauswertung</dt><dd>{% if eye and eye.samples %}{{ eye.samples|plural('Seite', 'Seiten') }} vom Modell gelesen{% if st.counts.vision_pending_pages %} <span class="muted small">· {{ st.counts.vision_pending_pages|plural('Seite', 'Seiten') }} offen in {{ st.counts.vision_pending_documents|plural('Dokument', 'Dokumenten') }}{% if eye.eta %} · fertig grob {{ eye.eta|etwa }}{% endif %}</span>{% endif %}{% elif st.counts.vision_pending_pages %}{{ st.counts.vision_pending_pages|plural('Seite', 'Seiten') }} offen <span class="muted small">in {{ st.counts.vision_pending_documents|plural('Dokument', 'Dokumenten') }}</span>{% endif %}{% if st.counts.vision_recheck %} <span class="muted small">· {{ st.counts.vision_recheck|plural('ältere PDF-Datei', 'ältere PDF-Dateien') }} noch zu prüfen</span>{% endif %}</dd>{% endif %}
     </dl>
   </section>
 </div>

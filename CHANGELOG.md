@@ -5,6 +5,16 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Statusseite aufgeräumt:** „Indexierung“ nennt Einlesen, Bildauswertung und Embeddings je in einer Zeile, die
+  Schaltflächen stehen nebeneinander (Pausieren als Nebenschaltfläche), „Läufe“ und „Letzter/Nächster Lauf“ nur, wenn
+  es sie gibt. „Bestand“ zeigt je Zeile eine Zahl mit kurzem Zusatz; die Zeile „Zuordnung“ und die langen Erklärungen
+  sind weg (Tempo und Restzeit der Bildauswertung stehen unter „Wird gerade gelesen“). „Wird gerade gelesen“ zeigt
+  jede Tätigkeit als eigenen Block: Name, eine Hauptzeile, darunter Einzelheiten.
+- **Projekte: „Fertig“ heißt fertig.** Ein eingelesenes Projekt, bei dem noch Scan-Seiten auf das Bildmodell warten,
+  steht im neuen Reiter „Bildauswertung“ („eingelesen · Bildauswertung: N Seiten offen“), erst danach unter „Fertig“
+  (API: `vision_waiting`). Die Ordnerliste zählt „eingelesen“ statt „fertig“.
+- Pausierte Embeddings zeigten unter „Wird gerade gelesen“ „0 Abschnitte ohne Vektor“ – jetzt die echte Zahl aus der
+  Datenbank.
 - **`SKIP_READ_FOLDERS`: Ordner nur anzeigen, nicht lesen.** Dateien in Ordnern dieses Namens (z. B. `CAD` für
   `304000-CAD` und alles darunter) bekommen keinen Text, keine Texterkennung und keine Bildauswertung, stehen aber
   weiter in der Projektansicht und öffnen im Betrachter. Schon gelesene Dateien dort verlieren beim nächsten Laufbeginn

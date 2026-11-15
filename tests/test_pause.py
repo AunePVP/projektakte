@@ -101,10 +101,12 @@ def test_embed_paused_holds_back_the_embeddings_alone(tmp_path, fake_ai):
         time.sleep(1.0)
         assert _without_vector(s) > 0  # but none gets a vector
         page = client.get("/status").text
-        assert "Embeddings <strong>pausiert</strong>" in page and "Embeddings fortsetzen" in page
+        assert "<dt>Embeddings</dt><dd><strong>pausiert</strong></dd>" in page and "Embeddings fortsetzen" in page
         assert "Indexierung pausieren" in page  # the indexing as a whole still runs
         part = client.get("/status/reihenfolge/jetzt").text
-        assert "pausiert" in part and "ohne Vektor (die Volltextsuche findet sie schon)" in part
+        assert "pausiert" in part and "ohne Vektor – die Volltextsuche findet sie schon" in part
+        # counted from the database: the paused worker counts nothing (it showed "0 Abschnitte ohne Vektor")
+        assert f"· {_without_vector(s)} Abschnitt" in part and "· 0 Abschnitte ohne Vektor" not in part
         assert client.get("/api/status").json()["indexing"]["embeddings"]["pause"]["paused"] is True
         # resumed on the status page: the vectors are made
         assert client.post("/status/embeddings-fortsetzen", follow_redirects=False).status_code == 303

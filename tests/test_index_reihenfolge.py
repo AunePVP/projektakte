@@ -366,6 +366,26 @@ def test_order_changed_during_the_pass_applies_to_the_projects_not_started(tmp_p
 
 
 # -- done state ------------------------------------------------------------------------------------------
+def test_a_project_with_pages_waiting_for_the_model_is_not_done(tmp_path):
+    """Read by the documents pass is not done while scan pages wait for the model: such a project stands under
+    "Bildauswertung" with its open pages, not under "Fertig"."""
+    make_share(tmp_path / "projekte")
+    s = settings(tmp_path)
+    c = client_for(s)
+    run_index(s)
+    with db.session(s.db_path) as conn:
+        doc = conn.execute("SELECT id FROM documents WHERE project = '210005' LIMIT 1").fetchone()[0]
+        conn.execute("UPDATE documents SET vision_pending = 3 WHERE id = ?", (doc,))
+    data = c.get("/api/reihenfolge?tab=bildauswertung").json()
+    assert data["vision_waiting"] == 1 and data["done"] == 6
+    assert [(p["number"], p["state"]) for p in data["projects"]] == [("210005", "eye")]
+    assert "210005" not in [p["number"] for p in c.get("/api/reihenfolge?tab=fertig").json()["projects"]]
+    page = c.get("/status?tab=bildauswertung").text
+    assert "eingelesen · Bildauswertung: 3 Seiten offen" in page and "Bildauswertung <span class=\"n\">1</span>" in page
+    assert "liest das Bildmodell noch Seiten" in c.get("/status").text  # the empty queue says so
+
+
+
 def test_done_state_with_timestamp_and_skipped_files(tmp_path, monkeypatch):
     make_share(tmp_path / "projekte")
     next((tmp_path / "projekte" / "2").glob("210005_*")).joinpath("Riesig.txt").write_text("x" * 5000, encoding="utf-8")
@@ -384,7 +404,7 @@ def test_done_state_with_timestamp_and_skipped_files(tmp_path, monkeypatch):
     assert states["210005"] == ("done", 1) and states["310001"] == ("done", 0)
     page = c.get("/status?tab=fertig").text
     assert "fertig, 1 übersprungen" in page and "✓ fertig" in page
-    assert "2 von 2 Projekten fertig" in page and "3 von 3 Projekten fertig" in page
+    assert "2 von 2 Projekten eingelesen" in page and "3 von 3 Projekten eingelesen" in page
     assert "Die Warteschlange ist leer" in c.get("/status").text
 
 
@@ -628,7 +648,7 @@ def test_status_page_stays_fast_with_15000_projects(tmp_path, monkeypatch):
     page = c.get("/status")
     took = time.perf_counter() - started
     assert page.status_code == 200 and "50 von 10.000 angezeigt" in page.text
-    assert "2.500 von 2.500 Projekten fertig" in page.text and "0 von 2.500 Projekten fertig" in page.text
+    assert "2.500 von 2.500 Projekten eingelesen" in page.text and "0 von 2.500 Projekten eingelesen" in page.text
     assert len(statements) < 60, len(statements)  # no query per project
     assert took < 5, took
     statements.clear()

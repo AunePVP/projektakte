@@ -15,7 +15,7 @@
         <li class="{{ 'off' if not f.enabled }}">
           <span class="rf-rank">{{ f.rank if f.rank else '–' }}</span>
           <div class="rf-fbody">
-            <span class="rf-fname">{{ f.label }}</span> <span class="small muted">· {{ f.finished|de_num }} von {{ f.total|de_num }} {{ 'Projekt' if f.total == 1 else 'Projekten' }} fertig</span>{% if not f.enabled %} <span class="rf-st off">aus – wird nicht gelesen</span>{% endif %}
+            <span class="rf-fname">{{ f.label }}</span> <span class="small muted">· {{ f.finished|de_num }} von {{ f.total|de_num }} {{ 'Projekt' if f.total == 1 else 'Projekten' }} eingelesen</span>{% if not f.enabled %} <span class="rf-st off">aus – wird nicht gelesen</span>{% endif %}
             <progress class="rf-bar" max="{{ f.total or 1 }}" value="{{ f.finished }}">{{ f.finished }} von {{ f.total }}</progress>
           </div>
           <form method="post" action="/status/reihenfolge/ordner" hx-post="/status/reihenfolge/ordner" hx-target="#reihenfolge" hx-swap="outerHTML" class="rf-acts">
@@ -61,5 +61,5 @@
     </div>
     {% include "_reihenfolge_liste.html" %}
   </section>
-  <p class="small muted">So arbeitet jeder Lauf: zuerst die vorgezogenen Projekte, dann die noch nicht fertigen Ordner für Ordner, darin die neueste Nummer zuerst. Danach werden die fertigen Projekte in derselben Reihenfolge auf neue und geänderte Dateien geprüft – Mails und neue Dateien kommen also weiter in jedem Lauf dran. Ausgeschaltete Ordner werden übersprungen. Die Bildauswertung läuft nebenher und folgt derselben Reihenfolge.</p>
+  <p class="small muted">So arbeitet jeder Lauf: zuerst die vorgezogenen Projekte, dann die noch nicht eingelesenen Ordner für Ordner, darin die neueste Nummer zuerst; danach werden die eingelesenen Projekte auf neue und geänderte Dateien geprüft. Die Bildauswertung läuft nebenher in derselben Reihenfolge – ein Projekt ist „fertig“, wenn es eingelesen ist und keine Seite mehr auf das Bildmodell wartet.</p>
 </div>

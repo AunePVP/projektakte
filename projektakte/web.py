@@ -1483,7 +1483,8 @@ def layout_recheck(request: Request, ablehnung: str = Form("")):
 
 # --- Reihenfolge: order of the documents pass (reihenfolge.py) – folders, the project being read, the queue
 RF_ANCHOR = "reihenfolge"
-RF_TABS = {"warteschlange": "Warteschlange", "fertig": "Fertig", "alle": "Alle"}
+# "Bildauswertung": read by the documents pass, but scan pages still wait for the model; "Fertig": nothing waits
+RF_TABS = {"warteschlange": "Warteschlange", "bildauswertung": "Bildauswertung", "fertig": "Fertig", "alle": "Alle"}
 RF_MAX_ROWS = 50  # rows of the project list; a number typed in the search finds any project
 RF_POLL_RUNNING = 4  # seconds between two updates of "Wird gerade gelesen" while a pass runs
 RF_POLL_IDLE = 30
@@ -1575,6 +1576,8 @@ def _embed_now(request: Request, conn) -> dict | None:
         row = conn.execute("SELECT name FROM projects WHERE number = ?", (current["project"],)).fetchone()
         current["name"] = row[0] if row else ""
     paused = EMBED_PAUSE.snapshot()
+    if paused["paused"]:  # the paused worker counts nothing: the sections without a vector from the database
+        pending = conn.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL").fetchone()[0]
     return {"busy": bool(worker.alive and (live["busy"] or pending)) and not paused["paused"], "alive": worker.alive,
             "paused": paused["paused"], "paused_since": paused["since"],
             "concurrency": live["concurrency"], "in_flight": live["in_flight"], "done": live["done"],
@@ -1635,13 +1638,22 @@ def reihenfolge_context(request: Request, conn, tab: str = "", q: str = "", note
     now = _rf_now(conn, v, request)
     running = now["project"]["number"] if now["running"] and now["project"] and now["phase"] == "Dokumente" else None
     queue = v.queue_groups  # a site with its orders is one project here (reihenfolge.group_entries)
-    done = v.done_groups
     off = v.off_groups
+    # read by the documents pass is not done yet while scan pages of the project wait for the model
+    waiting = {r[0]: r[1] for r in conn.execute(
+        "SELECT project, SUM(vision_pending) FROM documents WHERE vision_pending > 0 AND project IS NOT NULL "
+        "GROUP BY project")}
+
+    def eye_pages(e: dict) -> int:
+        return sum(waiting.get(n, 0) for n in e["members"])
+
+    eye = [e for e in v.done_groups if eye_pages(e)]
+    done = [e for e in v.done_groups if not eye_pages(e)]
     if running:  # the running order counts as its site
         running = next((e["number"] for e in v.grouped if running in e["members"]), running)
     if running:  # the project being read leads the queue (also one already done that is checked again)
         queue = [e for e in queue if e["number"] == running] + [e for e in queue if e["number"] != running]
-    rows = {"warteschlange": queue, "fertig": done, "alle": queue + off + done}[tab]
+    rows = {"warteschlange": queue, "bildauswertung": eye, "fertig": done, "alle": queue + off + v.done_groups}[tab]
     if q:
         needle = q.casefold()
         rows = [e for e in rows if any(needle in n.casefold() for n in e["members"])]
@@ -1658,14 +1670,17 @@ def reihenfolge_context(request: Request, conn, tab: str = "", q: str = "", note
     for e in shown:
         state = ("run" if e["number"] == running else "done" if e["done"] and e["pinned"] is None
                  else "off" if e["off"] else "pin" if e["pinned"] is not None else "done" if e["done"] else "wait")
+        if state == "done" and eye_pages(e):
+            state = "eye"
         out.append({"number": e["number"], "name": e["name"], "kind": e["kind"],
                     "folder": reihenfolge.folder_label(e["folder"]),
                     "files": sum(files.get(n, 0) for n in e["members"]), "orders": len(e["members"]) - (e["kind"] == "bauvorhaben"),
                     "state": state, "done_at": e["done_at"], "skipped": e["done_skipped"] or 0, "off": e["off"],
+                    "eye_pages": eye_pages(e),
                     "position": position.get(e["number"]),
                     "match": _rf_match(e["number"], q)})
     return {"tab": tab, "q": q, "rows": out, "total": len(rows), "shown": len(out), "queue_count": len(queue),
-            "done_count": len(done), "off_count": len(off), "folders": v.folders, "customized": v.customized,
+            "done_count": len(done), "eye_count": len(eye), "off_count": len(off), "folders": v.folders, "customized": v.customized,
             "now": now, "note": note,
             "problem": problem, "default_order": list(getattr(_settings(request), "index_folder_order", ()))}
 

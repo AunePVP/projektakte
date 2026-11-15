@@ -392,8 +392,9 @@ def test_zustand_names_both_activities(tmp_path, fake_ai, monkeypatch):
         vision.LIVE.pending(40, 0)
         client.app.state.indexer.state.update(running=True, phase="Dokumente")
         page = client.get("/status").text
-        assert "läuft (Dokumente) · Bildauswertung läuft, 3 gleichzeitig" in page
-        assert "40 Seiten ausstehend" in client.get("/status/reihenfolge/jetzt").text
+        assert '<dt>Einlesen</dt><dd>läuft <span class="muted small">(Dokumente)</span>' in page
+        assert "<dt>Bildauswertung</dt><dd>läuft · 3 gleichzeitig</dd>" in page
+        assert "40 Seiten offen" in client.get("/status/reihenfolge/jetzt").text
 
 
 # -- formatting and calculations ----------------------------------------------------------------------------
@@ -562,7 +563,7 @@ def test_the_card_shows_every_activity_and_never_idle_while_one_runs(tmp_path, f
         part = client.get("/status/reihenfolge/jetzt").text
         assert "Alles gelesen" not in part and "rf-now-body idle" not in part and "every 4s" in part
         assert "2 von 3 gleichzeitig beim Modell" in part and "Pruefbericht.pdf, Seite 7" in part
-        assert "120 Seiten ausstehend" in part
+        assert "120 Seiten offen" in part
         assert "1 von 2 Stapeln beim Dienst" in part and "600 Abschnitte fertig" in part
         assert "5.400 Abschnitte ohne Vektor" in part and "Notiz.txt" in part
         # a pass in a phase without a project (mails): its phase and time, never an empty card
@@ -572,7 +573,8 @@ def test_the_card_shows_every_activity_and_never_idle_while_one_runs(tmp_path, f
         part = client.get("/status/reihenfolge/jetzt").text
         assert ">Mails<" in part and "Lauf seit" in part and "Bildauswertung" in part and "Embeddings" in part
         page = client.get("/status").text
-        assert "Bildauswertung läuft, 3 gleichzeitig" in page and "Embeddings laufen" in page
+        assert "<dt>Bildauswertung</dt><dd>läuft · 3 gleichzeitig</dd>" in page
+        assert "<dt>Embeddings</dt><dd>laufen</dd>" in page
         api = client.get("/api/reihenfolge").json()
         assert api["embeddings"]["pending"] == 5400 and api["vision"]["in_flight"] == 2
 
