@@ -1,6 +1,6 @@
 # Übergabe – Projektakte
 
-Stand: 11. November 2026, Version 0.5.0 plus „Unveröffentlicht“ (siehe CHANGELOG.md).
+Stand: 15. November 2026, Version 0.5.0 plus „Unveröffentlicht“ (siehe CHANGELOG.md).
 Diese Datei fasst alles zusammen, was man zum Weiterarbeiten braucht – in einem neuen Chat, mit
 einem anderen Werkzeug oder selbst. Ausführliches steht in den verlinkten Dateien.
 
@@ -22,7 +22,9 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
-- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 2.131 Tests, etwa 3 min). Docker-Probelauf:
+- Testsuite: `sh scripts/test.sh` (pytest-xdist, rund 2.190 Tests, etwa 3 min). Zwei zeitabhängige Tests schlagen
+  unter voller Last gelegentlich fehl und laufen einzeln durch (`test_background.py::test_startup_is_fast_…`,
+  `test_extract_r6.py::test_stopping_the_app_while_a_file_is_read_…`) – offener Punkt. Docker-Probelauf:
   `sh scripts/docker-smoke.sh`.
 
 ## 3. Stand in Zahlen
@@ -30,7 +32,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
 | Was | Ergebnis |
 |---|---|
 | Phase A (14 Roadmap-Schritte), Zuordnung in plMail, Nachbesserungen | fertig (ROADMAP 1–16a) |
-| Testsuite | grün (zuletzt 2126 bestanden, 4 Integrationstests übersprungen, 1 bewusst „xfail“) |
+| Testsuite | grün (zuletzt 2186 bestanden, 5 Integrationstests übersprungen, 1 bewusst „xfail“) |
 | Docker-Probelauf | grün |
 | Eigener Evaluationssatz mit Fake-KI | 103/103 |
 | Zurückgehaltener Prüfsatz (unabhängiger Autor) mit Fake-KI | 19/28 beantwortbare richtig (0,68), 12/12 Absagen, 0 erfundene Antworten |
@@ -321,6 +323,28 @@ Einlesen schnell genug bleiben (sonst `VISION_CONCURRENCY=2`, `EMBED_CONCURRENCY
 `EMBED_CONCURRENCY=2` gut verträgt. Einzelheiten: README „Scans in zwei Stufen“ und „Nebeneinander“, DECISIONS
 „Scans in zwei Stufen“ und „Einlesen, Bildauswertung und Embeddings nebeneinander“.
 
+**Betrieb mit dem echten Bildmodell (13.–15. November 2026).** Seit dem 13.11. liest `qwen35-4b` (vLLM 0.27 auf dem
+Spark, Port 8003) die Scans. Gemessen (vom Nutzer, an echten Projekt-PDFs) und daraus gebaut:
+
+| Thema | Messung / Beobachtung | Stand im Code |
+|---|---|---|
+| Auflösung | 150 dpi liest so viel wie 300 dpi (94 % Text, 99 % im Scan) mit rund 2.600 statt 9.900 Bild-Tokens je A4-Seite; 100 dpi schlechter | `VISION_DPI=150` (Voreinstellung): nur die Bilder ans Modell, Tesseract bekommt weiter das volle Bild; CAD-Seiten werden gleich mit `VISION_DPI` gezeichnet |
+| Gleichzeitige Aufrufe | 24 Streams am schnellsten, 4–6 deutlich langsamer | `VISION_CONCURRENCY=22` beim Nutzer |
+| Endlosschleifen | fast nur bei Plänen; `presence_penalty` kostet Text (1,5: −14 Prozentpunkte) und hilft nicht zuverlässig; vLLM `repetition_detection` brachte 0 Schleifen und fast doppelten Durchsatz | Antworten werden gestreamt und auf Schleifen geprüft (`ai/repetition.py`), Abbruch, ein zweiter Versuch mit `VISION_RETRY_BODY` (ohne Penalty), sonst bleibt der Tesseract-Text; gespeicherte Schleifen repariert (Migration 16) |
+| KV-Cache | vor `VISION_DPI` 97–98 %, 293 Preemptions; danach rund 40 % | nichts mehr nötig |
+| Nachschub | 91–95 % der Plätze belegt; Stockungen fast nur beim Zeichnen von CAD-Seiten (12–30 s), Rundenende 36–106 s Leerlauf | Messung im Log („Nachschub stockte“, „im Schnitt … Plätzen belegt“); Rundenwechsel ohne Leerlauf; `VISION_SKIP_CAD=1` beim Nutzer |
+| CAD-Pläne | bringen über das Modell wenig | `VISION_SKIP_CAD=1`: Seiten ohne Bild gehen nicht ans Modell, behalten den Tesseract-Text; einmaliges Aufräumen der schon vorgemerkten (`vision.CadSweep`, Migration 17) |
+| SMB | 0,55 s je Seite, kein Engpass | – |
+| Statusseite | Dienste wurden unter Last als „nicht erreichbar“ angezeigt | „ausgelastet“, wenn der Dienst in den letzten 2 Min. echte Anfragen beantwortet hat; Zahl der vom Modell gelesenen Seiten; „Embeddings pausieren“ (`EMBED_PAUSED`) |
+
+Empfohlene Einstellungen beim Nutzer (`deploy/projektakte.env`):
+`LLM_EXTRA_BODY={"chat_template_kwargs":{"enable_thinking":false},"presence_penalty":0,"repetition_detection":{"min_pattern_size":8,"max_pattern_size":300,"min_count":4}}`,
+`VISION_CONCURRENCY=22`, `LLM_TIMEOUT=170` (unter `ASK_DEADLINE`), `VISION_SKIP_CAD=1`; `VISION_DPI` und
+`VISION_RETRY_BODY` auf der Voreinstellung. Auswerten: `docker compose logs --since 1h app | grep -E "Plätzen
+belegt|Nachschub stockte|neue Runde|CAD-Aufräumen"`. Begründungen: DECISIONS „Wiederholungsschleifen der
+Bildauswertung“, „Auflösung der Seitenbilder für das Bildmodell“, „Erst messen, wo die Bildauswertung stockt“,
+„CAD-Pläne ohne Bildmodell“, „Nur die Embeddings pausieren“, „Ausgelastet statt nicht erreichbar“.
+
 ## 7c. Reihenfolge beim Einlesen
 
 Statusseite, Bereich unter „KI-Dienste“: Ordner-Reihenfolge (▲/▼, „aus“ = **wird nicht gelesen**, schon Gelesenes
@@ -378,7 +402,19 @@ Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in d
    `.msg` kommt kaum vor.
 4. **plMail-Seite:** Die Änderungen an plMail beschreibt `docs/plmail-prompt.md`. Das ist der Prompt
    für die KI im plMail-Projekt.
-5. **Ideen, besprochen, nicht gebaut:**
+5. **Bildauswertung – offen nach den Messungen vom November** (Abschnitt 7b):
+   - Belegung nach `VISION_SKIP_CAD` und dem Rundenwechsel ohne Leerlauf nachmessen; liegt sie weiter deutlich unter
+     95 %, Seiten im Voraus in einem eigenen Thread vorbereiten (heute bereitet der Ablauf, der die Seiten losschickt,
+     die nächste selbst vor).
+   - `VISION_MAX_PIXELS` für große gescannte Pläne (A1/A0 stoßen auch mit 150 dpi an 16 MP, rund 15.000 Bild-Tokens,
+     und lassen den Decode kurz einbrechen) – erst nach einer Messung, ob die Beschriftung bei 8 MP lesbar bleibt.
+   - Bilddateien (JPG/PNG/TIFF) gehen unverkleinert an das Modell; lohnt nur, wenn viele davon warten.
+   - Prüfen, welchen `finish_reason` vLLM nach `repetition_detection` meldet (häufige „Antwort abgeschnitten – neuer
+     Versuch“ im Log hieße: unnötige zweite Versuche).
+   - Ob der OCR-Text dem kleinen Modell hilft oder schadet (Vergleich Bild+Text / nur Bild) – nicht gemessen.
+   - Die zwei zeitabhängigen Tests (Abschnitt 2) robust machen.
+   - Wenn alles stabil läuft: Pull Request nach `main`.
+6. **Ideen, besprochen, nicht gebaut:**
    - **Gründliche Suche:** Für Vollständigkeitsfragen wie „alle Mängel seit 2022“ wird das Projekt in
      Portionen durchgelesen, dann zusammengeführt. Etwa 40 Modellaufrufe je Projekt, einige Minuten.
    - **Projektüberblick:** einmal je Dokument eine kurze Zusammenfassung beim Einlesen, als
