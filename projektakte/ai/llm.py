@@ -172,7 +172,8 @@ class LLMClient:
 
         The answer is streamed and watched: a repetition loop ends the call at once (the server stops
         generating when the connection closes). Such a page is asked once more with VISION_RETRY_BODY, a page
-        merely cut short once more with the full token amount. Fails again: :class:`IncompleteAnswer`."""
+        merely cut short once more with the full token amount – unless it had the full amount already: asking
+        the same again only costs the time once more (measured: 5–12 minutes a page). Fails: :class:`IncompleteAnswer`."""
         if not self.vision:
             raise AIServiceError("Bildverarbeitung ist ausgeschaltet (LLM_VISION=0)")
         url = f"data:{mime};base64,{base64.b64encode(image).decode('ascii')}"
@@ -187,13 +188,19 @@ class LLMClient:
         ]
         # a whole page with its handwriting and stamps (a dense A4 page is 1.500 to 2.500 tokens)
         full = max(self.max_tokens, VISION_MAX_TOKENS)
-        first = self._read_page(messages, page_tokens(prompt, full), {})
+        limit = page_tokens(prompt, full)
+        first = self._read_page(messages, limit, {})
         if _usable(first):
             return first
+        if not first.loop and limit >= full:  # cut short at the full amount: a second call would end the same
+            log.info("Bildauswertung: Antwort an der vollen Grenze abgeschnitten (%d Zeichen, max_tokens %d) – kein "
+                     "zweiter Versuch", len(first.raw_text), limit)
+            text = first.text if not has_unterminated_think(first.raw_text) else ""
+            raise IncompleteAnswer("Modell-Antwort verworfen: Antwort zu lang (abgeschnitten)", text, False)
         retry = self.retry_body if first.loop else {}
         log.info("Bildauswertung: %s (finish_reason %s, %d Zeichen, max_tokens %d) – neuer Versuch%s",
                  "Wiederholungsschleife" if first.loop else "Antwort abgeschnitten", first.finish_reason,
-                 len(first.raw_text), page_tokens(prompt, full), " mit VISION_RETRY_BODY" if retry else " mit mehr Tokens")
+                 len(first.raw_text), limit, " mit VISION_RETRY_BODY" if retry else " mit mehr Tokens")
         second = self._read_page(messages, full, retry)
         if _usable(second):
             return second

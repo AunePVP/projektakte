@@ -5,6 +5,11 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Kein sinnloser zweiter Versuch mehr:** Lief eine Antwort schon beim ersten Versuch mit der vollen Grenze (4.000
+  Tokens) in den Abbruch, wurde die Seite mit denselben 4.000 Tokens noch einmal gefragt – gleiches Ende, doppelte Zeit
+  (gemessen 41 Seiten je Stunde mit 5–12 Minuten, rund 15 % der Rechenzeit). Jetzt wird sie nach dem ersten Versuch
+  abgeschlossen wie ein zweites Abbrechen (Text der Texterkennung bleibt bzw. der Anfang der Antwort). Nur eine Seite
+  mit kleinerer erster Grenze wird noch einmal mit der vollen gefragt.
 - **Eigene Zeitgrenze für die Bildauswertung (`VISION_TIMEOUT`, 600 s).** Bisher galt `LLM_TIMEOUT` (beim Nutzer
   180 s) auch für eine Seite beim Bildmodell. Mit 22 Seiten gleichzeitig bekommt jede nur etwa 7–15 Antwort-Tokens je
   Sekunde; dichte Seiten (Tabellen, alte Bauscheine) brauchen dann mehrere Minuten. Gemessen: 198 Zeitüberschreitungen

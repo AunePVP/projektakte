@@ -159,6 +159,17 @@ def test_an_answer_cut_short_is_asked_again_with_more_tokens_only(server):
     assert not err.value.loop and err.value.text == "Anfang der langen Seite"
 
 
+def test_an_answer_cut_short_at_the_full_amount_is_not_asked_again(server):
+    """Measured: a page with the full 4.000 tokens already was asked once more with the same 4.000 – the same end,
+    5–12 minutes a page. Now it is dropped after the first call (its text so far stands, see vision.py)."""
+    listing = " ".join(f"Raum {k}.01 Flur" for k in range(80))  # counts up: no loop by the rule, ends at the limit
+    srv = server(("stream", listing, "length"), ("stream", GOOD, "stop"))
+    with pytest.raises(IncompleteAnswer) as err:
+        _client(srv).describe_image(b"img", "image/png", vision_prompt(""))  # no text so far: the full amount
+    assert len(srv.payloads) == 1 and srv.payloads[0]["max_tokens"] == 4000
+    assert not err.value.loop and err.value.text.startswith("Raum 0.01")
+
+
 def test_a_server_without_streaming_answers_in_one_body(server):
     srv = server(("json", GOOD, "stop"), ("json", LOOP, "stop"), ("json", GOOD, "stop"))
     assert _client(srv).describe_image(b"img", "image/png", vision_prompt(LAYER)).text == GOOD

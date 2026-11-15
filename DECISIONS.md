@@ -1322,4 +1322,9 @@ ohne Ergebnis: rund 36.000 von 79.200 Platz-Sekunden, und die Seiten kamen nach 
   `repetition_detection` und die Prüfung beim Streamen ab, lange bevor die Grenze erreicht ist.
 - *Nicht weniger gleichzeitig*: Weniger Seiten gleichzeitig machten jede schneller, aber gemessen den Durchsatz
   kleiner; die verlorene Zeit lag allein an den abgebrochenen Seiten.
+- *Kein zweiter Versuch an der vollen Grenze* (Nachtrag): Seiten ohne bekannten Text bekommen gleich die volle Grenze;
+  lief ihre Antwort dort in den Abbruch, fragte „neuer Versuch mit mehr Tokens“ dieselben 4.000 Tokens noch einmal.
+  Gemessen: 41 Seiten je Stunde, je 5–12 Minuten, fast alle wieder abgeschnitten (5.000–14.000 Zeichen – gescannte
+  Zeichnungen und alte Bauakten, auf denen das Modell Beschriftungen hochzählend auflistet; das ist nach der Regel keine
+  Schleife, weil sich die Zeilen in Zahlen unterscheiden). Jetzt endet so eine Seite nach dem ersten Versuch.
 
