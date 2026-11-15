@@ -1309,3 +1309,17 @@ liest weiter Text und Tesseract; das hier geht nach dem Ordner und liest nichts.
   umgestellt (`documents.mark_unread_folders`), nicht erst, wenn der Lauf bei ihrem Projekt ankommt – sonst schickte
   die Bildauswertung ihre Seiten noch tagelang an das Modell.
 
+## Eigene Zeitgrenze für eine Seite (`VISION_TIMEOUT`)
+
+Gemessen im Betrieb (15.11.): 678 Seiten in einer Stunde bei 94–99 % belegten Plätzen, vLLM mit 22 laufenden und 0
+wartenden Anfragen, keine Preemption – aber 198 Seiten „Zeitüberschreitung nach 180 s“. Jede hielt ihren Platz 180 s
+ohne Ergebnis: rund 36.000 von 79.200 Platz-Sekunden, und die Seiten kamen nach ihrer Wartezeit wieder.
+- *Ursache*: Bei 22 Seiten gleichzeitig bekommt jede nur 7–15 Antwort-Tokens je Sekunde (Dashboard: Inter-Token p95
+  143 ms). Eine dichte Seite (Tabellen, alte Bauscheine) mit 2.500–4.000 Tokens Antwort braucht 3–8 Minuten.
+  `LLM_TIMEOUT` ist für Fragen gedacht (unter `ASK_DEADLINE`) und galt auch für die Seiten.
+- *Eigene Grenze, 600 s*: Fragen behalten `LLM_TIMEOUT`; eine Seite darf `VISION_TIMEOUT` brauchen (über
+  `LLMClient.vision_timeout`, auch im Leseprozess). Schleifen hält das nicht auf – sie brechen vLLMs
+  `repetition_detection` und die Prüfung beim Streamen ab, lange bevor die Grenze erreicht ist.
+- *Nicht weniger gleichzeitig*: Weniger Seiten gleichzeitig machten jede schneller, aber gemessen den Durchsatz
+  kleiner; die verlorene Zeit lag allein an den abgebrochenen Seiten.
+

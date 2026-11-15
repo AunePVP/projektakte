@@ -395,3 +395,33 @@ def test_a_run_of_the_indexing_pass_still_ends_at_its_budget(tmp_path):
     _stage1(conn, root, llm)
     stats = VisionPass(conn, llm, projects_dir=root, seconds=150, concurrency=1, clock=clock).run()
     assert stats["stopped"] and stats["pending_pages"] == 1 and len(llm.prompts) == 2
+
+
+def test_a_page_has_its_own_timeout(monkeypatch):
+    """With 22 pages at the model a long page takes minutes: a page waits VISION_TIMEOUT (600 s), a question keeps
+    LLM_TIMEOUT. Measured: a third of the pages timed out after 180 s and held their place for nothing."""
+    from projektakte.ai import llm as llm_mod
+
+    seen = []
+
+    class Stream:
+        is_stream = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def json(self):
+            return {"choices": [{"message": {"content": GOOD}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr(llm_mod, "post_stream", lambda url, payload, timeout, headers: seen.append(timeout) or Stream())
+    client = LLMClient("http://x/v1", "m", vision=True, timeout=180, vision_timeout=600)
+    assert client.describe_image(b"img", "image/png", vision_prompt(LAYER)).text == GOOD
+    assert seen == [600]
+    assert LLMClient.from_config(client.config()).vision_timeout == 600
+    assert LLMClient("http://x/v1", "m", vision=True, timeout=180).vision_timeout is None  # then LLM_TIMEOUT
+    assert load_settings({}).vision_timeout == 600 and load_settings({"VISION_TIMEOUT": "900"}).vision_timeout == 900
+    s = load_settings({"VISION_TIMEOUT": "0"})
+    assert s.vision_timeout == 600 and any("VISION_TIMEOUT" in w for w in s.config_warnings)

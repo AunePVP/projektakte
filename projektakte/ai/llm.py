@@ -93,6 +93,7 @@ class LLMClient:
         api_key: str = "",
         extra_body: dict | None = None,
         retry_body: dict | None = None,
+        vision_timeout: float | None = None,
     ):
         self.url = url.rstrip("/")
         self.model = model
@@ -103,6 +104,9 @@ class LLMClient:
         self._headers = bearer(api_key)
         self.extra_body = dict(extra_body or {})
         self.retry_body = dict(DEFAULT_RETRY_BODY if retry_body is None else retry_body)
+        # one page image (describe_image): its own limit – with 20+ pages at the model at once a long page takes
+        # minutes, far beyond the timeout a question may wait (LLM_TIMEOUT); None: that one
+        self.vision_timeout = vision_timeout
         self._lock = threading.Lock()
         self.last_error: str | None = None
         self.last_error_at: float | None = None
@@ -113,13 +117,13 @@ class LLMClient:
         process builds the same client from it with :meth:`from_config`."""
         return {"url": self.url, "model": self.model, "timeout": self.timeout, "max_tokens": self.max_tokens,
                 "vision": self.vision, "api_key": self._api_key, "extra_body": dict(self.extra_body),
-                "retry_body": dict(self.retry_body)}
+                "retry_body": dict(self.retry_body), "vision_timeout": self.vision_timeout}
 
     @classmethod
     def from_config(cls, config: dict) -> "LLMClient":
         return cls(config["url"], config["model"], timeout=config["timeout"], max_tokens=config["max_tokens"],
                    vision=config["vision"], api_key=config["api_key"], extra_body=config["extra_body"],
-                   retry_body=config.get("retry_body"))
+                   retry_body=config.get("retry_body"), vision_timeout=config.get("vision_timeout"))
 
     def _note_error(self, msg: str) -> None:
         with self._lock:
@@ -217,7 +221,7 @@ class LLMClient:
         loop = False
         try:
             with Timer() as t:
-                with post_stream(f"{self.url}/chat/completions", payload, timeout=self.timeout,
+                with post_stream(f"{self.url}/chat/completions", payload, timeout=self.vision_timeout or self.timeout,
                                  headers=self._headers) as answer:
                     if not answer.is_stream:  # the server ignored "stream": one JSON answer
                         raw, finish, think = _extract_choice(answer.json())

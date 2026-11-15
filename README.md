@@ -740,6 +740,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `VISION_CONCURRENCY` | `3` | Gleichzeitige Modellaufrufe der Bildauswertung (ab 1 = nacheinander); der KI-Server nimmt 4, einer bleibt für Fragen frei |
 | `VISION_DPI` | `150` | Auflösung der Seitenbilder für das Bildmodell, bezogen auf die echte Seitengröße (A4 ≈ 2,2 MP, A3 ≈ 4,4 MP); Tesseract bekommt weiter das volle Bild; `0` = aus (bis 16 MP) |
 | `VISION_SKIP_CAD` | `0` | `1`: CAD-Pläne als PDF (Seiten ohne Bild, Text als Kurven) gehen nicht an das Bildmodell; sie behalten den Text von Tesseract. Gescannte Seiten bleiben dabei |
+| `VISION_TIMEOUT` | `600` | Sekunden, die eine Seite der Bildauswertung beim Modell brauchen darf (Fragen behalten `LLM_TIMEOUT`); mit 20+ Seiten gleichzeitig dauert eine lange Seite Minuten |
 | `VISION_RETRY_BODY` | `{"temperature": 0.7, "top_p": 0.8, "top_k": 20}` | Felder (JSON) für den zweiten Versuch einer Seite nach einer Wiederholungsschleife; `{}` = wie der erste |
 | `VISION_PASS_SECONDS` | `1800` | Länge einer Runde der Bildauswertung in Sekunden; danach beginnt sofort die nächste (sie nimmt auch fehlgeschlagene Seiten, deren Wartezeit um ist). Ohne Anwendung (`python -m projektakte.index`): Zeitbudget der Phase am Ende des Laufs. `0` = bis nichts mehr aussteht |
 | `EMBED_CONCURRENCY` | `2` | Stapel (je 32 Abschnitte), die die Embeddings im Hintergrund gleichzeitig an den Embedding-Dienst schicken (1–8) |

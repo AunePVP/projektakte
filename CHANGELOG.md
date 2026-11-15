@@ -5,6 +5,11 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Eigene Zeitgrenze für die Bildauswertung (`VISION_TIMEOUT`, 600 s).** Bisher galt `LLM_TIMEOUT` (beim Nutzer
+  180 s) auch für eine Seite beim Bildmodell. Mit 22 Seiten gleichzeitig bekommt jede nur etwa 7–15 Antwort-Tokens je
+  Sekunde; dichte Seiten (Tabellen, alte Bauscheine) brauchen dann mehrere Minuten. Gemessen: 198 Zeitüberschreitungen
+  in einer Stunde – fast die Hälfte der Rechenzeit ohne Ergebnis, die Seiten kamen später wieder. Fragen behalten
+  `LLM_TIMEOUT`.
 - **Statusseite aufgeräumt:** „Indexierung“ nennt Einlesen, Bildauswertung und Embeddings je in einer Zeile, die
   Schaltflächen stehen nebeneinander (Pausieren als Nebenschaltfläche), „Läufe“ und „Letzter/Nächster Lauf“ nur, wenn
   es sie gibt. „Bestand“ zeigt je Zeile eine Zahl mit kurzem Zusatz; die Zeile „Zuordnung“ und die langen Erklärungen

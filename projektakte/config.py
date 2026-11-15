@@ -303,6 +303,8 @@ class Settings:
     llm_extra_body: dict
     # second attempt at a page after a repetition loop (VISION_RETRY_BODY, None: ai.llm.DEFAULT_RETRY_BODY)
     vision_retry_body: dict | None
+    # seconds one page image may take at the model (VISION_TIMEOUT); questions keep LLM_TIMEOUT
+    vision_timeout: float
     embed_url: str
     embed_model: str
     embed_format: str  # auto | openai | tei
@@ -497,6 +499,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         llm_max_tokens=_int(e.get("LLM_MAX_TOKENS"), 800),
         llm_extra_body=extra_body,
         vision_retry_body=retry_body,
+        vision_timeout=_timeout(e, "VISION_TIMEOUT", 600.0, warnings),
         embed_url=(e.get("EMBED_URL") or "http://192.168.178.62:8001").rstrip("/"),
         embed_model=e.get("EMBED_MODEL") or "qwen3-embedding-4b",
         embed_format=(e.get("EMBED_FORMAT") or "auto").lower(),
