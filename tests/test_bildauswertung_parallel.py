@@ -598,3 +598,25 @@ def test_the_status_page_counts_the_pages_the_model_read(tmp_path, fake_ai, monk
         conn.close()
         assert "1.234 Seiten vom Modell gelesen" in client.get("/status").text  # also with nothing pending
         assert client.get("/api/reihenfolge").json()["vision"]["samples"] == 1234
+
+
+def test_the_worker_starts_the_cad_clean_up_only_with_vision_skip_cad(tmp_path, fake_ai, monkeypatch):
+    s = _settings(fake_ai, tmp_path, LLM_VISION=1)
+    db.init_db(s.db_path)
+    llm = AIServices.from_settings(s).llm
+    monkeypatch.delenv("VISION_SKIP_CAD", raising=False)
+    worker = vision.VisionWorker(s, llm, live=vision.VisionLive())
+    worker.start()
+    try:
+        assert worker.sweep is None
+    finally:
+        worker.stop()
+    monkeypatch.setenv("VISION_SKIP_CAD", "1")
+    worker = vision.VisionWorker(s, llm, live=vision.VisionLive())
+    worker.start()
+    try:
+        assert worker.sweep is not None
+        worker.sweep._thread.join(10)
+        assert not worker.sweep.alive  # nothing waiting: done at once
+    finally:
+        worker.stop()

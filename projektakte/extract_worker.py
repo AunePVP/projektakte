@@ -258,6 +258,31 @@ class ExtractWorker:
                 self._discard(graceful=True)
             return out
 
+    def cad_pages(self, filename: str, data: bytes, pages: list[int]) -> list[int] | None:
+        """Which of ``pages`` of a PDF are CAD plans without an image (extract.cad_pages), in the worker under its
+        limits; None if the worker could not tell (limits, crash, not started)."""
+        request = json.dumps({"op": "cad", "filename": filename, "pages": [int(n) for n in pages],
+                              "level": logging.getLogger().getEffectiveLevel()}).encode()
+        with self._lock:
+            if self._closed:
+                raise ExtractionAborted("Leseprozess wurde beendet")
+            if self._failure is not None:
+                return None
+            try:
+                self._hand_over(request, data)
+            except ExtractWorkerError as exc:
+                self._failure = str(exc)
+                return None
+            outcome = self._receive(filename, None)
+            if isinstance(outcome, Extracted):
+                return None
+            if outcome.get("recycle"):
+                self._discard(graceful=True)
+            try:
+                return [int(n) for n in outcome.get("pages") or []]
+            except (TypeError, ValueError):
+                return None
+
     def close(self) -> None:
         """Stop the worker (app shutdown). A file being read is abandoned: the reading thread gets
         ExtractionAborted. Later calls of :meth:`extract` raise ExtractionAborted."""
@@ -376,7 +401,7 @@ class ExtractWorker:
                 deadline = time.monotonic() + wall
             elif kind == "log":
                 logging.getLogger(str(message["name"])).log(int(message["level"]), "%s", message["text"])
-            elif kind in ("result", "images"):
+            elif kind in ("result", "images", "cad"):
                 return message
 
     def _ended(self, filename: str) -> Extracted:
@@ -465,6 +490,10 @@ def _serve(conn, limits: Limits, parent: int) -> None:  # pragma: no cover - run
             if not _send_images(conn, request, data, limits):
                 return
             continue
+        if request.get("op") == "cad":  # which pending pages are CAD plans (VISION_SKIP_CAD)
+            if not _send_cad(conn, request, data, limits):
+                return
+            continue
         llm = _Reporting(LLMClient.from_config(request["llm"]), conn, parent) if request["llm"] else None
         flags = {k: bool(v) for k, v in (request.get("flags") or {}).items() if k in _FLAGS}
         result = extract.extract(Path(request["filename"]), data, llm=llm, **flags)
@@ -505,6 +534,27 @@ def _send_images(conn, request: dict, data: bytes, limits: Limits) -> bool:  # p
             except OSError:
                 _leave()
     return not recycle
+
+
+def _send_cad(conn, request: dict, data: bytes, limits: Limits) -> bool:  # pragma: no cover - worker side
+    """Answer which of the requested pages are CAD plans without an image. Returns whether the worker goes on."""
+    from . import extract
+
+    try:
+        pages = extract.cad_pages(data, [int(n) for n in request["pages"]], Path(request["filename"]).name)
+    except Exception:  # noqa: BLE001 – a broken or too large file: nothing found, its pages stay for the model
+        pages = []
+    del data
+    recycle = _resident_mb() > limits.memory_mb / 4
+    _send(conn, {"kind": "cad", "recycle": recycle, "pages": pages})
+    return not recycle
+
+
+def cad_pages(filename: str, data: bytes, pages: list[int], *, worker) -> list[int] | None:
+    """The CAD pages among ``pages`` of a PDF: in ``worker`` if there is one, else in this process."""
+    if worker is not None:
+        return worker.cad_pages(filename, data, pages)
+    return extract_module.cad_pages(data, pages, Path(filename).name)
 
 
 def _send(conn, message: dict) -> None:

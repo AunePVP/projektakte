@@ -251,6 +251,15 @@ MIGRATIONS: list[str] = [
     UPDATE documents SET loop_check = 1 WHERE method = 'vision';
     CREATE INDEX documents_loop_check ON documents(id) WHERE loop_check = 1;
     """,
+    # 17 – VISION_SKIP_CAD: the one-time clean-up (vision.CadSweep) checks every PDF with pages waiting for the
+    #      model once for CAD pages (no image) and closes them; ``cad_checked`` notes which file it checked (a
+    #      file read again – another sha256 – is checked again).
+    """
+    CREATE TABLE cad_checked (
+        doc_id  INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+        sha256  TEXT
+    );
+    """,
 ]
 
 # projects.kind

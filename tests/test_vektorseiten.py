@@ -187,3 +187,51 @@ def test_scans_still_go_to_the_model_with_skip_cad(monkeypatch):
     monkeypatch.setenv("VISION_SKIP_CAD", "1")
     r = extract(Path("Scan.pdf"), ocr_layer_scan(), llm=Vision(), ocr=False, defer_vision=True)
     assert r.vision_pages == [1]
+
+
+# -- the one-time clean-up (VISION_SKIP_CAD set after pages were listed) ------------------------------------------
+def test_cad_pages_tells_plans_from_scans():
+    from .test_bildauswertung_stufen import ocr_layer_scan
+
+    assert extract_mod.cad_pages(outlined_and_blank(), [1, 2], "Plan.pdf") == [1, 2]  # no image on either
+    assert extract_mod.cad_pages(ocr_layer_scan(), [1], "Scan.pdf") == []
+    assert extract_mod.cad_pages(b"kein PDF", [1], "x.pdf") == []
+
+
+def test_cad_pages_in_the_worker_process():
+    from projektakte.extract_worker import ExtractWorker, Limits, SUPPORTED
+
+    if not SUPPORTED:
+        pytest.skip("kein eigener Leseprozess auf diesem System")
+    worker = ExtractWorker(Limits())
+    try:
+        assert worker.cad_pages("Plan.pdf", outlined_and_blank(), [1]) == [1]
+    finally:
+        worker.close()
+
+
+def test_the_clean_up_closes_waiting_cad_pages_once(tmp_path, monkeypatch, tesseract):
+    from projektakte.extract import CAD_SKIPPED
+    from projektakte.vision import CadSweep
+
+    from .test_bildauswertung_stufen import _docs, _setup, _stage1, _text, ocr_layer_scan
+
+    monkeypatch.delenv("VISION_SKIP_CAD", raising=False)
+    monkeypatch.setattr(extract_mod, "ocr_available", lambda: True)
+    conn, root = _setup(tmp_path, {"Plan.pdf": outlined_and_blank(), "Scan.pdf": ocr_layer_scan()})
+    llm = Vision()
+    _stage1(conn, root, llm)
+    docs = _docs(conn)
+    assert docs["Plan.pdf"]["vision_pending"] == 1 and docs["Scan.pdf"]["vision_pending"] == 1
+    monkeypatch.setenv("VISION_SKIP_CAD", "1")
+    settings = type("S", (), {"db_path": tmp_path / "x.sqlite3", "projects_dir": root})()
+    stats = CadSweep(settings, llm).run(conn)
+    docs = _docs(conn)
+    assert (stats["documents"], stats["pages"], stats["finished"]) == (2, 1, 1)
+    assert (docs["Plan.pdf"]["vision_pending"], docs["Plan.pdf"]["incomplete"], docs["Plan.pdf"]["status"]) == (0, 0, "ok")
+    assert _text(conn, "Plan.pdf").startswith("Stellplätze") and docs["Plan.pdf"]["method"] != "vision"
+    assert docs["Scan.pdf"]["vision_pending"] == 1  # a scan stays for the model
+    assert llm.prompts == []  # no model
+    assert conn.execute("SELECT COUNT(*) FROM cad_checked").fetchone()[0] == 2
+    assert CadSweep(settings, llm).run(conn)["documents"] == 0  # once
+    assert not conn.execute("SELECT 1 FROM page_texts WHERE note = ?", (CAD_SKIPPED,)).fetchone()  # put together

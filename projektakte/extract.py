@@ -2125,6 +2125,37 @@ class PageImages:
     limit: str | None = None  # the worker's limit that cut it short (see Extracted.limit)
 
 
+def cad_pages(data: bytes, numbers: list[int], name: str) -> list[int]:
+    """Which of the given pages of a PDF draw no image – CAD plans, text as outlines (VISION_SKIP_CAD) – found by
+    walking their content as for a scan page, nothing decoded or drawn. In the extraction worker (untrusted data);
+    a page that cannot be read is left out (it stays for the model)."""
+    with _pdf_limits():
+        try:
+            reader = _open_pdf(data)
+            count = len(reader.pages) if reader is not None else 0
+        except MemoryError:
+            raise
+        except Exception:  # noqa: BLE001 – a broken file: nothing found, its pages stay for the model
+            return []
+        doc = _DocState(source=data)
+        out = []
+        for n in numbers:
+            _check_page()
+            if not 1 <= n <= count:
+                continue
+            page = reader.pages[n - 1]
+            try:
+                drawn = _page_images(page, name, n, doc) if _can_draw_images(page, doc) else _Drawing()
+            except MemoryError:
+                raise
+            except Exception:  # noqa: BLE001 – broken resources: left for the model
+                continue
+            if not drawn.images:  # as the phase does (page_images): no image found – drawn, so a CAD plan
+                out.append(n)
+            _progress()
+        return out
+
+
 def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
     """Decode and prepare the images of the given pages of a PDF for the model, nothing else – in an
     indexing pass in the extraction worker, under its limits (the model is called by the app, see

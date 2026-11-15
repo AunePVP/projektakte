@@ -1284,4 +1284,13 @@ auf CAD-Plänen liest, bringt für die Suche zu wenig für den Aufwand.
   sie mit dem bisherigen Text ab und zählt sie nicht als gelesen.
 - *Aus der Umgebung* wie `VISION_DPI`, kein Teil des Extraktionsprofils: Ein- oder Ausschalten liest nichts neu; nach
   dem Ausschalten gehen nur neue CAD-Seiten wieder an das Modell.
+- *Einmaliges Aufräumen statt Warten auf die Reihenfolge*: Schon vorgemerkte CAD-Seiten schloss die Bildauswertung erst,
+  wenn sie in ihrer Reihenfolge beim Dokument ankam – die Zahl der ausstehenden Dokumente sank kaum. Ein eigener Thread
+  (`vision.CadSweep`) mit eigenem Leseprozess geht beim Start mit `VISION_SKIP_CAD=1` alle PDF-Dateien mit wartenden
+  Seiten einmal durch: `extract.cad_pages` läuft den Seiteninhalt ab wie für einen Scan (nichts dekodiert, nichts
+  gezeichnet), die Seiten ohne Bild werden mit ihrem bisherigen Text abgeschlossen und das Dokument wird neu
+  zusammengesetzt (`VisionPass._write`, wie nach dem Modell). Nicht im Ablauf der Bildauswertung: der soll nur Seiten
+  losschicken (siehe „Erst messen, wo die Bildauswertung stockt“). `cad_checked` (Migration 17, mit `sha256`) merkt
+  sich jede geprüfte Datei, auch über Neustarts; eine neu gelesene Datei wird neu geprüft. Kann eine Datei nicht
+  gelesen oder geprüft werden, bleiben ihre Seiten beim Modell.
 

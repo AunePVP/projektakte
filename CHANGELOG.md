@@ -5,6 +5,11 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Einmaliges CAD-Aufräumen:** Mit `VISION_SKIP_CAD=1` prüft die App beim Start einmal alle PDF-Dateien mit wartenden
+  Seiten auf CAD-Seiten (eigener Leseprozess, nichts gezeichnet, kein Modell) und schließt sie gleich ab – die Zahl der
+  ausstehenden Dokumente sinkt sofort statt erst, wenn die Bildauswertung bei ihnen ankommt. Fortschritt im Protokoll
+  („CAD-Aufräumen: …“), die Bilanz jeder Runde nennt die übersprungenen CAD-Seiten. DB-Migration 17 (`cad_checked`):
+  jede Datei wird nur einmal geprüft.
 - **`VISION_SKIP_CAD=1`: CAD-Pläne nicht durch das Bildmodell.** Seiten ohne Bild (CAD-Pläne als PDF, Text als Kurven)
   gehen dann nicht an das Modell – es liest dort wenig Brauchbares, und das Zeichnen kostete 15–30 s je Seite. Sie
   behalten den Text, den Tesseract in Stufe 1 gelesen hat, und gelten als fertig. Schon vorgemerkte Seiten werden beim

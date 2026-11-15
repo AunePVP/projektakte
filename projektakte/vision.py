@@ -47,7 +47,7 @@ from .ai.repetition import find_loop
 from .chunking import chunk_pages
 from .documents import (LIMIT_MARK, _read_inside, _sqlite_time, _utcnow, document_date, pending_message, printable,
                         real_folder, retry_delay, sha256, store_page_texts, stored_profile, write_chunks)
-from .extract import CAD_SKIPPED, IMAGE_EXT, UNCHANGED, Page, extraction_profile, vision_prompt
+from .extract import CAD_SKIPPED, IMAGE_EXT, UNCHANGED, Page, extraction_profile, vision_prompt, vision_skip_cad
 from .pause import PAUSE
 
 log = logging.getLogger("projektakte.vision")
@@ -229,8 +229,10 @@ class VisionPass:
                           recheck=counts["recheck"])
         log.info("Bildauswertung: %d Seite(n) gelesen%s%s%s, noch %d Seite(n) in %d Dokument(en) ausstehend%s",
                  self.stats["pages"], f", {self.stats['failed']} fehlgeschlagen" if self.stats["failed"] else "",
-                 f", {self.stats['checked']} ältere PDF-Datei(en) geprüft ({self.stats['found']} mit Scans)"
-                 if self.stats["checked"] else "",
+                 (f", {self.stats['checked']} ältere PDF-Datei(en) geprüft ({self.stats['found']} mit Scans)"
+                  if self.stats["checked"] else "")
+                 + (f", {self.stats['cad_skipped']} CAD-Seite(n) ohne Modell abgeschlossen (VISION_SKIP_CAD)"
+                    if self.stats["cad_skipped"] else ""),
                  (f", Nachschub stockte {self.stats['stalls']}-mal (zusammen {self.stats['stall_seconds']:.0f} s)"
                   if self.stats["stalls"] else "") + (f", {_places(self.stats['occupancy'], self.concurrency)}"
                                                       if self.stats["occupancy"] is not None else ""),
@@ -243,7 +245,7 @@ class VisionPass:
         are being prepared or at the model are not taken again."""
         self._summary(" – neue Runde ohne Pause")
         for key in ("pages", "failed", "not_readable", "documents", "checked", "found", "discarded", "dropped",
-                    "loops_found", "stalls"):
+                    "loops_found", "stalls", "cad_skipped"):
             self.stats[key] = 0
         self.stats["stall_seconds"] = 0.0
         occ = self._occ
@@ -717,6 +719,117 @@ class VisionPass:
         return True
 
 
+class CadSweep:
+    """VISION_SKIP_CAD: the one-time clean-up of the pages that were listed for the model before the option was set.
+    A thread beside the Bildauswertung goes through every PDF with pages waiting, once (``cad_checked``): an
+    extraction worker of its own tells which of them draw no image (extract.cad_pages – nothing decoded or drawn),
+    those are closed with their text so far (``CAD_SKIPPED``) and the document is put together again, finished if
+    nothing else waits. No model, no page drawn; the files are read from the share once. Scan pages stay."""
+
+    BATCH = 50  # documents fetched at a time
+    LOG_EVERY = 500  # documents checked between two progress lines
+
+    def __init__(self, settings, llm, *, stop: threading.Event | None = None):
+        self.settings, self.llm = settings, llm
+        self._stop = stop or threading.Event()
+        self._thread: threading.Thread | None = None
+        self.stats = {"documents": 0, "pages": 0, "finished": 0, "unreadable": 0}
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, name="cad-aufraeumen", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 10.0) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout)
+
+    @property
+    def alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    def _loop(self) -> None:
+        conn = worker = None
+        try:
+            db.init_db(self.settings.db_path)
+            conn = db.connect(self.settings.db_path)
+            worker = extract_worker.own_worker(self.settings)
+            self.run(conn, worker)
+        except extract_worker.ExtractionAborted:
+            pass
+        except Exception:  # noqa: BLE001 – the clean-up must never take the app down
+            log.exception("CAD-Aufräumen fehlgeschlagen – wird beim nächsten Start fortgesetzt")
+        finally:
+            if worker is not None:
+                worker.close()
+            if conn is not None:
+                conn.close()
+
+    def run(self, conn, worker=None) -> dict:
+        """Check every PDF with pages waiting once; returns the counts."""
+        vp = VisionPass(conn, self.llm, projects_dir=getattr(self.settings, "projects_dir", None), worker=worker,
+                        stop=self._stop)
+        left = conn.execute(f"SELECT COUNT(*) FROM documents d WHERE {_SWEEP_WHERE}").fetchone()[0]
+        if not left:
+            return self.stats
+        log.info("CAD-Aufräumen (VISION_SKIP_CAD): %d PDF-Datei(en) mit wartenden Seiten werden einmal auf "
+                 "CAD-Pläne geprüft", left)
+        while not self._stop.is_set():
+            PAUSE.wait(self._stop)
+            rows = conn.execute(
+                f"SELECT d.id, d.project, d.path, d.rel_path, d.filename, d.ext, d.sha256, d.cache_path, d.mail_id "
+                f"FROM documents d WHERE {_SWEEP_WHERE} ORDER BY d.id LIMIT ?", (self.BATCH,)).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                if self._stop.is_set():
+                    break
+                self._check(conn, vp, dict(row), worker)
+                if self.stats["documents"] % self.LOG_EVERY == 0:
+                    log.info("CAD-Aufräumen: %d Datei(en) geprüft, %d CAD-Seite(n) abgeschlossen, %d Dokument(e) "
+                             "damit fertig", self.stats["documents"], self.stats["pages"], self.stats["finished"])
+        if not self._stop.is_set():
+            log.info("CAD-Aufräumen fertig: %d Datei(en) geprüft, %d CAD-Seite(n) ohne Modell abgeschlossen, %d "
+                     "Dokument(e) damit fertig%s", self.stats["documents"], self.stats["pages"], self.stats["finished"],
+                     f", {self.stats['unreadable']} nicht lesbar (bleiben beim Modell)" if self.stats["unreadable"]
+                     else "")
+        return self.stats
+
+    def _check(self, conn, vp: "VisionPass", row: dict, worker) -> None:
+        self.stats["documents"] += 1
+        pages = [r[0] for r in conn.execute(
+            f"SELECT page FROM page_texts WHERE doc_id = ? AND state IN {WAITING} ORDER BY page", (row["id"],))]
+        cad: list[int] | None = []
+        if pages:
+            data = vp._read(row)
+            cad = None if data is None else extract_worker.cad_pages(row["filename"], data, pages, worker=worker)
+        if cad is None:  # the file could not be read (or checked): left for the model, checked after a restart
+            self.stats["unreadable"] += 1
+            return
+        vp._begin()
+        if not vp._same_file(row["id"], row["sha256"]):
+            conn.rollback()  # read anew meanwhile: its pages are listed anew (without CAD pages)
+            return
+        if cad:
+            marks = ",".join("?" * len(cad))
+            cur = conn.execute(
+                f"UPDATE page_texts SET state = 'done', note = ? WHERE doc_id = ? AND page IN ({marks}) "
+                f"AND state IN {WAITING}", (CAD_SKIPPED, row["id"], *cad))
+            self.stats["pages"] += cur.rowcount
+        conn.execute("INSERT OR REPLACE INTO cad_checked (doc_id, sha256) VALUES (?, ?)", (row["id"], row["sha256"]))
+        conn.commit()
+        if cad:  # put together again: its count of waiting pages, finished if none is left
+            vp._sha[row["id"]] = row["sha256"]
+            vp._touched.add(row["id"])
+            vp._write(row["id"])
+            if not conn.execute("SELECT vision_pending FROM documents WHERE id = ?", (row["id"],)).fetchone()[0]:
+                self.stats["finished"] += 1
+
+
+_SWEEP_WHERE = ("d.vision_pending > 0 AND d.ext = '.pdf' AND NOT EXISTS (SELECT 1 FROM cad_checked c "
+                "WHERE c.doc_id = d.id AND c.sha256 IS d.sha256)")
+
+
 def _places(mean: float, concurrency: int) -> str:
     """'im Schnitt 19,4 von 22 Plätzen belegt (88 %)'."""
     return (f"im Schnitt {mean:.1f} von {concurrency} Plätzen belegt ({100 * mean / max(1, concurrency):.0f} %)"
@@ -862,6 +975,7 @@ class VisionWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._worker = None  # extract_worker.ExtractWorker of its own, or None (in this process)
+        self.sweep: CadSweep | None = None  # VISION_SKIP_CAD: the one-time clean-up beside it
         self.runs = 0
         self.last_error: str | None = None
 
@@ -878,6 +992,9 @@ class VisionWorker:
         self.live.enable(self.concurrency)
         self._thread = threading.Thread(target=self._loop, name="bildauswertung", daemon=True)
         self._thread.start()
+        if vision_skip_cad():
+            self.sweep = CadSweep(self.settings, self.llm, stop=self._stop)
+            self.sweep.start()
 
     def stop(self, timeout: float = 10.0) -> None:
         """Ends at once: answers of the model on their way are dropped (those pages are read after the next
@@ -886,6 +1003,8 @@ class VisionWorker:
         documents.VISION_WAITING.set()
         if self._worker is not None:
             self._worker.close()
+        if self.sweep is not None:
+            self.sweep.stop(timeout)
         if self._thread:
             self._thread.join(timeout)
         self.live.reset()

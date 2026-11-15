@@ -475,7 +475,11 @@ Modell gleich mit `VISION_DPI` – bei A3/A2 gut doppelt so schnell wie mit 300 
 an die Grenze von 16 Megapixeln. Mit `VISION_SKIP_CAD=1` gehen solche Seiten gar nicht an das Modell: CAD-Pläne als
 PDF (Seiten ohne Bild, Text als Kurven) behalten den Text, den Tesseract in Stufe 1 gelesen hat, und gelten als fertig
 (Hinweis „CAD-Plan – nicht an das Bildmodell“ an der Seite); schon vorgemerkte Seiten werden weder gezeichnet noch
-geschickt. Gescannte Seiten (mit Bild) gehen weiter an das Modell. Bilddateien (JPG, PNG, …) gehen wie bisher unverändert an das Modell.
+geschickt. Beim Start mit `VISION_SKIP_CAD=1` geht ein **einmaliges Aufräumen** neben der Bildauswertung alle
+PDF-Dateien mit wartenden Seiten durch (eigener Leseprozess, nichts gezeichnet, kein Modell), schließt ihre CAD-Seiten
+ab und setzt die Dokumente zusammen – die Zahl der ausstehenden Seiten sinkt dann sofort, nicht erst, wenn die
+Bildauswertung bei ihnen ankommt. Protokoll: „CAD-Aufräumen: … Datei(en) geprüft, … CAD-Seite(n) abgeschlossen“ alle 500
+Dateien und am Ende; jede Datei wird nur einmal geprüft (auch nach einem Neustart). Gescannte Seiten (mit Bild) gehen weiter an das Modell. Bilddateien (JPG, PNG, …) gehen wie bisher unverändert an das Modell.
 Bilder unter 32 Pixel Kantenlänge (z. B. eine Linie von 1979 × 3 Pixeln) gehen auf einem weißen Streifen von 32 Pixeln
 an das Modell – vLLMs Qwen3-VL weist sie sonst mit HTTP 400 ab.
 
