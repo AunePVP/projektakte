@@ -92,6 +92,7 @@ def _index_documents(conn, llm, settings: Settings) -> dict:
     try:
         return index_all_documents(conn, llm=llm, projects_dir=settings.projects_dir,
                                    skip_photos=settings.vision_skip_folders,
+                                   skip_read=getattr(settings, "skip_read_folders", ()),
                                    folder_order=getattr(settings, "index_folder_order", ()))
     except UnicodeError as exc:
         conn.rollback()

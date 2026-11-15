@@ -1294,3 +1294,18 @@ auf CAD-Plänen liest, bringt für die Suche zu wenig für den Aufwand.
   sich jede geprüfte Datei, auch über Neustarts; eine neu gelesene Datei wird neu geprüft. Kann eine Datei nicht
   gelesen oder geprüft werden, bleiben ihre Seiten beim Modell.
 
+## Ordner nur anzeigen (`SKIP_READ_FOLDERS`)
+
+Gewünscht: Die Dateien in den CAD-Ordnern der Projekte (`304000-CAD`) gar nicht lesen – sie sollen aber in der
+Projektansicht stehen und sich öffnen lassen. `VISION_SKIP_CAD` erkennt CAD-Seiten am Inhalt (Seite ohne Bild) und
+liest weiter Text und Tesseract; das hier geht nach dem Ordner und liest nichts.
+- *Gespeichert, aber nicht gelesen*: Die Projektansicht und der Betrachter kennen nur Dateien in `documents`. Darum
+  bekommt jede Datei dort eine Zeile (Name, Datum, Größe, Prüfsumme – die Datei wird dafür einmal gelesen, aber nicht
+  geparst), Status „übersprungen“ mit Hinweis, keine Abschnitte, keine wartenden Seiten.
+- *Ordnername wie bei `VISION_SKIP_FOLDERS`*: der Name selbst oder am Ende nach `-`, `_` oder Leerzeichen
+  („CAD“ → `304000-CAD`, `304000_CAD`), auch für Unterordner darin.
+- *Eigenes Profil* (`:nicht-gelesen`): Nimmt man den Ordner aus der Einstellung, gilt die Datei als unvollständig mit
+  anderem Profil und wird gelesen. Schon gelesene Dateien werden zu Beginn jedes Laufs mit der Einstellung sofort
+  umgestellt (`documents.mark_unread_folders`), nicht erst, wenn der Lauf bei ihrem Projekt ankommt – sonst schickte
+  die Bildauswertung ihre Seiten noch tagelang an das Modell.
+

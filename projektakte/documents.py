@@ -574,7 +574,7 @@ class _ProjectState:
 
 def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *,
                             projects_dir: Path | str | None = None, skip_photos: tuple[str, ...] = (),
-                            run: reihenfolge.ProjectRun | None = None) -> dict:
+                            run: reihenfolge.ProjectRun | None = None, skip_read: tuple[str, ...] = ()) -> dict:
     """Bring the documents of one project up to date – all its folders: the primary folder
     (``project["path"]``) and the further folders with the same number (``project["further"]``, read
     from the register if the key is missing). Every file is read and extracted without holding the
@@ -627,7 +627,8 @@ def index_project_documents(conn: sqlite3.Connection, project: dict, llm=None, *
                       prefix=folder_prefix(stored_root, stored),
                       boundary=Path(projects_dir).resolve() if projects_dir else root.resolve(),
                       profile=profile, now=now, seen=seen, bad=bad, unlisted=unlisted,
-                      exclude=frozenset(project.get("exclude") or ()), skip_photos=skip_photos, run=run)
+                      exclude=frozenset(project.get("exclude") or ()), skip_photos=skip_photos, run=run,
+                      skip_read=skip_read)
     if not reachable or run.stopped:  # nothing could be read, or stopped half-way: remove nothing
         conn.commit()
         return stats
@@ -667,7 +668,8 @@ def _what(project: dict) -> str:
 def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState, stats: dict, *, llm,
                   stored: Path, root: Path, prefix: str, boundary: Path, profile: str, now: str, seen: set[str],
                   bad: list[str], unlisted: list[Path], exclude: frozenset[str] = frozenset(),
-                  skip_photos: tuple[str, ...] = (), run: reihenfolge.ProjectRun | None = None) -> None:
+                  skip_photos: tuple[str, ...] = (), run: reihenfolge.ProjectRun | None = None,
+                  skip_read: tuple[str, ...] = ()) -> None:
     """The files of one folder of a project (``stored`` as registered, ``root`` its real path): new and
     changed ones are extracted and written, every file found is added to ``seen``; folders inside that
     could not be listed are added to ``unlisted``, names in a wrong encoding to ``bad``. Subfolders
@@ -733,6 +735,10 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
             conn.execute("UPDATE documents SET rel_path = ? WHERE id = ?", (shown, row["id"]))
             conn.commit()
             row["rel_path"] = shown
+        if skip_read and _in_folder(shown, stored.name, skip_read):  # SKIP_READ_FOLDERS: listed, not read
+            _store_unread(conn, row, f, st, key=key, shown=shown, boundary=boundary, profile=profile,
+                          project=project, stats=stats, run=run)
+            continue
         # a photo in a folder of VISION_SKIP_FOLDERS: not sent to the vision model; its own profile, so that
         # removing the folder from the setting reads it
         photo = bool(skip_photos) and f.suffix.lower() in IMAGE_EXT and _in_folder(shown, stored.name, skip_photos)
@@ -784,6 +790,59 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
                 unlisted.append(stored / Path(os.fsdecode(e.filename)).relative_to(root))
             except ValueError:
                 unlisted.append(Path(printable(os.fsdecode(e.filename))))
+
+
+UNREAD_MARK = ":nicht-gelesen"
+UNREAD_TEXT = "nicht gelesen – Ordner in SKIP_READ_FOLDERS (Datei nur angezeigt)"
+
+
+def _store_unread(conn: sqlite3.Connection, row, f: Path, st, *, key: str, shown: str, boundary: Path, profile: str,
+                  project: dict, stats: dict, run) -> None:
+    """A file in a folder of SKIP_READ_FOLDERS (e.g. CAD): stored without its content – no text, no Tesseract, no
+    model – so it is listed in its folder and opens in the viewer. Its own profile: removing the folder from the
+    setting reads it like an incomplete file."""
+    unread_profile = f"{profile}{UNREAD_MARK}"
+    if row and row["extract_profile"] == unread_profile and row["size"] == st.st_size and row["mtime"] == st.st_mtime:
+        stats["unchanged"] += 1
+        return
+    try:
+        data = _read_inside(f, boundary)  # its checksum only: the file is not parsed
+    except OSError as exc:
+        log.warning("Datei nicht lesbar: %s (%s)", key, exc)
+        stats["errors"] += 1
+        run.problem()
+        return
+    doc = PreparedDocument(rel_path=shown, filename=f.name, ext=f.suffix.lower(), size=len(data), sha256=sha256(data),
+                           mtime=st.st_mtime, doc_date=document_date(f.name, "", st.st_mtime), pages=None,
+                           result=Extracted([], status="skipped", message=UNREAD_TEXT, incomplete=True), chunks=[],
+                           profile=unread_profile)
+    write_document(conn, doc, path=key, project=project["number"], project_name=project["name"])
+    conn.commit()
+    stats["not_read"] = stats.get("not_read", 0) + 1
+
+
+def mark_unread_folders(conn: sqlite3.Connection, names: tuple[str, ...], profile: str) -> int:
+    """SKIP_READ_FOLDERS set or extended: documents read before that lie in such a folder lose their text, sections
+    and pages waiting for the model at once – not only when the documents pass reaches their project – and are
+    marked as not read (as :func:`_store_unread` would store them). Project files only, not mail attachments."""
+    unread_profile = f"{profile}{UNREAD_MARK}"
+    rows = conn.execute("SELECT id, rel_path FROM documents WHERE mail_id IS NULL AND "
+                        "COALESCE(extract_profile, '') NOT LIKE ?", (f"%{UNREAD_MARK}",)).fetchall()
+    ids = [r[0] for r in rows if _in_folder(r[1], "", names)]
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        marks = ",".join("?" * len(part))
+        conn.execute(f"DELETE FROM chunks WHERE doc_id IN ({marks})", part)
+        conn.execute(f"DELETE FROM page_texts WHERE doc_id IN ({marks})", part)
+        conn.execute(
+            f"UPDATE documents SET status = 'skipped', message = ?, method = NULL, incomplete = 1, vision_pending = 0, "
+            f"vision_note = NULL, vision_incomplete = 0, extract_profile = ?, attempts = 0, retry_after = NULL "
+            f"WHERE id IN ({marks})", (UNREAD_TEXT, unread_profile, *part))
+        conn.commit()
+    if ids:
+        log.info("%d Dokument(e) in Ordnern aus SKIP_READ_FOLDERS (%s) werden nicht mehr gelesen – nur angezeigt",
+                 len(ids), ", ".join(names))
+    return len(ids)
 
 
 PHOTO_MARK = ":ohne-fotos"
@@ -896,7 +955,8 @@ def site_exclusions(conn: sqlite3.Connection, further: dict[str, list[str]] | No
 
 
 def _index_one(conn: sqlite3.Connection, p: dict, further: dict, excluded: dict, areas: list, total: dict, *,
-               llm, projects_dir, skip_photos, run: reihenfolge.ProjectRun, profile: str) -> None:
+               llm, projects_dir, skip_photos, run: reihenfolge.ProjectRun, profile: str,
+               skip_read: tuple[str, ...] = ()) -> None:
     """One project of :func:`index_all_documents`; its stats are added to ``total``."""
     p["further"] = further.get(p["number"], [])
     if p["kind"] == BAUVORHABEN:
@@ -904,7 +964,7 @@ def _index_one(conn: sqlite3.Connection, p: dict, further: dict, excluded: dict,
         p["handover"] = [(folders, ex) for n, folders, ex in areas if n != p["number"]]
     try:
         stats = index_project_documents(conn, p, llm=llm, projects_dir=projects_dir, skip_photos=skip_photos,
-                                        run=run)
+                                        run=run, skip_read=skip_read)
     except UnicodeError as exc:
         conn.rollback()
         warn_once(log, "Projekt %s: Dokumente nicht vollständig gelesen – ein Name ist kein gültiges UTF-8 "
@@ -920,7 +980,8 @@ def _index_one(conn: sqlite3.Connection, p: dict, further: dict, excluded: dict,
 
 
 def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Path | str | None = None,
-                        skip_photos: tuple[str, ...] = (), folder_order: tuple[str, ...] = ()) -> dict:
+                        skip_photos: tuple[str, ...] = (), folder_order: tuple[str, ...] = (),
+                        skip_read: tuple[str, ...] = ()) -> dict:
     """Index the files of all active projects (files of unknown projects leave the index first).
     ``projects_dir`` is the boundary for links (default: each project folder itself). A project whose
     files cannot be stored (a name that is no valid UTF-8 the checks missed) is skipped with a warning
@@ -936,6 +997,8 @@ def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Pat
     mark_garbled_eml_documents(conn)
     projects = [dict(r) for r in conn.execute("SELECT number, name, path, kind FROM projects WHERE active = 1")]
     profile = extraction_profile(llm)
+    if skip_read:  # SKIP_READ_FOLDERS: files read before that lie in such a folder are put aside at once
+        total["not_read"] = mark_unread_folders(conn, skip_read, profile)
     plan = reihenfolge.Plan(conn, projects_dir, folder_order, profile)
     # a site's own files come after its orders (reihenfolge.ordered); which of two sites reads a file both
     # could is settled by the hand-over below, whichever is read first
@@ -965,7 +1028,7 @@ def index_all_documents(conn: sqlite3.Connection, llm=None, *, projects_dir: Pat
                        queued=in_queue)
             run = reihenfolge.ProjectRun(conn, p["number"], plan=plan, queued=in_queue)
             _index_one(conn, p, further, excluded, areas, total, llm=llm, projects_dir=projects_dir,
-                       skip_photos=skip_photos, run=run, profile=profile)
+                       skip_photos=skip_photos, run=run, profile=profile, skip_read=skip_read)
     finally:
         live.documents_done()
     return total

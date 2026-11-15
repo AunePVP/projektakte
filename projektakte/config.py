@@ -325,6 +325,8 @@ class Settings:
     # access control
     # folder names whose photos are not sent to the vision model ("Bilder" also matches 263900-Bilder)
     vision_skip_folders: tuple[str, ...] = ()
+    # folders whose files are listed but not read at all (SKIP_READ_FOLDERS, e.g. CAD): no text, no model
+    skip_read_folders: tuple[str, ...] = ()
     # top-level folders under PROJECTS_DIR whose projects are read first, in this order (INDEX_FOLDER_ORDER);
     # only a default until someone sets the order on the status page (reihenfolge.py)
     index_folder_order: tuple[str, ...] = ()
@@ -486,6 +488,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         embed_paused=_bool(e.get("EMBED_PAUSED"), False),
         dokumentart_ki=_dokumentart_ki(e, warnings),
         vision_skip_folders=tuple(w.strip() for w in (e.get("VISION_SKIP_FOLDERS") or "").split(",") if w.strip()),
+        skip_read_folders=tuple(w.strip() for w in (e.get("SKIP_READ_FOLDERS") or "").split(",") if w.strip()),
         index_folder_order=tuple(dict.fromkeys(w.strip().strip("/") for w in (e.get("INDEX_FOLDER_ORDER") or "").split(",")
                                                if w.strip().strip("/"))),
         projects_top_folders=tuple(dict.fromkeys(w.strip().strip("/") for w in (e.get("PROJECTS_TOP_FOLDERS") or "").split(",")

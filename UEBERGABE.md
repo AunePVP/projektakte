@@ -339,7 +339,8 @@ Spark, Port 8003) die Scans. Gemessen (vom Nutzer, an echten Projekt-PDFs) und d
 
 Empfohlene Einstellungen beim Nutzer (`deploy/projektakte.env`):
 `LLM_EXTRA_BODY={"chat_template_kwargs":{"enable_thinking":false},"presence_penalty":0,"repetition_detection":{"min_pattern_size":8,"max_pattern_size":300,"min_count":4}}`,
-`VISION_CONCURRENCY=22`, `LLM_TIMEOUT=170` (unter `ASK_DEADLINE`), `VISION_SKIP_CAD=1`; `VISION_DPI` und
+`VISION_CONCURRENCY=22`, `LLM_TIMEOUT=170` (unter `ASK_DEADLINE`), `VISION_SKIP_CAD=1`, `SKIP_READ_FOLDERS=CAD`
+(Dateien in den CAD-Ordnern nur anzeigen, nicht lesen); `VISION_DPI` und
 `VISION_RETRY_BODY` auf der Voreinstellung. Auswerten: `docker compose logs --since 1h app | grep -E "Plätzen
 belegt|Nachschub stockte|neue Runde|CAD-Aufräumen"`. Begründungen: DECISIONS „Wiederholungsschleifen der
 Bildauswertung“, „Auflösung der Seitenbilder für das Bildmodell“, „Erst messen, wo die Bildauswertung stockt“,

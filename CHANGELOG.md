@@ -5,6 +5,10 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **`SKIP_READ_FOLDERS`: Ordner nur anzeigen, nicht lesen.** Dateien in Ordnern dieses Namens (z. B. `CAD` für
+  `304000-CAD` und alles darunter) bekommen keinen Text, keine Texterkennung und keine Bildauswertung, stehen aber
+  weiter in der Projektansicht und öffnen im Betrachter. Schon gelesene Dateien dort verlieren beim nächsten Laufbeginn
+  sofort Text, Abschnitte und wartende Seiten; ohne den Ordner in der Einstellung werden sie wieder gelesen.
 - **Einmaliges CAD-Aufräumen:** Mit `VISION_SKIP_CAD=1` prüft die App beim Start einmal alle PDF-Dateien mit wartenden
   Seiten auf CAD-Seiten (eigener Leseprozess, nichts gezeichnet, kein Modell) und schließt sie gleich ab – die Zahl der
   ausstehenden Dokumente sinkt sofort statt erst, wenn die Bildauswertung bei ihnen ankommt. Fortschritt im Protokoll

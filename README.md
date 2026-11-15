@@ -466,6 +466,13 @@ zeigt, wie viele Seiten und Dokumente noch warten; das Protokoll jede gelesene S
 vollständig gelesene PDF-Dateien (ohne Modell gelesen) prüft die Phase nebenbei auf gescannte Seiten
 mit Textebene – deren Handschrift steht nur im Bild. Fällt das Modell aus, wird die Seite mit
 wachsendem Abstand wiederholt; ihr Text der ersten Stufe bleibt so lange durchsuchbar. Mit
+**Ordner nur anzeigen (`SKIP_READ_FOLDERS`):** Dateien in Ordnern dieses Namens – z. B. `SKIP_READ_FOLDERS=CAD` für
+`304000-CAD` samt Unterordnern – werden nicht gelesen: kein Text, keine Texterkennung, kein Bildmodell, keine
+Volltext- oder Bedeutungssuche über ihren Inhalt. Sie werden trotzdem mit Name, Datum und Prüfsumme gespeichert,
+stehen in der Projektansicht im Ordner (Hinweis „nicht gelesen – Ordner in SKIP_READ_FOLDERS“) und öffnen im
+Betrachter. Schon gelesene Dateien in solchen Ordnern verlieren beim Start des nächsten Laufs sofort ihren Text und
+ihre wartenden Seiten. Nimmt man den Ordner wieder heraus, werden sie gelesen.
+
 **Auflösung für das Modell (`VISION_DPI`, 150):** Die Seitenbilder gehen mit 150 dpi der echten Seitengröße an das
 Modell (A4 rund 2,2 Megapixel und 2.600 Bild-Tokens, A3 doppelt so viel, große Pläne höchstens 16 Megapixel). Gemessen
 mit Qwen3.5-4B erkennt es so genauso viel wie mit 300 dpi (rund 9.900 Tokens), aber drei- bis viermal schneller;
@@ -738,6 +745,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `EMBED_CONCURRENCY` | `2` | Stapel (je 32 Abschnitte), die die Embeddings im Hintergrund gleichzeitig an den Embedding-Dienst schicken (1–8) |
 | `EMBED_PAUSED` | `0` | `1`: die Embeddings im Hintergrund starten pausiert (Statusseite: „Embeddings fortsetzen“) – das Bildmodell bekommt die GPU allein |
 | `DOKUMENTART_KI` | `auto` | Sprachmodell nach der Dokumentart unklarer Dokumente fragen: `auto` = nur mit den echten KI-Diensten (nicht mit `AI_MODE=fake`), `1` = immer, `0` = nie. Ein Aufruf nach dem anderen, nie neben einer Frage (siehe „Suche“) |
+| `SKIP_READ_FOLDERS` | – | Ordner, deren Dateien nicht gelesen werden (kommagetrennt, z. B. `CAD`; „CAD“ trifft auch `304000-CAD` und Unterordner darin): kein Text, keine Texterkennung, kein Bildmodell – die Dateien stehen aber in der Projektansicht und öffnen im Betrachter |
 | `VISION_SKIP_FOLDERS` | leer | Ordnernamen, deren Fotos nicht an das Modell gehen, mit Komma getrennt; `Bilder` trifft auch `263900-Bilder`. Scans (PDF) werden weiter gelesen; ohne die Einstellung werden die Fotos beim nächsten Lauf nachgelesen |
 | `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | `120` / `800` | Sekunden / Antwortlänge |
 | `LLM_EXTRA_BODY` | – | JSON, das in jede Chat-Anfrage gemischt wird, z. B. `{"chat_template_kwargs":{"enable_thinking":false}}` |
