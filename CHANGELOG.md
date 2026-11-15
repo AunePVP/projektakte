@@ -5,6 +5,13 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Erfundene Stempel und lange Wiederholungsblöcke:** Gesehen auf einer Bauakten-Seite: Das Bildmodell schrieb den
+  Text richtig ab, fasste dann den Inhalt als erfundene „[Stempel: „Teeküche vorhanden“]“ zusammen und wiederholte
+  diesen Block von rund 20 „Stempeln“ bis zur Grenze – keine Erkennung fing das (Block über 80 Wörter). Jetzt gilt als
+  Schleife auch ein Block ab 200 Zeichen, der sich dreimal hintereinander wiederholt, und mehr als 10 Stempel auf einer
+  Seite gelten als erfunden; solche Antworten werden verworfen (der Text der Texterkennung bleibt). Der Prompt verlangt
+  Stempel nur, wenn wirklich einer zu sehen ist, wörtlich, nie als Zusammenfassung. DB-Migration 18: Die vom Modell
+  gelesenen Dokumente werden noch einmal geprüft und mit solchen Stellen neu gelesen.
 - **Kein sinnloser zweiter Versuch mehr:** Lief eine Antwort schon beim ersten Versuch mit der vollen Grenze (4.000
   Tokens) in den Abbruch, wurde die Seite mit denselben 4.000 Tokens noch einmal gefragt – gleiches Ende, doppelte Zeit
   (gemessen 41 Seiten je Stunde mit 5–12 Minuten, rund 15 % der Rechenzeit). Jetzt wird sie nach dem ersten Versuch

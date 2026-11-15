@@ -59,6 +59,9 @@ PROGRESS: Callable[[], None] | None = None
 _VISION_RULES = (
     "Füge handschriftliche Notizen, Häkchen, Kreuze und Markierungen als „[handschriftlich: …]“ und Stempel als "
     "„[Stempel: …]“ genau an der Stelle ein, zu der sie gehören (dieselbe Zeile, Tabellenzeile oder Position). "
+    "„[Stempel: …]“ nur für einen Stempel, der auf der Seite wirklich zu sehen ist, mit seinem Text wörtlich – fasse "
+    "den Inhalt der Seite nie als Stempel zusammen; meist hat eine Seite keinen oder wenige Stempel. Schreibe jede "
+    "Stelle der Seite nur einmal. "
     "Beschreibe bei Plänen kurz Inhalt, Beschriftungen und Brandschutz-Symbole. Unleserliches als „[unleserlich]“. "
     "Erfinde nichts. Antworte nur mit dem Text der Seite."
 )

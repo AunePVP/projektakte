@@ -649,8 +649,15 @@ class VisionPass:
         found = []
         with self._part(f"{len(rows)} gespeicherte Dokumente auf Schleifen geprüft"):
             for row in rows:
-                texts = self.conn.execute("SELECT text FROM chunks WHERE doc_id = ?", (row["id"],)).fetchall()
-                if any(find_loop(t[0]) is not None for t in texts):
+                pages: dict = {}
+                looped = False
+                for page, text in self.conn.execute("SELECT page, text FROM chunks WHERE doc_id = ? ORDER BY ord",
+                                                    (row["id"],)):
+                    looped = looped or find_loop(text) is not None  # a section: also too many stamps
+                    pages.setdefault(page, []).append(text)
+                # a page put together: a block repeated across sections (their overlap repeats once, no loop)
+                looped = looped or any(find_loop("\n".join(t), stamps=False) is not None for t in pages.values())
+                if looped:
                     found.append(row)
         self._begin()
         self.conn.executemany("UPDATE documents SET loop_check = 0 WHERE id = ?", [(r["id"],) for r in rows])

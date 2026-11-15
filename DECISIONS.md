@@ -1327,4 +1327,13 @@ ohne Ergebnis: rund 36.000 von 79.200 Platz-Sekunden, und die Seiten kamen nach 
   Gemessen: 41 Seiten je Stunde, je 5–12 Minuten, fast alle wieder abgeschnitten (5.000–14.000 Zeichen – gescannte
   Zeichnungen und alte Bauakten, auf denen das Modell Beschriftungen hochzählend auflistet; das ist nach der Regel keine
   Schleife, weil sich die Zeilen in Zahlen unterscheiden). Jetzt endet so eine Seite nach dem ersten Versuch.
+- *Lange Blöcke und erfundene Stempel* (Nachtrag): Eine Seite (Brandschutzbericht 2005) war richtig abgeschrieben,
+  danach erfand das 4B-Modell „Stempel“, die den Inhalt zusammenfassten, und wiederholte einen Block von rund 20 davon
+  (über 100 Wörter, rund 640 Zeichen) bis zur Grenze; gespeichert wurde der Text mit diesen Stempeln. Regel jetzt:
+  Einheit bis 400 Wörter; eine Einheit ab 200 Zeichen gilt schon nach drei Wiederholungen als Schleife (kein echter
+  Text wiederholt einen Absatz dreimal unmittelbar), kürzere weiter nach sechs; mehr als 10 „[Stempel:“ auf einer
+  Seite gelten als erfunden. Die Nachprüfung gespeicherter Dokumente (Migration 18) prüft jeden Abschnitt (auch
+  Stempel) und jede Seite zusammengesetzt (nur Wiederholungen: die Überlappung der Abschnitte wiederholt Text einmal).
+  Der Prompt sagt dem Modell ausdrücklich, keine Stempel zu erfinden. Mitlesen beim Streamen: die letzten 1.500
+  Wörter alle 600 Zeichen (rund 30 ms).
 

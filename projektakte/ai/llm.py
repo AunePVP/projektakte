@@ -26,7 +26,7 @@ _KNOWN_TEXT = "\n<<<\n"
 # penalty: measured with Qwen3.5-4B, 1.5 lost about 14 percentage points of a page's words, 0.3 still 3.
 # Only that page is asked like this; all others keep LLM_EXTRA_BODY.
 DEFAULT_RETRY_BODY = {"temperature": 0.7, "top_p": 0.8, "top_k": 20}
-_CHECK_EVERY = 300  # characters streamed in between two looks for a loop
+_CHECK_EVERY = 600  # characters streamed in between two looks for a loop
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 

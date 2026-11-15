@@ -260,6 +260,12 @@ MIGRATIONS: list[str] = [
         sha256  TEXT
     );
     """,
+    # 18 – the loop check finds more now (blocks of lines repeated three times, more than ten stamps on a page –
+    #      a small model summed up pages as invented stamps and repeated them): the documents the model read are
+    #      checked once more (vision.VisionPass._loop_check) and read again if their sections hold such a loop.
+    """
+    UPDATE documents SET loop_check = 1 WHERE method = 'vision';
+    """,
 ]
 
 # projects.kind

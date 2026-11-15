@@ -436,3 +436,64 @@ def test_a_page_has_its_own_timeout(monkeypatch):
     assert load_settings({}).vision_timeout == 600 and load_settings({"VISION_TIMEOUT": "900"}).vision_timeout == 900
     s = load_settings({"VISION_TIMEOUT": "0"})
     assert s.vision_timeout == 600 and any("VISION_TIMEOUT" in w for w in s.config_warnings)
+
+
+# -- seen in operation: invented stamps repeated as a block --------------------------------------------------
+STAMPS = " ".join(f"[Stempel: „{w} vorhanden“]" for w in (
+    "Teeküche inkl. Sanitär", "Schulungsraum 2x", "Garderobe mit Toiletten", "Bettenlager am Giebel", "Lüfterzentrale",
+    "Dachboden nicht ausgebaut", "Lagerraum", "Elf-Raum", "Dienstzimmer", "Übergang zum Anbau II",
+    "Zugang zu Aufzügen", "Feuerwehrzufahrt", "Löschwasserversorgung"))
+REPORT = "Das Dachgeschoss kann über die vorhandenen Aufzüge erreicht werden. Die Aufzüge liegen in Achse 12.\n"
+
+
+def test_a_long_block_repeated_three_times_is_a_loop():
+    block = STAMPS.replace("[Stempel:", "[Hinweis:")  # the repetition alone, without the stamp rule
+    text = REPORT + (block + "\n") * 3
+    assert find_loop(text) == len(REPORT) and before_loop(text) == REPORT.strip()
+    assert find_loop(REPORT + (block + "\n") * 2) is None  # twice: may be real (a form, a repeated head)
+    para = "Der Rettungsweg führt über das Treppenhaus ins Freie und ist ausreichend breit. "
+    assert find_loop(para * 2) is None
+
+
+def test_more_than_ten_stamps_are_invented():
+    text = REPORT + STAMPS
+    start = find_loop(text)
+    assert start is not None and text[:start].count("[Stempel:") == 10
+    assert find_loop(REPORT + "[Stempel: Bauaufsicht Aue] [Stempel: Geprüft 09.12.2005]") is None
+    assert find_loop(REPORT + STAMPS, stamps=False) is None  # sections put together: repetitions only
+
+
+def test_the_prompt_asks_for_real_stamps_only():
+    prompt = vision_prompt(LAYER)
+    assert "wirklich zu sehen" in prompt and "nie als Stempel zusammen" in prompt
+
+
+def test_stored_invented_stamps_are_read_again(tmp_path):
+    conn, _root = _setup(tmp_path, {})
+    project = conn.execute("SELECT number FROM projects").fetchone()[0]
+    cur = conn.execute(
+        "INSERT INTO documents (project, path, rel_path, filename, ext, sha256, status, method, incomplete, "
+        "extract_profile, loop_check) VALUES (?, '/x/A.pdf', 'A.pdf', 'A.pdf', '.pdf', 'x', 'ok', 'vision', 0, "
+        "'v99:p', 1)", (project,))
+    block = STAMPS.replace("[Stempel:", "[Hinweis:")
+    for k, part in enumerate((REPORT + block, block, block)):  # one page in three sections
+        conn.execute("INSERT INTO chunks (doc_id, project, ord, page, text) VALUES (?, ?, ?, 49, ?)",
+                     (cur.lastrowid, project, k, part))
+    conn.commit()
+    assert VisionPass(conn, _Looping()).run()["loops_found"] == 1
+    assert _docs(conn)["A.pdf"]["extract_profile"] == ""
+
+
+def test_migration_18_checks_the_model_read_documents_again(tmp_path):
+    path = tmp_path / "alt.sqlite3"
+    conn = db.connect(path)
+    conn.execute("PRAGMA journal_mode = WAL")
+    for i, script in enumerate(db.MIGRATIONS[:17], start=1):
+        conn.executescript("BEGIN;" + script + f"PRAGMA user_version = {i}; COMMIT;")
+    conn.execute("INSERT INTO documents (path, rel_path, filename, ext, method) VALUES "
+                 "('/a', 'a', 'a', '.pdf', 'vision'), ('/b', 'b', 'b', '.pdf', 'text')")
+    conn.commit()
+    conn.close()
+    db.init_db(path)
+    conn = db.connect(path)
+    assert dict(conn.execute("SELECT rel_path, loop_check FROM documents").fetchall()) == {"a": 1, "b": 0}
