@@ -106,6 +106,17 @@ def vision_dpi() -> int:
     return value if value >= 0 else VISION_DPI_DEFAULT
 
 
+# VISION_SKIP_CAD=1: pages without any image – CAD plans exported to PDF, text as outlines, drawn by PDFium – do not
+# go to the vision model: on plans it reads little worth searching, and drawing them took 15–30 s a page. They keep
+# the text Tesseract read from them in stage 1. Scanned pages (with an image) go to the model as before.
+CAD_SKIPPED = "CAD-Plan – nicht an das Bildmodell (VISION_SKIP_CAD)"
+
+
+def vision_skip_cad() -> bool:
+    """VISION_SKIP_CAD from the environment (read by the extraction worker as well)."""
+    return (os.environ.get("VISION_SKIP_CAD") or "").strip().lower() in ("1", "true", "ja", "yes", "on", "an")
+
+
 def vision_pixels(width_pt: float, height_pt: float) -> int | None:
     """Pixels of a page of that size (PDF points) at VISION_DPI, at most MAX_IMAGE_PIXELS – None: no bound."""
     dpi = vision_dpi()
@@ -666,6 +677,8 @@ def _vision_later(pages, empty_pages, layer_scans, name: str, doc: _DocState, oc
     model (Extracted.vision_pages, read by the phase "Bildauswertung"). No model call here."""
     scan = _read_scanned_pages(empty_pages, None, name, ocr=ocr, doc=doc, compose=True) if empty_pages else None
     later = sorted({i for i, _page in layer_scans} | set(scan.with_images if scan else ()))
+    if scan is not None and scan.rendered and vision_skip_cad():  # CAD plans keep Tesseract's text (VISION_SKIP_CAD)
+        later = [i for i in later if i not in set(scan.rendered)]
     pages = sorted(pages + (scan.pages if scan else []), key=lambda p: p.number or 0)
     notes = []
     incomplete = False
@@ -863,6 +876,7 @@ class _ScanResult:
     partial_doc_limit: int = 0
     partial_truncated: int = 0
     with_images: list = field(default_factory=list)  # numbers of the pages that draw an image
+    rendered: list = field(default_factory=list)  # … of those, the pages without an image PDFium drew (CAD plans)
     vision_read: int = 0  # pages the model gave text for
 
     @property
@@ -1998,6 +2012,8 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
                 result.too_complex += 1
             continue
         result.with_images.append(i)
+        if rendered is not None:
+            result.rendered.append(i)
         if not reading:
             continue
         if rendered is not None:
@@ -2014,7 +2030,7 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
             text = job.text
             if text is None:
                 known = base or (ocr_image(job.data) if ocr else "")
-                if llm is None:
+                if llm is None or (rendered is not None and vision_skip_cad()):  # a CAD plan: Tesseract's text
                     text = known
                 else:
                     doc.vision_calls += 1
@@ -2156,6 +2172,8 @@ def _images_of(page, number: int, name: str, doc: _DocState, decoder) -> PageIma
         log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, number, exc)
         return PageImages(number, problem=f"Bilder nicht lesbar: {_decode_problem(exc)}", retry=True)
     if not drawn.images:
+        if vision_skip_cad():  # a CAD plan listed before VISION_SKIP_CAD was set: not drawn, not sent
+            return PageImages(number, problem=CAD_SKIPPED)
         # for the model only: drawn at VISION_DPI right away – drawing a CAD plan at 300 dpi and scaling it down
         # afterwards took 15–30 s a page in the Bildauswertung, with no page going to the model meanwhile
         rendered = _rendered_job(page, number, _text_key(page), name, doc, full=True, dpi=vision_dpi() or None)

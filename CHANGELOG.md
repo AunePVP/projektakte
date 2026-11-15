@@ -5,6 +5,10 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **`VISION_SKIP_CAD=1`: CAD-Pläne nicht durch das Bildmodell.** Seiten ohne Bild (CAD-Pläne als PDF, Text als Kurven)
+  gehen dann nicht an das Modell – es liest dort wenig Brauchbares, und das Zeichnen kostete 15–30 s je Seite. Sie
+  behalten den Text, den Tesseract in Stufe 1 gelesen hat, und gelten als fertig. Schon vorgemerkte Seiten werden beim
+  nächsten Durchgang ohne Zeichnen abgeschlossen. Gescannte Seiten gehen weiter an das Modell. Voreinstellung: aus.
 - **Rundenwechsel der Bildauswertung ohne Leerlauf:** Am Ende einer Runde (`VISION_PASS_SECONDS`) wartete die
   Bildauswertung, bis alle Seiten beim Modell beantwortet waren – gemessen 36–106 s je Runde mit immer mehr freien
   Plätzen. Im Hintergrund beginnt die nächste Runde jetzt sofort (Protokoll: „… – neue Runde ohne Pause“); die

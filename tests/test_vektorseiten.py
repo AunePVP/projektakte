@@ -140,3 +140,50 @@ def test_the_phase_draws_the_page_at_vision_dpi_right_away(monkeypatch, tesserac
     extract_mod.page_images(data, [1], "Auszug.pdf")
     assert dpis == [None]
 
+
+# -- VISION_SKIP_CAD: CAD plans (pages without an image) do not go to the model ------------------------------
+def test_skip_cad_stage_one_keeps_tesseracts_text_and_lists_nothing(monkeypatch, tesseract):
+    monkeypatch.setenv("VISION_SKIP_CAD", "1")
+    r = extract(Path("Plan.pdf"), outlined_and_blank(), llm=Vision(), ocr=True, defer_vision=True)
+    assert r.status == "ok" and r.vision_pages == [] and not r.incomplete
+    assert r.pages[0].text.startswith("Stellplätze")  # Tesseract read it
+
+
+def test_skip_cad_reading_in_one_go_does_not_call_the_model(monkeypatch, tesseract):
+    monkeypatch.setenv("VISION_SKIP_CAD", "1")
+    llm = Vision()
+    r = extract(Path("Plan.pdf"), outlined_and_blank(), llm=llm, ocr=True)
+    assert llm.prompts == [] and r.status == "ok" and r.pages[0].text.startswith("Stellplätze")
+
+
+def test_skip_cad_pages_already_waiting_are_done_without_the_model(tmp_path, monkeypatch, tesseract):
+    from projektakte.extract import CAD_SKIPPED
+    from projektakte.vision import VisionPass
+
+    from .test_bildauswertung_stufen import _docs, _setup, _stage1, _text
+
+    monkeypatch.delenv("VISION_SKIP_CAD", raising=False)
+    monkeypatch.setattr(extract_mod, "ocr_available", lambda: True)  # stage 1 reads the plan with Tesseract
+    conn, root = _setup(tmp_path, {"Plan.pdf": outlined_and_blank()})
+    llm = Vision()
+    _stage1(conn, root, llm)
+    assert _docs(conn)["Plan.pdf"]["vision_pending"] == 1  # listed before the option was set
+    monkeypatch.setenv("VISION_SKIP_CAD", "1")
+    rendered = []
+    monkeypatch.setattr(extract_mod, "_render_page", lambda *a, **k: rendered.append(a) or None)
+    stats = VisionPass(conn, llm, projects_dir=root).run()
+    doc = _docs(conn)["Plan.pdf"]
+    assert llm.prompts == [] and rendered == []  # neither drawn nor sent
+    assert (doc["vision_pending"], doc["incomplete"], doc["status"]) == (0, 0, "ok")
+    assert doc["method"] != "vision" and _text(conn, "Plan.pdf").startswith("Stellplätze")
+    assert (stats["cad_skipped"], stats["pages"]) == (1, 0)
+    assert conn.execute("SELECT COUNT(*) FROM page_texts").fetchone()[0] == 0  # put together and done
+    assert CAD_SKIPPED.startswith("CAD-Plan")
+
+
+def test_scans_still_go_to_the_model_with_skip_cad(monkeypatch):
+    from .test_bildauswertung_stufen import ocr_layer_scan
+
+    monkeypatch.setenv("VISION_SKIP_CAD", "1")
+    r = extract(Path("Scan.pdf"), ocr_layer_scan(), llm=Vision(), ocr=False, defer_vision=True)
+    assert r.vision_pages == [1]

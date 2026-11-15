@@ -472,7 +472,10 @@ mit Qwen3.5-4B erkennt es so genauso viel wie mit 300 dpi (rund 9.900 Tokens), a
 100 dpi liest weniger und schleift öfter. Verkleinert wird nur das Bild für das Modell, im Leseprozess; Tesseract
 bekommt in Stufe 1 weiter das volle Bild. Seiten ohne Bild (CAD-Pläne mit Text als Kurven) zeichnet PDFium für das
 Modell gleich mit `VISION_DPI` – bei A3/A2 gut doppelt so schnell wie mit 300 dpi; Pläne ab A1 stoßen auch mit 150 dpi
-an die Grenze von 16 Megapixeln. Bilddateien (JPG, PNG, …) gehen wie bisher unverändert an das Modell.
+an die Grenze von 16 Megapixeln. Mit `VISION_SKIP_CAD=1` gehen solche Seiten gar nicht an das Modell: CAD-Pläne als
+PDF (Seiten ohne Bild, Text als Kurven) behalten den Text, den Tesseract in Stufe 1 gelesen hat, und gelten als fertig
+(Hinweis „CAD-Plan – nicht an das Bildmodell“ an der Seite); schon vorgemerkte Seiten werden weder gezeichnet noch
+geschickt. Gescannte Seiten (mit Bild) gehen weiter an das Modell. Bilddateien (JPG, PNG, …) gehen wie bisher unverändert an das Modell.
 Bilder unter 32 Pixel Kantenlänge (z. B. eine Linie von 1979 × 3 Pixeln) gehen auf einem weißen Streifen von 32 Pixeln
 an das Modell – vLLMs Qwen3-VL weist sie sonst mit HTTP 400 ab.
 
@@ -725,6 +728,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Scans, Pläne; Phase „Bildauswertung“) |
 | `VISION_CONCURRENCY` | `3` | Gleichzeitige Modellaufrufe der Bildauswertung (ab 1 = nacheinander); der KI-Server nimmt 4, einer bleibt für Fragen frei |
 | `VISION_DPI` | `150` | Auflösung der Seitenbilder für das Bildmodell, bezogen auf die echte Seitengröße (A4 ≈ 2,2 MP, A3 ≈ 4,4 MP); Tesseract bekommt weiter das volle Bild; `0` = aus (bis 16 MP) |
+| `VISION_SKIP_CAD` | `0` | `1`: CAD-Pläne als PDF (Seiten ohne Bild, Text als Kurven) gehen nicht an das Bildmodell; sie behalten den Text von Tesseract. Gescannte Seiten bleiben dabei |
 | `VISION_RETRY_BODY` | `{"temperature": 0.7, "top_p": 0.8, "top_k": 20}` | Felder (JSON) für den zweiten Versuch einer Seite nach einer Wiederholungsschleife; `{}` = wie der erste |
 | `VISION_PASS_SECONDS` | `1800` | Länge einer Runde der Bildauswertung in Sekunden; danach beginnt sofort die nächste (sie nimmt auch fehlgeschlagene Seiten, deren Wartezeit um ist). Ohne Anwendung (`python -m projektakte.index`): Zeitbudget der Phase am Ende des Laufs. `0` = bis nichts mehr aussteht |
 | `EMBED_CONCURRENCY` | `2` | Stapel (je 32 Abschnitte), die die Embeddings im Hintergrund gleichzeitig an den Embedding-Dienst schicken (1–8) |

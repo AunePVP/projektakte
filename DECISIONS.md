@@ -1270,3 +1270,18 @@ Plätze leer, danach gehen alle auf einmal los und lesen gemeinsam ein.
   Zeit war) – ein langsamer Schritt bei voll belegten Plätzen hält nichts auf. Die Teile werden ab 1 s genannt, die drei
   langsamsten im Log.
 
+## CAD-Pläne ohne Bildmodell (`VISION_SKIP_CAD`)
+
+Nach der Messung der Stockungen (fast alle beim Zeichnen von CAD-Seiten) entschied der Betrieb: Was das kleine Modell
+auf CAD-Plänen liest, bringt für die Suche zu wenig für den Aufwand.
+- *Was „CAD-Plan“ heißt*: eine PDF-Seite ohne jedes Bild, die PDFium zeichnen muss (Text als Kurven) – das sind die
+  CAD-Ausgaben. Gescannte Pläne (Seite mit Bild) bleiben beim Modell: Stempel und handschriftliche Prüfvermerke stehen
+  nur im Bild. Eine Größenregel (alles ab A2) hätte auch solche Scans getroffen, eine Ordnerregel („-CAD“) auch
+  Scans in den CAD-Ordnern und nicht die Pläne anderswo.
+- *Text von Tesseract bleibt*: Stufe 1 zeichnet die Seite weiter mit 300 dpi für Tesseract; nur Stufe 2 entfällt. Die
+  Seite gilt als fertig (`page_texts.note` = Hinweis, kein „unvollständig“), damit sie nicht immer wieder ansteht.
+- *Schon vorgemerkte Seiten*: `page_images` gibt sie ohne Zeichnen als übersprungen zurück, die Bildauswertung schließt
+  sie mit dem bisherigen Text ab und zählt sie nicht als gelesen.
+- *Aus der Umgebung* wie `VISION_DPI`, kein Teil des Extraktionsprofils: Ein- oder Ausschalten liest nichts neu; nach
+  dem Ausschalten gehen nur neue CAD-Seiten wieder an das Modell.
+

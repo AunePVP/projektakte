@@ -47,7 +47,7 @@ from .ai.repetition import find_loop
 from .chunking import chunk_pages
 from .documents import (LIMIT_MARK, _read_inside, _sqlite_time, _utcnow, document_date, pending_message, printable,
                         real_folder, retry_delay, sha256, store_page_texts, stored_profile, write_chunks)
-from .extract import IMAGE_EXT, UNCHANGED, Page, extraction_profile, vision_prompt
+from .extract import CAD_SKIPPED, IMAGE_EXT, UNCHANGED, Page, extraction_profile, vision_prompt
 from .pause import PAUSE
 
 log = logging.getLogger("projektakte.vision")
@@ -141,7 +141,7 @@ class VisionPass:
         self.profile = extraction_profile(llm)
         self.stats = {"pages": 0, "failed": 0, "not_readable": 0, "documents": 0, "checked": 0, "found": 0,
                       "discarded": 0, "dropped": 0, "loops_found": 0, "stalls": 0, "stall_seconds": 0.0,
-                      "drain_seconds": 0.0, "occupancy": None, "stopped": False}
+                      "drain_seconds": 0.0, "occupancy": None, "cad_skipped": 0, "stopped": False}
         self._parts: list[tuple[str, float]] = []  # slow parts of the step being timed (see _timed)
         # places taken over time (see _occupancy): the whole run and the current window
         self._occ = {"area": 0.0, "time": 0.0, "w_area": 0.0, "w_time": 0.0, "w_start": None, "last_t": None,
@@ -374,6 +374,7 @@ class VisionPass:
             if self._doc is None or not self._doc.due:
                 if self._doc is not None and not self._doc.open:
                     self._docs.pop(self._doc.row["id"], None)
+                    self._write(self._doc.row["id"])  # all its pages done here (CAD plans passed over): written now
                 self._doc = self._next_doc()
                 if self._doc is None:
                     return None
@@ -467,7 +468,10 @@ class VisionPass:
             prepared = extract_worker.page_images(row["filename"], doc.data, [n for n, _t in batch], self.prepare,
                                                   worker=self.worker)
         for page in prepared:
-            if page.images:
+            if page.problem == CAD_SKIPPED:  # VISION_SKIP_CAD: done without the model, its text so far stands
+                self.stats["cad_skipped"] += 1
+                self._store(row["id"], page.number, text="", note=CAD_SKIPPED, sha=row["sha256"])
+            elif page.images:
                 self._queue(doc, _Task(row["id"], page.number, name, known.get(page.number, ""), row["sha256"],
                                        page.images, page.partial, page.retry, page.limit))
             else:
@@ -509,7 +513,8 @@ class VisionPass:
 
     def _store(self, doc_id: int, page: int, *, text: str | None = None, error: str | None = None,
                problem: str | None = None, retry: bool = False, partial: str | None = None,
-               limit: str | None = None, sha: str | None = None, seconds: float | None = None) -> None:
+               limit: str | None = None, sha: str | None = None, seconds: float | None = None,
+               note: str | None = None) -> None:
         """Record the outcome of one page (committed at once: an interrupted pass loses no page read) – only
         if the file is still the one the page was taken from (``sha``): else the documents pass has read
         a changed file meanwhile, its pages wait anew and this answer is dropped."""
@@ -536,13 +541,14 @@ class VisionPass:
             if self.live is not None:
                 self.live.page_done(None)
         else:
-            note = partial or (None if text else NO_TEXT)
+            note = note or partial or (None if text else NO_TEXT)
             self.conn.execute(
                 "UPDATE page_texts SET state = 'done', text = CASE WHEN ? != '' THEN ? ELSE text END, note = ?, "
                 "partial = ?, retry = ?, size_limit = ? WHERE doc_id = ? AND page = ?",
                 (text or "", text or "", note, int(partial is not None), int(partial is not None and retry), limit,
                  doc_id, page))
-            self.stats["pages"] += 1
+            if note != CAD_SKIPPED:  # a CAD plan passed over is not a page read
+                self.stats["pages"] += 1
             if seconds is not None:  # the moving average for the estimate on the status page
                 zeiten.add(self.conn, zeiten.PAGE_KEY, seconds)
             if self.live is not None:
@@ -583,7 +589,7 @@ class VisionPass:
         waiting = sum(r["state"] in WAITING for r in rows)
         skipped = [r for r in rows if r["state"] == "skipped"]
         partial = [r for r in rows if r["state"] == "done" and r["partial"]]
-        read = any(r["state"] == "done" and r["note"] != NO_TEXT for r in rows)
+        read = any(r["state"] == "done" and r["note"] not in (NO_TEXT, CAD_SKIPPED) for r in rows)
         chunks = chunk_pages(pages)
         self.conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
         write_chunks(self.conn, doc_id, chunks, filename=doc["filename"], project=doc["project"],
