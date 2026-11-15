@@ -121,8 +121,11 @@ class VisionPass:
     def __init__(self, conn, llm, *, seconds: float = 1800.0, concurrency: int = 3, projects_dir=None,
                  progress=None, clock=time.monotonic, prepare=None, extract=None, order=None,
                  worker=extract_worker._PASS, stop: threading.Event | None = None, refresh: float = 0.0,
-                 live: "VisionLive | None" = None):
+                 live: "VisionLive | None" = None, continuous: bool = False):
         self.conn, self.llm = conn, llm
+        # the background worker: at the end of the time budget a new round begins at once while the pages at the
+        # model are still answered (no idle places); otherwise the run ends there and waits for them
+        self.continuous = continuous
         self.seconds = float(seconds)
         self.concurrency = max(1, int(concurrency))
         self.boundary = Path(projects_dir).resolve() if projects_dir else None
@@ -175,6 +178,8 @@ class VisionPass:
         drain: float | None = None  # when the time budget ran out with pages still at the model
         while True:
             self._check_stop()
+            if self.continuous and not self._time_left():
+                self._rollover(inflight)
             self._occupancy(inflight)
             while len(inflight) < self.concurrency and self._time_left():
                 task = self._timed("nächste Seite vorbereiten", inflight, self._next_task)
@@ -203,16 +208,22 @@ class VisionPass:
             if done and self.live is not None:
                 self.live.calls(len(inflight))
         self._occupancy(inflight)
-        occ = self._occ
-        # a mean over a few seconds says nothing (a run that found little to do)
-        self.stats["occupancy"] = occ["area"] / occ["time"] if occ["time"] >= _OCCUPANCY_MIN_SECONDS else None
         if drain is not None:  # the end of a run waits for the pages at the model: nothing new is sent meanwhile
             self.stats["drain_seconds"] = time.monotonic() - drain
             log.info("Bildauswertung: Rundenende – %.0f s ohne neue Seiten, bis die letzten Antworten da waren",
                      self.stats["drain_seconds"])
+        self.stats["stopped"] = not self._time_left()
+        self._summary(" – Zeitbudget erreicht, weiter im nächsten Durchlauf" if self.stats["stopped"] else "")
+        return self.stats
+
+    def _summary(self, ending: str) -> None:
+        """Write the documents touched, count what is pending and log the line of the round (``ending`` is said
+        only while pages are pending)."""
+        occ = self._occ
+        # a mean over a few seconds says nothing (a run that found little to do)
+        self.stats["occupancy"] = occ["area"] / occ["time"] if occ["time"] >= _OCCUPANCY_MIN_SECONDS else None
         for doc_id in sorted(self._touched):
             self._write(doc_id)
-        self.stats["stopped"] = not self._time_left()
         counts = pending_counts(self.conn)
         self.stats.update(pending_pages=counts["pages"], pending_documents=counts["documents"],
                           recheck=counts["recheck"])
@@ -223,10 +234,24 @@ class VisionPass:
                  (f", Nachschub stockte {self.stats['stalls']}-mal (zusammen {self.stats['stall_seconds']:.0f} s)"
                   if self.stats["stalls"] else "") + (f", {_places(self.stats['occupancy'], self.concurrency)}"
                                                       if self.stats["occupancy"] is not None else ""),
-                 counts["pages"], counts["documents"],
-                 " – Zeitbudget erreicht, weiter im nächsten Durchlauf" if self.stats["stopped"] and counts["pages"]
-                 else "")
-        return self.stats
+                 counts["pages"], counts["documents"], ending if counts["pages"] else "")
+
+    def _rollover(self, inflight: dict) -> None:
+        """End of the time budget in the background worker: the round's line is logged and a new round begins at
+        once – the pages at the model stay there and are answered into it (no place stands idle). Like the start
+        of a new run, it takes failed pages whose wait is over and documents passed over; documents whose pages
+        are being prepared or at the model are not taken again."""
+        self._summary(" – neue Runde ohne Pause")
+        for key in ("pages", "failed", "not_readable", "documents", "checked", "found", "discarded", "dropped",
+                    "loops_found", "stalls"):
+            self.stats[key] = 0
+        self.stats["stall_seconds"] = 0.0
+        occ = self._occ
+        occ["area"] = occ["time"] = 0.0
+        self._seen = set(self._docs) | ({self._doc.row["id"]} if self._doc is not None else set())
+        self._recheck_done = self._loops_done = False
+        self._end = self.clock() + self.seconds
+        self._load_ids()
 
     def _load_ids(self) -> None:
         """The documents waiting for the model, in their order – without those of folders switched off and
@@ -910,6 +935,6 @@ class VisionWorker:
             return VisionPass(conn, self.llm, seconds=getattr(self.settings, "vision_pass_seconds", 1800.0),
                               concurrency=self.concurrency, projects_dir=getattr(self.settings, "projects_dir", None),
                               order=_order(conn, self.settings), worker=self._worker, stop=self._stop,
-                              refresh=self.REFRESH_SECONDS, live=self.live).run()
+                              refresh=self.REFRESH_SECONDS, live=self.live, continuous=True).run()
         finally:
             _PASS_LOCK.release()

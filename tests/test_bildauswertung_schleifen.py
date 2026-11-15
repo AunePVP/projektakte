@@ -360,5 +360,38 @@ def test_the_run_reports_its_mean_of_places(tmp_path, caplog, monkeypatch):
     _stage1(conn2, root2, llm)
     monkeypatch.setattr(vision_mod, "_OCCUPANCY_MIN_SECONDS", 0.0)
     stats = VisionPass(conn2, llm, projects_dir=root2).run()
-    assert stats["occupancy"] is not None and 0 < stats["occupancy"] <= 3
+    assert stats["occupancy"] is not None and 0 <= stats["occupancy"] <= 3  # the mean itself: the test above
     assert "Plätzen belegt" in [r.getMessage() for r in caplog.records if "Seite(n) gelesen," in r.getMessage()][-1]
+
+
+def test_the_background_worker_begins_the_next_round_without_idle_places(tmp_path, caplog):
+    """At the end of the time budget a run waited until every page at the model was answered (36–106 s with places
+    idle); the background worker's run begins the next round at once and goes on."""
+    import logging
+
+    from .test_bildauswertung_stufen import Clock, Vision
+
+    files = {f"Protokoll{k}.pdf": ocr_layer_scan() for k in range(3)}
+    conn, root = _setup(tmp_path, files)
+    clock = Clock()
+    llm = Vision(clock=clock)  # every page takes 100 "seconds"
+    _stage1(conn, root, llm)
+    caplog.set_level(logging.INFO, logger="projektakte.vision")
+    stats = VisionPass(conn, llm, projects_dir=root, seconds=150, concurrency=1, clock=clock, continuous=True).run()
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(llm.prompts) == 3  # every page once, in one run
+    assert any("neue Runde ohne Pause" in m for m in messages) and not any("Rundenende" in m for m in messages)
+    assert stats["pending_pages"] == 0
+    assert all(d["vision_pending"] == 0 for d in _docs(conn).values())
+
+
+def test_a_run_of_the_indexing_pass_still_ends_at_its_budget(tmp_path):
+    from .test_bildauswertung_stufen import Clock, Vision
+
+    files = {f"Protokoll{k}.pdf": ocr_layer_scan() for k in range(3)}
+    conn, root = _setup(tmp_path, files)
+    clock = Clock()
+    llm = Vision(clock=clock)
+    _stage1(conn, root, llm)
+    stats = VisionPass(conn, llm, projects_dir=root, seconds=150, concurrency=1, clock=clock).run()
+    assert stats["stopped"] and stats["pending_pages"] == 1 and len(llm.prompts) == 2

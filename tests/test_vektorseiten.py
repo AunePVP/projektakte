@@ -113,3 +113,30 @@ def test_migration_reads_empty_and_gappy_pdfs_once_more(tmp_path):
         marked = conn.execute("SELECT id FROM documents WHERE incomplete = 1 AND extract_profile = '' "
                               "ORDER BY id").fetchall()
     assert [r[0] for r in marked] == [1, 2, 5]
+
+
+def test_the_phase_draws_the_page_at_vision_dpi_right_away(monkeypatch, tesseract):
+    """Drawing a CAD plan at 300 dpi for the model and scaling it down afterwards took 15–30 s a page; the page is
+    drawn at VISION_DPI right away. Stage 1 (Tesseract) keeps 300 dpi."""
+    monkeypatch.delenv("VISION_DPI", raising=False)
+    dpis = []
+    real = extract_mod._render_page
+
+    def spy(doc, number, max_pixels, dpi=None):
+        dpis.append(dpi)
+        return real(doc, number, max_pixels, dpi)
+
+    monkeypatch.setattr(extract_mod, "_render_page", spy)
+    data = outlined_and_blank()
+    (first,) = extract_mod.page_images(data, [1], "Auszug.pdf")
+    assert dpis == [150]
+    with Image.open(io.BytesIO(first.images[0][1])) as img:
+        assert img.size == (1239, 1754)
+    dpis.clear()
+    extract(Path("Auszug.pdf"), data, llm=Vision(), ocr=True, defer_vision=True)
+    assert dpis and all(d is None for d in dpis)  # stage 1: RENDER_DPI (300) for Tesseract
+    monkeypatch.setenv("VISION_DPI", "0")  # off: as before
+    dpis.clear()
+    extract_mod.page_images(data, [1], "Auszug.pdf")
+    assert dpis == [None]
+

@@ -458,7 +458,8 @@ Seitenbild **und** den bisherigen Text und gibt die ganze Seite zurück – OCR-
 Handschrift als „[handschriftlich: …]“ und Stempel als „[Stempel: …]“ an der passenden Stelle, Pläne
 kurz beschrieben. Neueste Dokumente zuerst, höchstens `VISION_CONCURRENCY` Aufrufe gleichzeitig (3,
 damit einer der vier Plätze des KI-Servers für Fragen frei bleibt) und höchstens
-`VISION_PASS_SECONDS` je Runde (1800 s); danach beginnt sofort die nächste Runde – sie nimmt auch
+`VISION_PASS_SECONDS` je Runde (1800 s); danach beginnt sofort die nächste Runde, ohne auf die Seiten zu warten, die
+noch beim Modell sind (die Plätze bleiben belegt; nur ein Lauf ohne Anwendung endet am Zeitbudget) – sie nimmt auch
 fehlgeschlagene Seiten, deren Wartezeit um ist. Ausgeschaltete Ordner bekommen keine Bildauswertung. Gelesene Seiten ersetzen den Text der ersten Stufe, nur dieses
 Dokument bekommt neue Abschnitte und Vektoren. Mail-Anhänge gehen denselben Weg. Die Statusseite
 zeigt, wie viele Seiten und Dokumente noch warten; das Protokoll jede gelesene Seite. Ältere,
@@ -469,7 +470,9 @@ wachsendem Abstand wiederholt; ihr Text der ersten Stufe bleibt so lange durchsu
 Modell (A4 rund 2,2 Megapixel und 2.600 Bild-Tokens, A3 doppelt so viel, große Pläne höchstens 16 Megapixel). Gemessen
 mit Qwen3.5-4B erkennt es so genauso viel wie mit 300 dpi (rund 9.900 Tokens), aber drei- bis viermal schneller;
 100 dpi liest weniger und schleift öfter. Verkleinert wird nur das Bild für das Modell, im Leseprozess; Tesseract
-bekommt in Stufe 1 weiter das volle Bild. Bilddateien (JPG, PNG, …) gehen wie bisher unverändert an das Modell.
+bekommt in Stufe 1 weiter das volle Bild. Seiten ohne Bild (CAD-Pläne mit Text als Kurven) zeichnet PDFium für das
+Modell gleich mit `VISION_DPI` – bei A3/A2 gut doppelt so schnell wie mit 300 dpi; Pläne ab A1 stoßen auch mit 150 dpi
+an die Grenze von 16 Megapixeln. Bilddateien (JPG, PNG, …) gehen wie bisher unverändert an das Modell.
 Bilder unter 32 Pixel Kantenlänge (z. B. eine Linie von 1979 × 3 Pixeln) gehen auf einem weißen Streifen von 32 Pixeln
 an das Modell – vLLMs Qwen3-VL weist sie sonst mit HTTP 400 ab.
 

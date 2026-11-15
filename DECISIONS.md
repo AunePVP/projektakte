@@ -1253,6 +1253,14 @@ Plätze leer, danach gehen alle auf einmal los und lesen gemeinsam ein.
 - *Messen statt raten*: Welcher Schritt bei der echten Ablage zählt, ist offen (große Plan-PDFs, CAD-Seiten, Sperren).
   Ein Umbau (Seiten im Voraus in einem eigenen Thread vorbereiten, Nebenprüfungen dorthin) ist größer; erst das
   Protokoll soll zeigen, ob und wo.
+- *Erste Messung im Betrieb* (zwei Runden): 91–95 % der Plätze belegt; fast jede Stockung war das Vorbereiten von
+  CAD-Seiten (PDFium zeichnet 3–4 Seiten in 12–30 s), das Rundenende kostete 36 bzw. 106 s. Folgen: Für das Modell
+  wird gleich mit `VISION_DPI` gezeichnet statt mit 300 dpi und danach verkleinert (A3 gemessen 4,1 → 1,8 s; ab A1
+  gleich, beide Male 16 MP), und im Hintergrund beginnt die nächste Runde ohne Warten (`VisionPass(continuous=True)`:
+  die Bilanz der Runde wird geschrieben, ihre Zähler beginnen neu, Dokumente in Vorbereitung oder beim Modell werden
+  nicht noch einmal genommen, alle anderen – auch fehlgeschlagene Seiten, deren Wartezeit um ist – wieder). Ein Lauf
+  ohne Anwendung (`run_vision`) endet weiter am Zeitbudget. Ob sich Vorbereiten im Voraus (eigener Thread) lohnt,
+  zeigt die nächste Messung.
 - *Belegte Plätze im Schnitt*: Viele CAD-Seiten brauchen beim Vorbereiten je 2–4 s – unter der Schwelle, aber in
   Summe sichtbar (nach dem Start waren 3 Minuten lang nur 12 von 22 Plätzen belegt). Darum zählt die Runde zusätzlich
   die belegten Plätze über die Zeit (Mittel aus zwei Blicken mal Sekunden dazwischen, ein Blick je Durchgang der

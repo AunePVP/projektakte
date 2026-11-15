@@ -1378,10 +1378,11 @@ class _Rendered:
     doc_limit: bool = False
 
 
-def _render_page(doc: _DocState, number: int, max_pixels: int) -> _Rendered | None:
-    """Page ``number`` rendered in grey at RENDER_DPI (scaled down to ``max_pixels``, large plans at a lower
-    resolution) as PNG, or blank if nothing on it is darker than RENDER_BLANK_LEVEL. None without PDFium.
-    Charged to the document's MAX_DOC_PIXELS; rendering stops after RENDER_SECONDS."""
+def _render_page(doc: _DocState, number: int, max_pixels: int, dpi: int | None = None) -> _Rendered | None:
+    """Page ``number`` rendered in grey at ``dpi`` (RENDER_DPI for Tesseract, VISION_DPI for the model; scaled down
+    to ``max_pixels``, large plans at a lower resolution) as PNG, or blank if nothing on it is darker than
+    RENDER_BLANK_LEVEL. None without PDFium. Charged to the document's MAX_DOC_PIXELS; rendering stops after
+    RENDER_SECONDS."""
     if doc.source is None:
         return None
     pdfium = _pdfium()
@@ -1397,7 +1398,7 @@ def _render_page(doc: _DocState, number: int, max_pixels: int) -> _Rendered | No
             doc.pdfium = pdfium.PdfDocument(doc.source)
         page = doc.pdfium[number - 1]
         w_pt, h_pt = page.get_size()  # in points, as displayed (rotation applied)
-        scale = RENDER_DPI / 72
+        scale = (dpi or RENDER_DPI) / 72
         if w_pt * h_pt * scale * scale > max_pixels:
             scale = (max_pixels / (w_pt * h_pt)) ** 0.5
         width, height = max(1, int(w_pt * scale)), max(1, int(h_pt * scale))
@@ -2074,7 +2075,7 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
     return result
 
 
-def _rendered_job(page, number: int, key, name: str, doc: _DocState, *, full: bool):
+def _rendered_job(page, number: int, key, name: str, doc: _DocState, *, full: bool, dpi: int | None = None):
     """A page without text layer and images, rendered (_render_page): a _Job with the page image (``full``;
     otherwise only a small render that tells whether it is blank, with an empty job), a _Rendered if it
     is blank or could not be rendered, None without PDFium (the page counts as blank, as before)."""
@@ -2083,7 +2084,7 @@ def _rendered_job(page, number: int, key, name: str, doc: _DocState, *, full: bo
         return _Rendered(blank=True)
     if job_key in doc.transcripts:  # the same content read on an earlier page
         return _Job(job_key, text=doc.transcripts[job_key])
-    rendered = _render_page(doc, number, MAX_IMAGE_PIXELS if full else RENDER_PROBE_PIXELS)
+    rendered = _render_page(doc, number, MAX_IMAGE_PIXELS if full else RENDER_PROBE_PIXELS, dpi)
     if rendered is None:
         return None
     if rendered.blank:
@@ -2155,7 +2156,9 @@ def _images_of(page, number: int, name: str, doc: _DocState, decoder) -> PageIma
         log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, number, exc)
         return PageImages(number, problem=f"Bilder nicht lesbar: {_decode_problem(exc)}", retry=True)
     if not drawn.images:
-        rendered = _rendered_job(page, number, _text_key(page), name, doc, full=True)
+        # for the model only: drawn at VISION_DPI right away – drawing a CAD plan at 300 dpi and scaling it down
+        # afterwards took 15–30 s a page in the Bildauswertung, with no page going to the model meanwhile
+        rendered = _rendered_job(page, number, _text_key(page), name, doc, full=True, dpi=vision_dpi() or None)
         if isinstance(rendered, _Job) and rendered.data is not None:
             return PageImages(number, [(rendered.mime, rendered.data)])
         if isinstance(rendered, _Rendered) and rendered.problem:

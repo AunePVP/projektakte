@@ -5,6 +5,14 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Rundenwechsel der Bildauswertung ohne Leerlauf:** Am Ende einer Runde (`VISION_PASS_SECONDS`) wartete die
+  Bildauswertung, bis alle Seiten beim Modell beantwortet waren – gemessen 36–106 s je Runde mit immer mehr freien
+  Plätzen. Im Hintergrund beginnt die nächste Runde jetzt sofort (Protokoll: „… – neue Runde ohne Pause“); die
+  Seiten beim Modell werden in die neue Runde hinein beantwortet. Ein Lauf ohne Anwendung endet wie bisher am Budget.
+- **CAD-Seiten für das Modell gleich mit 150 dpi zeichnen:** Seiten ohne Bild zeichnete PDFium für die Bildauswertung
+  mit 300 dpi und verkleinerte danach auf `VISION_DPI` – das Vorbereiten einer Planseite dauerte 15–30 s, ohne dass
+  in der Zeit Seiten an das Modell gingen. Jetzt wird gleich mit `VISION_DPI` gezeichnet (A3/A2 gemessen gut doppelt
+  so schnell; ab A1 gleich, dort greift die Grenze von 16 MP). Tesseract bekommt in Stufe 1 weiter 300 dpi.
 - Die Statusseite zeigt unter „Bildauswertung“, wie viele Seiten das Modell bisher gelesen hat (auch wenn nichts mehr
   aussteht; `/api/reihenfolge`: `vision.samples`). Gezählt wird jede beantwortete Seite seit Einführung der
   Zeitschätzung.
