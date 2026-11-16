@@ -76,8 +76,24 @@ def _known_text(conn, doc_id: int, page: int) -> str:
         "SELECT text FROM chunks WHERE doc_id = ? AND page = ? ORDER BY ord", (doc_id, page)))
 
 
+_OLD = re.compile(r"^\d{3}_.*\.(jpg|png|tif|webp|bin|tesseract\.txt)$")
+
+
+def _clear(target: Path) -> int:
+    """Remove the pages of an earlier export (``NNN_….jpg`` and their texts, ``seiten.json``): with them left, a new
+    export with the same numbers mixed old and new pages, and ``seiten.json`` described only the new ones."""
+    removed = 0
+    for f in target.iterdir():
+        if f.is_file() and (_OLD.match(f.name) or f.name == "seiten.json"):
+            f.unlink()
+            removed += 1
+    return removed
+
+
 def export(conn, settings, target: Path, wanted: list[tuple[int, int]], *, worker=None) -> list[dict]:
     target.mkdir(parents=True, exist_ok=True)
+    if _clear(target):
+        log.info("Seiten eines früheren Exports in %s entfernt", target)
     vp = VisionPass(conn, None, projects_dir=getattr(settings, "projects_dir", None), worker=worker)
     by_doc: dict[int, list[int]] = {}
     for doc_id, page in wanted:

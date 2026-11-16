@@ -41,6 +41,12 @@ def test_export_writes_page_images_with_their_text(tmp_path, monkeypatch):
                                           .fetchone()[0], 2)]
     # nothing changed in the database
     assert conn.execute("SELECT COUNT(*) FROM page_texts WHERE state = 'pending'").fetchone()[0] == 4
+    # a second export into the same folder replaces the first: no old pages mixed in (seen: 100 pages, 50 listed)
+    (tmp_path / "ocr-test" / "099_alt_S1.jpg").write_bytes(b"x")
+    (tmp_path / "ocr-test" / "notiz.txt").write_text("bleibt", encoding="utf-8")
+    again = export(conn, settings, tmp_path / "ocr-test", wanted[:1])
+    images = sorted(p.name for p in (tmp_path / "ocr-test").iterdir() if p.suffix in (".jpg", ".png"))
+    assert images == [again[0]["datei"]] and (tmp_path / "ocr-test" / "notiz.txt").exists()
 
 
 def test_pages_from_cad_and_bilder_folders_are_left_out(tmp_path, monkeypatch):
