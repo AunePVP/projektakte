@@ -21,11 +21,13 @@ from pathlib import Path
 
 from . import db, extract_worker
 from .config import load_settings
-from .documents import printable
+from .documents import _in_folder, printable
 from .vision import WAITING, VisionPass
 
 log = logging.getLogger("projektakte.ocr_testseiten")
 
+# folders whose pages never go to the model in operation (CAD plans, photos): not taken for the comparison either
+DEFAULT_SKIP = ("CAD", "Bilder")
 _EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/tiff": ".tif", "image/webp": ".webp"}
 
 
@@ -33,13 +35,16 @@ def _safe(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:60].strip("_") or "seite"
 
 
-def _candidates(conn, count: int, seed: int) -> list[tuple[int, int]]:
-    """(document id, page) of pending scan pages: at most two pages per document, spread over many documents."""
+def _candidates(conn, count: int, seed: int, skip: tuple[str, ...] = DEFAULT_SKIP) -> list[tuple[int, int]]:
+    """(document id, page) of pending scan pages: at most two pages per document, spread over many documents, none
+    from folders named in ``skip`` (CAD, Bilder: "CAD" also matches 304000-CAD and the folders below it)."""
     rows = conn.execute(
-        f"SELECT p.doc_id, p.page FROM page_texts p JOIN documents d ON d.id = p.doc_id "
+        f"SELECT p.doc_id, p.page, d.rel_path FROM page_texts p JOIN documents d ON d.id = p.doc_id "
         f"WHERE p.state IN {WAITING} AND d.ext = '.pdf'").fetchall()
     by_doc: dict[int, list[int]] = {}
-    for doc_id, page in rows:
+    for doc_id, page, rel_path in rows:
+        if skip and _in_folder(rel_path, "", skip):
+            continue
         by_doc.setdefault(doc_id, []).append(page)
     rnd = random.Random(seed)
     docs = list(by_doc)
@@ -111,6 +116,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--datei", help="stattdessen Seiten dieser Datei (Teil des Namens)")
     ap.add_argument("--seiten", default="", help="mit --datei: Seitennummern, z. B. 49,56 (sonst alle)")
     ap.add_argument("--seed", type=int, default=1, help="Zufallsauswahl wiederholbar (Voreinstellung: 1)")
+    ap.add_argument("--ohne-ordner", default=",".join(DEFAULT_SKIP),
+                    help="keine Seiten aus Ordnern dieses Namens, kommagetrennt (Voreinstellung: CAD,Bilder; "
+                         "dazu SKIP_READ_FOLDERS und VISION_SKIP_FOLDERS); leer: alle")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = load_settings()
@@ -121,7 +129,10 @@ def main(argv: list[str] | None = None) -> int:
             pages = [int(x) for x in args.seiten.split(",") if x.strip()]
             wanted = _named(conn, args.datei, pages)
         else:
-            wanted = _candidates(conn, max(1, args.anzahl), args.seed)
+            skip = tuple(dict.fromkeys(
+                [w.strip() for w in args.ohne_ordner.split(",") if w.strip()]
+                + list(getattr(settings, "skip_read_folders", ())) + list(getattr(settings, "vision_skip_folders", ()))))
+            wanted = _candidates(conn, max(1, args.anzahl), args.seed, skip)
         if not wanted:
             print("Keine passenden Seiten gefunden.")
             return 1

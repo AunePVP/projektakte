@@ -43,6 +43,18 @@ def test_export_writes_page_images_with_their_text(tmp_path, monkeypatch):
     assert conn.execute("SELECT COUNT(*) FROM page_texts WHERE state = 'pending'").fetchone()[0] == 4
 
 
+def test_pages_from_cad_and_bilder_folders_are_left_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(extract_mod, "ocr_available", lambda: True)
+    monkeypatch.setattr(extract_mod, "ocr_image", lambda data: "Seite gescannt Rauchabzug Treppenraum erkannt")
+    conn, root = _setup(tmp_path, {"Text/Protokoll.pdf": ocr_layer_scan(), "BS-2024-0001-CAD/Plan.pdf": plain_scan(),
+                                   "Bilder/Foto.pdf": plain_scan()})
+    _stage1(conn, root, Vision())
+    names = {conn.execute("SELECT filename FROM documents WHERE id = ?", (d,)).fetchone()[0]
+             for d, _p in _candidates(conn, 10, seed=1)}
+    assert names == {"Protokoll.pdf"}
+    assert len(_candidates(conn, 10, seed=1, skip=())) == 3  # --ohne-ordner "": all
+
+
 def test_the_comparison_script_against_a_local_server(tmp_path, fake_ai):
     mod = _script()
     pages = tmp_path / "ocr-test"

@@ -504,7 +504,8 @@ warten und das Zeitbudget der Runde läuft.
 
 **OCR-Modelle vergleichen:** `python -m projektakte.ocr_testseiten --anzahl 50 --ziel /data/ocr-test` (im Container:
 `docker compose exec app python -m projektakte.ocr_testseiten …`) legt wartende Scan-Seiten genau so als Bild ab, wie
-das Modell sie bekommt, mit dem Tesseract-Text daneben (`--datei TEIL --seiten 49,56` für bestimmte Seiten). Ändert
+das Modell sie bekommt, mit dem Tesseract-Text daneben (`--datei TEIL --seiten 49,56` für bestimmte Seiten), ohne
+Seiten aus Ordnern `CAD` und `Bilder` sowie aus `SKIP_READ_FOLDERS`/`VISION_SKIP_FOLDERS` (`--ohne-ordner ""`: alle). Ändert
 nichts in der Datenbank. `scripts/ocr_vergleich.py` (nur Standardbibliothek, auch unter Windows) schickt die Seiten an
 ein oder mehrere OpenAI-kompatible Server (`--modell "Name|http://localhost:8000/v1|Modell-ID[|Prompt]"`) und schreibt
 `ergebnis/vergleich.html` (Bild, Tesseract, jedes Modell nebeneinander) und eine Übersicht je Modell: Seiten/Min.,

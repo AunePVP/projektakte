@@ -6,7 +6,7 @@ Roadmap-Schritt.
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
 - **OCR-Modelle vergleichen:** `python -m projektakte.ocr_testseiten` exportiert wartende Scan-Seiten als Bild (wie das
-  Modell sie bekommt) mit dem Tesseract-Text; `scripts/ocr_vergleich.py` schickt sie an beliebige OpenAI-kompatible
+  Modell sie bekommt) mit dem Tesseract-Text – keine aus Ordnern `CAD` und `Bilder` (`--ohne-ordner`); `scripts/ocr_vergleich.py` schickt sie an beliebige OpenAI-kompatible
   Server (vLLM, llama.cpp, LM Studio) und legt die Texte nebeneinander (HTML) mit Tempo, Antwort-Tokens, Schleifen und
   abgeschnittenen Antworten je Modell. Für den Test spezialisierter OCR-Modelle (GLM-OCR, TeleOCR, PaddleOCR-VL) auf
   einem anderen Rechner.
