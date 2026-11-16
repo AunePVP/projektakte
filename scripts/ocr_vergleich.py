@@ -59,8 +59,10 @@ def looped(text: str, repeats: int = 6, min_chars: int = 400, max_period: int = 
     return False
 
 
-def ask(url: str, model: str, prompt: str, image: bytes, mime: str, max_tokens: int, timeout: float) -> dict:
-    payload = {"model": model, "max_tokens": max_tokens, "temperature": 0.0, "messages": [{"role": "user", "content": [
+def ask(url: str, model: str, prompt: str, image: bytes, mime: str, max_tokens: int, timeout: float,
+        extra: dict | None = None) -> dict:
+    payload = {"model": model, "max_tokens": max_tokens, "temperature": 0.0, **(extra or {}),
+               "messages": [{"role": "user", "content": [
         {"type": "text", "text": prompt},
         {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(image).decode()}"}}]}]}
     req = urllib.request.Request(url.rstrip("/") + "/chat/completions", data=json.dumps(payload).encode(),
@@ -77,7 +79,8 @@ def ask(url: str, model: str, prompt: str, image: bytes, mime: str, max_tokens: 
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
     content = re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
     usage = data.get("usage") or {}
-    return {"text": content, "seconds": time.monotonic() - started, "finish": choice.get("finish_reason"),
+    reasoning = (choice.get("message") or {}).get("reasoning_content") or (choice.get("message") or {}).get("reasoning")
+    return {"text": content, "thinking": bool(reasoning), "seconds": time.monotonic() - started, "finish": choice.get("finish_reason"),
             "prompt_tokens": usage.get("prompt_tokens"), "tokens": usage.get("completion_tokens"), "error": None}
 
 
@@ -93,7 +96,8 @@ def pages_in(folder: Path) -> list[Path]:
     return sorted(p for p in folder.iterdir() if p.suffix.lower() in MIME)
 
 
-def run(folder: Path, models: list[dict], *, parallel: int, max_tokens: int, timeout: float, out: Path) -> list[dict]:
+def run(folder: Path, models: list[dict], *, parallel: int, max_tokens: int, timeout: float, out: Path,
+        extra: dict | None = None) -> list[dict]:
     pages = pages_in(folder)
     if not pages:
         raise SystemExit(f"Keine Seitenbilder in {folder}")
@@ -107,16 +111,20 @@ def run(folder: Path, models: list[dict], *, parallel: int, max_tokens: int, tim
 
         def one(page: Path, m=m, target=target) -> dict:
             res = ask(m["url"], m["model"], m["prompt"], page.read_bytes(), MIME[page.suffix.lower()], max_tokens,
-                      timeout)
+                      timeout, extra)
             (target / f"{page.stem}.txt").write_text(res["text"], encoding="utf-8")
             return {"modell": m["name"], "seite": page.name, "sekunden": round(res["seconds"], 1),
                     "antwort_tokens": res.get("tokens"), "prompt_tokens": res.get("prompt_tokens"),
                     "zeichen": len(res["text"]), "abgeschnitten": res.get("finish") == "length",
-                    "schleife": looped(res["text"]), "fehler": res["error"] or ""}
+                    "schleife": looped(res["text"]), "denkt": bool(res.get("thinking")), "fehler": res["error"] or ""}
 
         with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
             done = list(pool.map(one, pages))
         wall = time.monotonic() - started
+        if any(r["denkt"] for r in done):
+            print(f"  Achtung: {m['name']} denkt vor der Antwort (Reasoning) – die Antwort-Tokens zählen das mit. Wie in "
+                  f"der App ausschalten, z. B. --extra-body '{{\"chat_template_kwargs\":{{\"enable_thinking\":false}}}}'",
+                  flush=True)
         for r in done:
             r["laufzeit_gesamt"] = round(wall, 1)
         rows += done
@@ -186,11 +194,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-tokens", type=int, default=4000, help="höchstens so viele Antwort-Tokens (4000)")
     ap.add_argument("--timeout", type=float, default=600, help="Sekunden je Seite (600)")
     ap.add_argument("--ausgabe", default=None, help="Ergebnisordner (Voreinstellung: ergebnis neben dem Ordner)")
+    ap.add_argument("--extra-body", default="", help="weitere Felder der Anfrage als JSON, wie LLM_EXTRA_BODY der App, "
+                    'z. B. \'{"chat_template_kwargs":{"enable_thinking":false}}\'')
     args = ap.parse_args(argv)
     folder = Path(args.ordner)
     out = Path(args.ausgabe) if args.ausgabe else folder.resolve().parent / "ergebnis"
+    try:
+        extra = json.loads(args.extra_body) if args.extra_body.strip() else None
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--extra-body ist kein gültiges JSON: {exc}")
     rows = run(folder, [parse_model(s) for s in args.modell], parallel=args.parallel, max_tokens=args.max_tokens,
-               timeout=args.timeout, out=out)
+               timeout=args.timeout, out=out, extra=extra)
     print("\n".join(summary(rows)))
     print(f"\nVergleich: {out / 'vergleich.html'}")
     return 0

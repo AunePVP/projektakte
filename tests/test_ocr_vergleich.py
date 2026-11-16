@@ -82,3 +82,35 @@ def test_the_scripts_loop_check_matches_the_apps():
     assert mod.looped("Text " + " ".join(f"[Stempel: {k}]" for k in range(12)))
     assert not mod.looped("\n".join(f"| BSK {i} | geprüft |" for i in range(80)))
     assert mod.parse_model("A|http://x/v1|m|OCR:")["prompt"] == "OCR:"
+
+
+def test_extra_body_goes_into_every_request(tmp_path, monkeypatch):
+    """Qwen thought before answering in the script (2.628 tokens for 646 characters) – the app switches that off with
+    LLM_EXTRA_BODY; --extra-body sends the same."""
+    mod = _script()
+    sent = []
+
+    class Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return self.body
+
+    class Opener:
+        def open(self, req, timeout):
+            sent.append(json.loads(req.data))
+            return Resp(json.dumps({"choices": [{"message": {"content": "Text", "reasoning_content": "hm"},
+                                                 "finish_reason": "stop"}],
+                                    "usage": {"completion_tokens": 3}}).encode())
+
+    monkeypatch.setattr(mod.urllib.request, "build_opener", lambda *a: Opener())
+    res = mod.ask("http://x/v1", "m", "OCR:", b"img", "image/png", 50, 5,
+                  {"chat_template_kwargs": {"enable_thinking": False}})
+    assert sent[0]["chat_template_kwargs"] == {"enable_thinking": False} and res["thinking"] and res["text"] == "Text"
