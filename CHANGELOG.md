@@ -5,6 +5,11 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **OCR-Modelle vergleichen:** `python -m projektakte.ocr_testseiten` exportiert wartende Scan-Seiten als Bild (wie das
+  Modell sie bekommt) mit dem Tesseract-Text; `scripts/ocr_vergleich.py` schickt sie an beliebige OpenAI-kompatible
+  Server (vLLM, llama.cpp, LM Studio) und legt die Texte nebeneinander (HTML) mit Tempo, Antwort-Tokens, Schleifen und
+  abgeschnittenen Antworten je Modell. Für den Test spezialisierter OCR-Modelle (GLM-OCR, TeleOCR, PaddleOCR-VL) auf
+  einem anderen Rechner.
 - **Erfundene Stempel und lange Wiederholungsblöcke:** Gesehen auf einer Bauakten-Seite: Das Bildmodell schrieb den
   Text richtig ab, fasste dann den Inhalt als erfundene „[Stempel: „Teeküche vorhanden“]“ zusammen und wiederholte
   diesen Block von rund 20 „Stempeln“ bis zur Grenze – keine Erkennung fing das (Block über 80 Wörter). Jetzt gilt als
