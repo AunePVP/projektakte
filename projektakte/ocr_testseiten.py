@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import random
 import re
 import sys
@@ -22,6 +23,7 @@ from pathlib import Path
 from . import db, extract_worker
 from .config import load_settings
 from .documents import _in_folder, printable
+from .extract import IMAGE_EXT
 from .vision import WAITING, VisionPass
 
 log = logging.getLogger("projektakte.ocr_testseiten")
@@ -60,6 +62,53 @@ def _candidates(conn, count: int, seed: int, skip: tuple[str, ...] = DEFAULT_SKI
     return picked
 
 
+# share of each kind of page in a training export (see _training_candidates)
+TRAINING_MIX = (("scan", 0.55), ("cad", 0.15), ("digital", 0.15), ("foto", 0.15))
+
+
+def _training_candidates(conn, count: int, seed: int, exclude: set[tuple[str, int]] = frozenset()
+                         ) -> list[tuple[int, int, str]]:
+    """(document id, page, kind) for a training set: every kind of page the model should learn – scan pages waiting
+    for the model (any folder), plans from CAD folders (also files not read, SKIP_READ_FOLDERS), digital PDFs
+    (data sheets, plans with a text layer) and image files (photos) – at most two pages per document, without the
+    pages in ``exclude`` ((path inside the project, page), e.g. the comparison set: it must stay unseen)."""
+    rnd = random.Random(seed)
+    pools: dict[str, list[tuple[int, int]]] = {kind: [] for kind, _share in TRAINING_MIX}
+    pending: dict[int, list[int]] = {}
+    for doc_id, page, rel_path in conn.execute(
+            f"SELECT p.doc_id, p.page, d.rel_path FROM page_texts p JOIN documents d ON d.id = p.doc_id "
+            f"WHERE p.state IN {WAITING} AND d.ext = '.pdf'"):
+        if not _in_folder(rel_path, "", ("CAD",)):  # plans of CAD folders are the kind "cad"
+            pending.setdefault(doc_id, []).append(page)
+    for doc_id, pages in pending.items():
+        rnd.shuffle(pages)
+        pools["scan"] += [(doc_id, p) for p in pages[:2]]
+    for doc_id, rel_path, ext, pages in conn.execute(
+            "SELECT id, rel_path, ext, pages FROM documents"):
+        if ext == ".pdf" and _in_folder(rel_path, "", ("CAD",)):
+            pools["cad"].append((doc_id, rnd.randint(1, pages) if pages else 1))
+        elif ext == ".pdf" and doc_id not in pending and pages:
+            pools["digital"].append((doc_id, rnd.randint(1, pages)))
+        elif ext in IMAGE_EXT:
+            pools["foto"].append((doc_id, 1))
+    paths = dict(conn.execute("SELECT id, rel_path FROM documents"))
+    picked: list[tuple[int, int, str]] = []
+    for kind, share in TRAINING_MIX:
+        pool = [c for c in pools[kind] if (printable(paths.get(c[0], "")), c[1]) not in exclude]
+        rnd.shuffle(pool)
+        picked += [(d, p, kind) for d, p in pool[:max(1, round(count * share))]]
+    rnd.shuffle(picked)
+    return picked[:count]
+
+
+def _excluded(files: list[str]) -> set[tuple[str, int]]:
+    out: set[tuple[str, int]] = set()
+    for f in files:
+        for e in json.loads(Path(f).read_text(encoding="utf-8")):
+            out.add((e["dokument"], int(e["seite"])))
+    return out
+
+
 def _named(conn, name: str, pages: list[int]) -> list[tuple[int, int]]:
     row = conn.execute("SELECT id, pages FROM documents WHERE rel_path LIKE ? AND ext = '.pdf' ORDER BY id LIMIT 1",
                        (f"%{name}%",)).fetchone()
@@ -90,14 +139,17 @@ def _clear(target: Path) -> int:
     return removed
 
 
-def export(conn, settings, target: Path, wanted: list[tuple[int, int]], *, worker=None) -> list[dict]:
+def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None) -> list[dict]:
     target.mkdir(parents=True, exist_ok=True)
     if _clear(target):
         log.info("Seiten eines früheren Exports in %s entfernt", target)
     vp = VisionPass(conn, None, projects_dir=getattr(settings, "projects_dir", None), worker=worker)
     by_doc: dict[int, list[int]] = {}
-    for doc_id, page in wanted:
+    kinds: dict[tuple[int, int], str] = {}
+    for doc_id, page, *kind in wanted:
         by_doc.setdefault(doc_id, []).append(page)
+        if kind:
+            kinds[(doc_id, page)] = kind[0]
     out: list[dict] = []
     for doc_id, pages in by_doc.items():
         row = conn.execute("SELECT id, project, path, rel_path, filename, ext, sha256, cache_path, mail_id "
@@ -108,7 +160,12 @@ def export(conn, settings, target: Path, wanted: list[tuple[int, int]], *, worke
         if data is None:
             log.warning("%s nicht lesbar – übersprungen", printable(row["rel_path"]))
             continue
-        prepared = extract_worker.page_images(row["filename"], data, sorted(pages), vp.prepare, worker=worker)
+        if row["ext"] in IMAGE_EXT:  # an image file goes to the model as it is
+            from .extract import PageImages
+
+            prepared = [PageImages(1, [(IMAGE_EXT[row["ext"]], data)])]
+        else:
+            prepared = extract_worker.page_images(row["filename"], data, sorted(pages), vp.prepare, worker=worker)
         for p in prepared:
             if not p.images:
                 log.info("%s Seite %d: kein Bild (%s)", printable(row["rel_path"]), p.number, p.problem)
@@ -118,8 +175,11 @@ def export(conn, settings, target: Path, wanted: list[tuple[int, int]], *, worke
             (target / f"{stem}{_EXT.get(mime, '.bin')}").write_bytes(image)
             known = _known_text(conn, doc_id, p.number)
             (target / f"{stem}.tesseract.txt").write_text(known, encoding="utf-8")
-            out.append({"datei": f"{stem}{_EXT.get(mime, '.bin')}", "dokument": printable(row["rel_path"]),
-                        "seite": p.number, "mime": mime, "tesseract_zeichen": len(known)})
+            entry = {"datei": f"{stem}{_EXT.get(mime, '.bin')}", "dokument": printable(row["rel_path"]),
+                     "seite": p.number, "mime": mime, "tesseract_zeichen": len(known)}
+            if (doc_id, p.number) in kinds:
+                entry["quelle"] = kinds[(doc_id, p.number)]
+            out.append(entry)
     (target / "seiten.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     return out
 
@@ -132,6 +192,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--datei", help="stattdessen Seiten dieser Datei (Teil des Namens)")
     ap.add_argument("--seiten", default="", help="mit --datei: Seitennummern, z. B. 49,56 (sonst alle)")
     ap.add_argument("--seed", type=int, default=1, help="Zufallsauswahl wiederholbar (Voreinstellung: 1)")
+    ap.add_argument("--training", action="store_true",
+                    help="Trainingsseiten: gemischt aus wartenden Scans, CAD-Plänen, digitalen PDF-Dateien und Fotos "
+                         "(alle Ordner, auch nicht gelesene)")
+    ap.add_argument("--ohne-seiten", action="append", default=[],
+                    help="mit --training: Seiten aus dieser seiten.json auslassen (der Prüfsatz), mehrfach")
     ap.add_argument("--ohne-ordner", default=",".join(DEFAULT_SKIP),
                     help="keine Seiten aus Ordnern dieses Namens, kommagetrennt (Voreinstellung: CAD,Bilder; "
                          "dazu SKIP_READ_FOLDERS und VISION_SKIP_FOLDERS); leer: alle")
@@ -139,9 +204,13 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = load_settings()
     conn = db.connect(settings.db_path)
+    if args.training:  # CAD plans are part of the training: drawn, not passed over (VISION_SKIP_CAD)
+        os.environ["VISION_SKIP_CAD"] = "0"
     worker = extract_worker.own_worker(settings)
     try:
-        if args.datei:
+        if args.training:
+            wanted = _training_candidates(conn, max(1, args.anzahl), args.seed, _excluded(args.ohne_seiten))
+        elif args.datei:
             pages = [int(x) for x in args.seiten.split(",") if x.strip()]
             wanted = _named(conn, args.datei, pages)
         else:

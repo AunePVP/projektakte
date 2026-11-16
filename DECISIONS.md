@@ -1337,3 +1337,21 @@ ohne Ergebnis: rund 36.000 von 79.200 Platz-Sekunden, und die Seiten kamen nach 
   Der Prompt sagt dem Modell ausdrücklich, keine Stempel zu erfinden. Mitlesen beim Streamen: die letzten 1.500
   Wörter alle 600 Zeichen (rund 30 ms).
 
+## Was auf eine Seite gehört (Vorgabe für den Seitenleser)
+
+Tests mit Qwen, GLM-OCR, PaddleOCR-VL und TeleOCR zeigten: Eine Anweisung „lies die Seite“ für alle Seitenarten führt bei
+kleinen Modellen zu Erfundenem (Räume auf Plänen, Stempel), Schleifen (Fragenlisten auf Produktfotos) und Rauschen
+(Maße, Flurstücke, Bildbeschreibungen). Festgelegt mit dem Nutzer nach der Frage „was schriebe ein Mensch, der alles von
+Hand indexiert?“:
+- *Nur Sichtbares*, nichts erfinden, beschreiben oder zusammenfassen; nichts Lesbares → leer. Eine Textebene beweist
+  nichts (bei Plänen lag Text darunter, der nicht zu sehen ist).
+- *Je Seitentyp*: Text vollständig wörtlich (Tabellen, Ankreuzfelder, Handschrift, bedeutsame Stempel); Plan nur
+  Schriftfeld und Legende (keine Raumnamen, Maße, Flurstücke); Foto nur sichtbarer Text; Leer nichts; Logos nie.
+- *Typ in der ersten Zeile* (`TYP: Text|Plan|Foto|Leer`): Filter in der Suche, Erkennen von Fehleinordnungen, sicher
+  leere Seiten.
+- *Kopf- und Fußzeilen*: Das Modell sieht nur eine Seite und weiß nicht, ob es die erste ist – es schreibt sie immer, die
+  App soll Zeilen entfernen, die auf fast jeder Seite eines Dokuments gleich wiederkehren.
+- *Feintuning statt längerer Anweisungen*: OCR-Modelle befolgen keine Regeln je Seitentyp, kleine allgemeine Modelle nicht
+  zuverlässig. Ein mit korrigierten Seiten feingetuntes Modell lernt das Verhalten; die Vorgabe steht einmal in
+  `scripts/ocr_vorgabe.py`, Werkzeuge und Ablauf in `docs/feintuning.md`.
+

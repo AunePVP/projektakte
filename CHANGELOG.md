@@ -5,6 +5,10 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Werkzeuge für ein feingetuntes Lesemodell** (`docs/feintuning.md`): die Vorgabe, was je Seitentyp geschrieben wird
+  (`scripts/ocr_vorgabe.py`, mit `TYP:` in der ersten Zeile), Trainingsseiten aus allen Arten von Dokumenten
+  (`python -m projektakte.ocr_testseiten --training`, auch CAD-Pläne und Fotos, ohne die Prüfseiten), Entwürfe
+  (`scripts/ocr_entwurf.py`) und ein Korrekturwerkzeug im Browser mit Export als JSONL (`scripts/ocr_korrektur.py`).
 - **OCR-Modelle vergleichen:** `python -m projektakte.ocr_testseiten` exportiert wartende Scan-Seiten als Bild (wie das
   Modell sie bekommt) mit dem Tesseract-Text – keine aus Ordnern `CAD` und `Bilder` (`--ohne-ordner`); die Seiten eines
   früheren Exports in denselben Ordner werden vorher entfernt; `scripts/ocr_vergleich.py` schickt sie an beliebige OpenAI-kompatible
