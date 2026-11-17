@@ -413,11 +413,12 @@ Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in d
    - Prüfen, welchen `finish_reason` vLLM nach `repetition_detection` meldet (häufige „Antwort abgeschnitten – neuer
      Versuch“ im Log hieße: unnötige zweite Versuche).
    - Ob der OCR-Text dem kleinen Modell hilft oder schadet (Vergleich Bild+Text / nur Bild) – nicht gemessen.
-   - **Feingetunter Seitenleser** – eigenes Thema, alles in `docs/feintuning.md` (Problem, Vorgabe je Seitentyp,
-     Testergebnisse, Werkzeuge, nächste Schritte). Die Indexierung ruht, bis das Modell steht.
+   - **Feingetunter Seitenleser** – eigenes Repository `aunepvp/tune` (dort `CLAUDE.md`: Problem, Vorgabe je
+     Seitentyp, Testergebnisse, Werkzeuge, nächste Schritte); hier nur der Export und später der Einbau
+     (`docs/feintuning.md`). Die Indexierung ruht, bis das Modell steht.
    - **Spezialisiertes OCR-Modell statt Qwen für die Bildauswertung** (Stempel werden nicht gebraucht): Kandidaten
      GLM-OCR, TeleOCR, PaddleOCR-VL 1.6 (je ~1B, freie Lizenz). Der Nutzer testet sie auf einem PC (RTX 4080) mit
-     `projektakte.ocr_testseiten` und `scripts/ocr_vergleich.py`; danach eigene Einstellungen für das Bildmodell
+     `projektakte.ocr_testseiten` und den Werkzeugen in `aunepvp/tune`; danach eigene Einstellungen für das Bildmodell
      (`VISION_URL`/`VISION_MODEL`, schlanker OCR-Prompt) bauen – Fragen bleiben beim großen Modell.
    - Die zwei zeitabhängigen Tests (Abschnitt 2) robust machen.
    - Wenn alles stabil läuft: Pull Request nach `main`.

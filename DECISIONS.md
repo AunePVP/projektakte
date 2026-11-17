@@ -1353,5 +1353,7 @@ Hand indexiert?“:
   App soll Zeilen entfernen, die auf fast jeder Seite eines Dokuments gleich wiederkehren.
 - *Feintuning statt längerer Anweisungen*: OCR-Modelle befolgen keine Regeln je Seitentyp, kleine allgemeine Modelle nicht
   zuverlässig. Ein mit korrigierten Seiten feingetuntes Modell lernt das Verhalten; die Vorgabe steht einmal in
-  `scripts/ocr_vorgabe.py`, Werkzeuge und Ablauf in `docs/feintuning.md`.
+  `scripts/ocr_vorgabe.py` des Repositorys `aunepvp/tune`, das das Feintuning übernimmt (Werkzeuge, Ablauf,
+  `CLAUDE.md`). Ein eigenes Repository, weil Training andere Technik (PyTorch, Trainingswerkzeuge, ARM-Container) und
+  einen anderen Rhythmus hat; in Projektakte bleiben der Export der Seiten und der spätere Einbau.
 

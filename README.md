@@ -506,12 +506,10 @@ warten und das Zeitbudget der Runde läuft.
 `docker compose exec app python -m projektakte.ocr_testseiten …`) legt wartende Scan-Seiten genau so als Bild ab, wie
 das Modell sie bekommt, mit dem Tesseract-Text daneben (`--datei TEIL --seiten 49,56` für bestimmte Seiten), ohne
 Seiten aus Ordnern `CAD` und `Bilder` sowie aus `SKIP_READ_FOLDERS`/`VISION_SKIP_FOLDERS` (`--ohne-ordner ""`: alle). Ändert
-nichts in der Datenbank. `scripts/ocr_vergleich.py` (nur Standardbibliothek, auch unter Windows) schickt die Seiten an
-ein oder mehrere OpenAI-kompatible Server (`--modell "Name|http://localhost:8000/v1|Modell-ID[|Prompt]"`) und schreibt
-`ergebnis/vergleich.html` (Bild, Tesseract, jedes Modell nebeneinander) und eine Übersicht je Modell: Seiten/Min.,
-Ø Sekunden, Ø Antwort-Tokens, Schleifen, abgeschnittene Antworten. `--extra-body` schickt weitere Felder mit wie
-`LLM_EXTRA_BODY` der App (für Qwen: `'{"chat_template_kwargs":{"enable_thinking":false}}'`, sonst denkt es vor jeder
-Antwort und das Skript warnt). Die Seiten sind echte Projektdaten – nur im Büronetz.
+nichts in der Datenbank. `--training` exportiert Trainingsseiten aus allen Arten von Dokumenten (wartende Scans,
+CAD-Pläne, digitale PDF-Seiten, Fotos), `--ohne-seiten …/seiten.json` lässt den Prüfsatz aus. Vergleichen, Entwürfe,
+Korrektur und Training liegen im Repository **`aunepvp/tune`** (feingetunter Seitenleser, siehe `docs/feintuning.md`).
+Die Seiten sind echte Projektdaten – nur im Büronetz.
 
 **Wiederholungsschleifen:** Kleine Bildmodelle wiederholen beim Abschreiben von Formularen, Tabellen und Plänen
 manchmal dieselbe Zeile, bis die Token-Grenze erreicht ist. Jede Seitenantwort wird deshalb gestreamt und mitgelesen

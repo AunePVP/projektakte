@@ -5,6 +5,9 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Feintuning in eigenes Repository `aunepvp/tune` verschoben:** Vorgabe, Vergleich, Entwürfe und Korrektur
+  (`scripts/ocr_*.py`) liegen jetzt dort, mit eigener `CLAUDE.md` für eine eigene Sitzung. In Projektakte bleiben der
+  Export der Seiten (`projektakte.ocr_testseiten`, auch `--training`) und `docs/feintuning.md` als Verweis.
 - **Werkzeuge für ein feingetuntes Lesemodell** (`docs/feintuning.md`): die Vorgabe, was je Seitentyp geschrieben wird
   (`scripts/ocr_vorgabe.py`, mit `TYP:` in der ersten Zeile), Trainingsseiten aus allen Arten von Dokumenten
   (`python -m projektakte.ocr_testseiten --training`, auch CAD-Pläne und Fotos, ohne die Prüfseiten), Entwürfe
