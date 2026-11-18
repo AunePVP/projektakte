@@ -308,7 +308,15 @@ von 10 Fällen (zurückgehaltener Prüfsatz 0,68) –
 **für eine Vorführung mit eigenen Fragen aus dem Publikum die echten Dienste anbinden**. Die
 Antwortqualität echter Modelle sagt der Fake nicht voraus – dafür gibt es `python -m projektakte.evaluate`.
 
-## plMail anbinden (JMAP)
+## plMail anbinden
+
+**Push (empfohlen):** plMail schickt nur die Mails, die ein Mensch einem Projekt zugeordnet hat, an
+`/api/integration/mails/…` (mit `INTEGRATION_TOKEN`); Projektakte braucht keinen Zugang zum Postfach –
+`PLMAIL_URL`/`PLMAIL_TOKEN` bleiben leer. Gesendete Mails warten kurz in `DATA_DIR/plmail-eingang` und werden
+von der Indexierung übernommen; Zuordnungsänderungen und Löschungen gelten sofort. Schnittstelle und Auftrag
+für plMail: [docs/plmail-push.md](docs/plmail-push.md).
+
+### Abruf über JMAP (bisheriger Weg)
 
 Zweite Mailquelle neben `MAIL_DIR`: In plMail unter **Einstellungen → App-Passwörter** ein
 App-Passwort anlegen und setzen:

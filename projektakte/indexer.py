@@ -19,6 +19,8 @@ from .demo_cleanup import demo_left_over, purge_demo_data, remember_demo
 from .documents import index_all_documents, reprocess_attachments
 from .mails.eml_source import sync_eml_folder
 from .mails.jmap_source import JMAPClient, sync_plmail
+from .mails.push import import_spool
+from .mails.push import spool_dir as push_spool_dir
 from .mails.store import sweep_cache
 from .registry import ENCODING_HINT, active_count, sync_from_folder, unchanged_stats
 from .vectors import DEFAULT_VECTOR_SEARCH, VECTOR_INDEX, embed_pending
@@ -141,6 +143,9 @@ def _run(settings: Settings, ai: AIServices | None, phase, vision: bool = True, 
         # mount, so nothing is removed then)
         stats["mails"] = sync_eml_folder(conn, settings.mail_dir, cache_dir=settings.cache_dir, llm=llm,
                                          allow_empty=bool(getattr(settings, "mail_allow_empty", False)))
+        # mails plMail pushed (docs/plmail-push.md)
+        if push_spool_dir(settings.data_dir).is_dir():
+            stats["plmail_push"] = import_spool(conn, settings.data_dir, cache_dir=settings.cache_dir, llm=llm)
         if settings.plmail_enabled:
             phase("plMail")
             stats["plmail"] = sync_plmail(conn, plmail_client(settings), cache_dir=settings.cache_dir, llm=llm,

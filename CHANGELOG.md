@@ -5,6 +5,11 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Push von plMail:** plMail kann die zugeordneten Mails selbst senden (`PUT/DELETE /api/integration/mails/…`,
+  `PUT …/zuordnung`, `GET` zum Prüfen); Projektakte braucht dann keinen Postfachzugang mehr. Eingang in
+  `DATA_DIR/plmail-eingang`, Übernahme in der Phase „Mails“. Mit `INTEGRATION_TOKEN` gilt jetzt auch ohne JMAP
+  `ASSIGN_MODE=manual`. Auftrag an plMail: `docs/plmail-push.md`.
+
 - **plMail: nur noch Mails mit Projektzuordnung** – bisher kopierte Projektakte jede Mail jedes Kontos, das das
   App-Passwort sieht. Jetzt werden nur Mails heruntergeladen und gespeichert, die ein Mensch einem Projekt
   zugeordnet hat (plMail `plmail:projektakte` „assigned“, oder früher in Projektakte); von anderen liest

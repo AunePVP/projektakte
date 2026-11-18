@@ -1386,3 +1386,16 @@ der Scans) und für das Erkennen von Scan-Seiten; seine Grenzen gegen präparier
 - **Serverseitig:** Die Sperre gehört auch in plMail (App-Passwort-Bereich „Nur Projektakte“), damit ein falsch
   eingestelltes Projektakte nicht an andere Mails kommt – Auftrag `docs/plmail-prompt-nur-zugeordnet.md`.
 - `PLMAIL_ALLE_MAILS=1` stellt das alte Verhalten her (für Tests der Abgleich-Mechanik).
+
+## plMail schickt, Projektakte holt nicht (Push)
+
+- **Entscheidung des Nutzers:** Projektakte soll keinen Zugang zum Postfach haben. plMail entscheidet, was es
+  verlässt, und sendet nur Mails mit Projektzuordnung; Zuordnungsänderungen und Löschungen ebenso.
+- **Form:** die Mail roh als `.eml` (ein Format, das Projektakte schon liest), die Zuordnung in derselben Form wie
+  die JMAP-Eigenschaft. Schlüssel bleibt `jmap:<accountId>:<emailId>` – Kopien aus dem JMAP-Abruf, menschliche
+  Entscheidungen und Links nach plMail passen weiter.
+- **Eingang statt sofortigem Lesen:** Die Anfrage schreibt nur in `DATA_DIR/plmail-eingang` und kehrt sofort
+  zurück; Anhänge werden in der Indexierung gelesen (Leseprozess mit Grenzen, Bildmodell), nicht im Request.
+  Löschen und Umhängen geschehen sofort. Eine Mail, die beim Übernehmen scheitert, bleibt liegen und wird beim
+  nächsten Lauf erneut versucht; plMail stellt mit eigener Warteschlange zu.
+- Der App-Passwort-Bereich für JMAP (`docs/plmail-prompt-nur-zugeordnet.md`) wird damit nicht gebraucht.

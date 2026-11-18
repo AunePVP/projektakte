@@ -1,3 +1,5 @@
+> **Überholt:** ersetzt durch Push (`docs/plmail-push.md`) – nicht mehr an plMail geben.
+
 # Auftrag für plMail: Projektakte sieht nur Mails, die einem Projekt zugeordnet sind
 
 > Diesen Text unverändert als Auftrag an das KI-Modell im plMail-Repository (`AunePVP/pl_mail`) geben.

@@ -539,7 +539,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         plmail_web_url=e.get("PLMAIL_WEB_URL", ""),
         plmail_all_mails=_bool(e.get("PLMAIL_ALLE_MAILS")),
         # with plMail connected, mails are assigned by humans in plMail unless configured otherwise
-        assign_mode=_assign_mode(e.get("ASSIGN_MODE"), bool(e.get("PLMAIL_URL") and e.get("PLMAIL_TOKEN"))),
+        assign_mode=_assign_mode(e.get("ASSIGN_MODE"), bool((e.get("PLMAIL_URL") and e.get("PLMAIL_TOKEN"))
+                                                                 or e.get("INTEGRATION_TOKEN"))),
         integration_token=e.get("INTEGRATION_TOKEN", ""),
         public_url=(e.get("PUBLIC_URL") or "").rstrip("/"),
         search_min_rerank=_float(e.get("SEARCH_MIN_RERANK"), 0.05),
