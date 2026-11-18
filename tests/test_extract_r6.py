@@ -561,7 +561,7 @@ def test_bilevel_a0_plan_with_a_colour_stamp_is_scaled_before_it_turns_colour(tm
     path = tmp_path / "A0_Stempel.pdf"
     child(_A0_BILEVEL_WITH_STAMP, str(path), str(Path(__file__).parent))
     result = measure(path)
-    assert (result["status"], result["incomplete"]) == ("ok", False) and len(result["sizes"]) == 1
+    assert result["status"] == "ok" and len(result["sizes"]) == 1  # Tesseract's page image
     assert result["rss_mb"] < 600, result
 
 

@@ -6,11 +6,17 @@ from __future__ import annotations
 import logging
 import zlib
 
-from projektakte import db
 from projektakte import extract as extract_mod
 from projektakte.vision import VisionPass
+from tests.scanlesen import read_scans
 
-from .test_bildauswertung_stufen import Vision, _docs, _setup, _stage1, tesseract  # noqa: F401 – fixture
+from .test_bildauswertung_stufen import (  # noqa: F401 – fixture
+    Vision,
+    _docs,
+    _setup,
+    _stage1,
+    tesseract,
+)
 from .test_extract_r5 import Doc, draw, grid
 
 TOO_BIG = "zu groß zum Lesen (Speicher- oder Datengrenze überschritten)"
@@ -39,30 +45,12 @@ def test_a_colour_plan_beyond_75_mb_is_read(tmp_path, tesseract):
     assert TOO_BIG not in (doc["message"] or "")
 
 
-def test_documents_too_big_for_the_old_limit_are_read_again_once(tmp_path, tesseract, monkeypatch):
+def test_a_plan_too_big_for_pypdf_still_goes_to_the_model_rendered(tmp_path, tesseract, monkeypatch):
+    """Before version 8, a plan whose image was over pypdf's data limit could not go to the model (migration 12 read
+    such documents again after the limit was raised); now PDFium draws the page whatever pypdf can decode."""
     monkeypatch.setattr(extract_mod, "PDF_IMAGE_BYTES", 75_000_000)  # the old limit
     conn, root = _setup(tmp_path, {"Plan.pdf": colour_plan()})
     llm = Vision()
-    _stage1(conn, root, llm)
-    VisionPass(conn, llm, projects_dir=root).run()
-    doc = _docs(conn)["Plan.pdf"]
-    assert doc["incomplete"] == 1 and TOO_BIG in doc["message"] and llm.images == []
-    _stage1(conn, root, llm)
-    assert _docs(conn)["Plan.pdf"]["extract_profile"] == doc["extract_profile"]  # not read again by itself
-
-    monkeypatch.setattr(extract_mod, "PDF_IMAGE_BYTES", 450_000_000)
-    dbp = tmp_path / "x.sqlite3"
-    conn.execute("PRAGMA user_version = 11")
-    conn.commit()
-    # migrations 12 and 13 once more (the later ones add columns, which exist already)
-    monkeypatch.setattr(db, "MIGRATIONS", db.MIGRATIONS[:13])
-    db.init_db(dbp)  # migration 12
-    monkeypatch.undo()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
-    conn.execute(f"PRAGMA user_version = {len(db.MIGRATIONS)}")
-    conn.commit()
-    monkeypatch.setattr(extract_mod, "PDF_IMAGE_BYTES", 450_000_000)
-    assert _docs(conn)["Plan.pdf"]["extract_profile"] == ""
     _stage1(conn, root, llm)
     VisionPass(conn, llm, projects_dir=root).run()
     doc = _docs(conn)["Plan.pdf"]
@@ -79,7 +67,7 @@ def test_an_unreadable_image_is_logged_once_per_document_and_cause(caplog, monke
     names = {f"S{k}": doc.image(zlib.compress(bytes([k * 9]) * (400 * 300)), (400, 300)) for k in range(12)}
     doc.page(b"\n".join(draw(n, m) for n, m in zip(names, grid(12, 40))), names)
     with caplog.at_level(logging.WARNING, logger="projektakte.extract"):
-        extract_mod.extract(__import__("pathlib").Path("Streifen.pdf"), doc.build(), llm=Vision())
+        read_scans("Streifen.pdf", doc.build(), Vision())  # decoded for Tesseract
     lines = [r.getMessage() for r in caplog.records if "nicht lesbar" in r.getMessage()]
     assert len(lines) == 1, lines
 
