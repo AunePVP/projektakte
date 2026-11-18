@@ -30,7 +30,7 @@ def plmail():
 def env(tmp_path, fake_ai, plmail):
     url, fake = plmail
     generate(tmp_path / "demo")
-    s = fake_settings(fake_ai, tmp_path, DEMO_MODE=1, PLMAIL_URL=url, PLMAIL_TOKEN=TOKEN,
+    s = fake_settings(fake_ai, tmp_path, DEMO_MODE=1, PLMAIL_URL=url, PLMAIL_TOKEN=TOKEN, PLMAIL_ALLE_MAILS=1,
                       INTEGRATION_TOKEN=INTEGRATION, PLMAIL_WEB_URL="https://mail.example/#/{accountId}/{emailId}")
     ids = {
         "num": fake.add("7", "BS-2024-0137 Rückfrage Außentreppe", "Bitte Breite prüfen."),
@@ -125,7 +125,7 @@ def test_projektakte_cannot_override_plmail(env):
 
 def test_auto_mode_plmail_choice_beats_project_number(tmp_path, fake_ai, plmail):
     url, fake = plmail
-    s = fake_settings(fake_ai, tmp_path, PLMAIL_URL=url, PLMAIL_TOKEN=TOKEN, ASSIGN_MODE="auto",
+    s = fake_settings(fake_ai, tmp_path, PLMAIL_URL=url, PLMAIL_TOKEN=TOKEN, PLMAIL_ALLE_MAILS=1, ASSIGN_MODE="auto",
                       PROJECTS_DIR=str(tmp_path / "demo" / "projekte"))
     generate(tmp_path / "demo")
     eid = fake.add("7", "BS-2024-0137 Frage", "Text")

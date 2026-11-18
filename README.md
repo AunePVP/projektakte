@@ -317,8 +317,16 @@ App-Passwort anlegen und setzen:
 PLMAIL_URL=https://mail.example.local PLMAIL_TOKEN=plmail_… python -m projektakte
 ```
 
+**Nur zugeordnete Mails:** Projektakte übernimmt nur Mails, die ein Mensch einem Projekt zugeordnet hat (in
+plMail, Eigenschaft `plmail:projektakte`, oder früher in Projektakte). Von allen anderen liest es nur id und
+Zuordnung – Inhalt und Anhänge bleiben in plMail. Wird eine Zuordnung zurückgenommen oder auf „kein
+Projektbezug“ gesetzt, entfernt Projektakte seine Kopie samt Anhängen. Kopien nicht zugeordneter Mails aus
+älteren Versionen entfernt `python -m projektakte.mails_bereinigen --loeschen` (ohne `--loeschen` nur zählen).
+`PLMAIL_ALLE_MAILS=1` stellt das alte Verhalten her (alle Mails aller Konten). Auftrag an plMail, die Sperre
+auch serverseitig zu bauen: [docs/plmail-prompt-nur-zugeordnet.md](docs/plmail-prompt-nur-zugeordnet.md).
+
 Projektakte liest die Session (`/.well-known/jmap`, sonst `/jmap/session`), durchläuft **alle**
-Konten, holt beim ersten Mal alle Mails seitenweise (`Email/query` + `Email/get`, `PLMAIL_PAGE_SIZE`
+Konten, holt beim ersten Mal die Liste seitenweise (`Email/query` + `Email/get`, `PLMAIL_PAGE_SIZE`
 je Seite) und danach nur noch Änderungen (`Email/changes` ab dem gespeicherten `state`). Anhänge
 kommen über die `downloadUrl` der Session. Es werden ausschließlich lesende Methoden verwendet.
 `GET /health/deps` meldet plMail mit Zahl der Konten. Details: [docs/plmail-jmap.md](docs/plmail-jmap.md).

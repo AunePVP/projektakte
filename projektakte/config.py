@@ -347,6 +347,9 @@ class Settings:
     plmail_timeout: float = 30.0
     plmail_page_size: int = 100
     plmail_web_url: str = ""  # link template to open a mail in plMail: …{accountId}…{emailId}…
+    # PLMAIL_ALLE_MAILS=1: copy every mail of every account (old behaviour); default: only mails a human
+    # assigned to a project (in plMail, or in Projektakte before) – nothing else is downloaded or stored
+    plmail_all_mails: bool = False
     # assignment: "auto" (project number → assigned) or "manual" (humans decide, in plMail for its mails)
     assign_mode: str = "auto"
     # plMail → Projektakte integration API (Bearer token) and the public base URL for links
@@ -534,6 +537,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         plmail_timeout=_timeout(e, "PLMAIL_TIMEOUT", 30.0, warnings),
         plmail_page_size=max(1, _int(e.get("PLMAIL_PAGE_SIZE"), 100)),
         plmail_web_url=e.get("PLMAIL_WEB_URL", ""),
+        plmail_all_mails=_bool(e.get("PLMAIL_ALLE_MAILS")),
         # with plMail connected, mails are assigned by humans in plMail unless configured otherwise
         assign_mode=_assign_mode(e.get("ASSIGN_MODE"), bool(e.get("PLMAIL_URL") and e.get("PLMAIL_TOKEN"))),
         integration_token=e.get("INTEGRATION_TOKEN", ""),

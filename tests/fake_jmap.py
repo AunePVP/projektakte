@@ -33,6 +33,7 @@ class FakePlMail:
         self.failing_blobs: dict[str, int] = {}  # blob id → HTTP status of the download
         self.after_query: list = []  # callables(fake, account, ids) run after each Email/query
         self.downloads: list[str] = []
+        self.gets: list[tuple[list[str], list[str] | None]] = []  # Email/get: (ids, properties)
         self._next = 0
         self.lock = threading.Lock()
 
@@ -112,6 +113,7 @@ class FakePlMail:
             return ["Email/query", answer]
         if name == "Email/get":
             ids = args.get("ids") or []
+            self.gets.append((list(ids), args.get("properties")))
             found = [emails[i] for i in sorted(ids) if i in emails]  # database order, not request order
             props = args.get("properties")
             if props and PROJECT_PROP in props and (not self.project_extension or PROJECT_CAP not in self.using):

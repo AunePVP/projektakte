@@ -5,6 +5,15 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **plMail: nur noch Mails mit Projektzuordnung** – bisher kopierte Projektakte jede Mail jedes Kontos, das das
+  App-Passwort sieht. Jetzt werden nur Mails heruntergeladen und gespeichert, die ein Mensch einem Projekt
+  zugeordnet hat (plMail `plmail:projektakte` „assigned“, oder früher in Projektakte); von anderen liest
+  Projektakte nur id und Zuordnung. Zurückgenommene Zuordnung oder „kein Projektbezug“ entfernt die Kopie samt
+  Anhängen. Neu: `python -m projektakte.mails_bereinigen [--loeschen]` entfernt alte Kopien nicht zugeordneter
+  Mails (überschreibt die gelöschten Inhalte in der Datenbank). `PLMAIL_ALLE_MAILS=1` für das alte Verhalten.
+  Auftrag an plMail für die serverseitige Sperre: `docs/plmail-prompt-nur-zugeordnet.md`.
+- **Trainingsexport `--ohne-mails`:** nur Dateien aus den Projektordnern, keine Mail-Anhänge.
+
 - **Das Bildmodell bekommt die Seite, wie ein PDF-Betrachter sie zeigt** (Fehler gefunden am Trainingsexport):
   Bisher wurden die eingebetteten Bilder einer Seite zusammengesetzt. Dabei deckten Schablonenbilder (`/ImageMask`, 42
   von 508 PDF-Seiten des Exports) die Seite mit weißen Rechtecken ab, `/Rotate` wurde nicht beachtet (Scans kamen quer

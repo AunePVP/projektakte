@@ -143,7 +143,8 @@ def _run(settings: Settings, ai: AIServices | None, phase, vision: bool = True, 
                                          allow_empty=bool(getattr(settings, "mail_allow_empty", False)))
         if settings.plmail_enabled:
             phase("plMail")
-            stats["plmail"] = sync_plmail(conn, plmail_client(settings), cache_dir=settings.cache_dir, llm=llm)
+            stats["plmail"] = sync_plmail(conn, plmail_client(settings), cache_dir=settings.cache_dir, llm=llm,
+                                          only_assigned=not getattr(settings, "plmail_all_mails", False))
         # incomplete attachments (scan without vision, model down) of unchanged mails
         stats["attachments"] = reprocess_attachments(conn, llm=llm)
         # attachment files no document uses any more (once a day; no import runs meanwhile)

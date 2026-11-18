@@ -49,7 +49,7 @@ def fill(fake):
 def env(tmp_path, fake_ai, plmail):
     url, fake = plmail
     generate(tmp_path / "demo")
-    s = fake_settings(fake_ai, tmp_path, DEMO_MODE=1, PLMAIL_URL=url, PLMAIL_TOKEN=TOKEN, PLMAIL_PAGE_SIZE=2,
+    s = fake_settings(fake_ai, tmp_path, DEMO_MODE=1, PLMAIL_URL=url, PLMAIL_TOKEN=TOKEN, PLMAIL_ALLE_MAILS=1, PLMAIL_PAGE_SIZE=2,
                       ASSIGN_MODE="auto")
     return s, AIServices.from_settings(s), fake
 
@@ -198,7 +198,7 @@ def _sync(s):
 
     db.init_db(s.db_path)
     with db.session(s.db_path) as conn:
-        return sync_plmail(conn, plmail_client(s), cache_dir=s.cache_dir)
+        return sync_plmail(conn, plmail_client(s), cache_dir=s.cache_dir, only_assigned=False)
 
 
 def _keys(s):

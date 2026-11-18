@@ -1370,3 +1370,19 @@ schnellerer Sonderfall für reine Scans. Das kostet bei Scans etwas Rechenzeit i
 Modellaufruf nicht ins Gewicht fällt. Das Zusammensetzen der Bilder bleibt nur für Tesseract (Stufe 1, volle Auflösung
 der Scans) und für das Erkennen von Scan-Seiten; seine Grenzen gegen präparierte PDF-Dateien gelten dort weiter.
 
+
+## plMail: nur Mails mit Projektzuordnung
+
+- **Entscheidung des Nutzers:** Projektakte bekommt nur Mails, die ein Mensch einem Projekt zugeordnet hat. Bisher
+  wurden alle Mails aller Konten kopiert, die das App-Passwort sieht – auch private und nicht projektbezogene.
+- **Wer zählt:** die Zuordnung in plMail (`plmail:projektakte` mit `status: assigned`); hat plMail keine Angabe,
+  eine Entscheidung in Projektakte (`assign_decisions` assign/confirm, aus der Zeit vor plMail). „Kein
+  Projektbezug“ in plMail schlägt eine alte Projektakte-Entscheidung.
+- **Wie:** Listen und Änderungen werden nur mit `id` und Zuordnung gelesen; Inhalt und Anhänge nur für zugeordnete
+  Mails. Eine Kopie, deren Zuordnung wegfällt, wird mit Anhängen, Abschnitten und Vektoren entfernt.
+- **Altbestand:** `projektakte.mails_bereinigen` – erst zählen, dann mit `--loeschen` löschen; `secure_delete`,
+  damit gelöschte Inhalte nicht in freien Seiten der Datenbank liegen bleiben. Mails aus `MAIL_DIR` (eigener
+  Ordner) sind nicht betroffen.
+- **Serverseitig:** Die Sperre gehört auch in plMail (App-Passwort-Bereich „Nur Projektakte“), damit ein falsch
+  eingestelltes Projektakte nicht an andere Mails kommt – Auftrag `docs/plmail-prompt-nur-zugeordnet.md`.
+- `PLMAIL_ALLE_MAILS=1` stellt das alte Verhalten her (für Tests der Abgleich-Mechanik).

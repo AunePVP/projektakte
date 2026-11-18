@@ -18,6 +18,12 @@ back-off (meta ``jmap_att_retry:<account>``, 15 min doubled up to a day); after
 ``ATTACHMENT_ATTEMPTS`` attempts it stays as a document with an error message. An attachment plMail
 no longer has (404/410) or one that is too large is shown the same way, without further attempts.
 
+Only assigned mails (default, ``only_assigned``): a mail is downloaded and stored only when a human assigned
+it to a project – in plMail (``plmail:projektakte`` with status "assigned") or, for older mails, in Projektakte
+(``assign_decisions``). Lists and changes are read with ids and the assignment only; the content of other mails
+never leaves plMail. A stored mail whose assignment is taken back (or set to "kein Projektbezug") is removed
+with its attachments. ``PLMAIL_ALLE_MAILS=1`` restores the old behaviour (every mail of every account).
+
 Newsletter headers: plMail's ``Email/get`` offers no ``header:*`` properties (docs/plmail-jmap.md,
 "Vorschläge an plMail"), so List-Unsubscribe/Precedence are not known for plMail mails – the
 assignment recognises newsletters and advertising there by sender address and wording only.
@@ -35,7 +41,7 @@ from pathlib import Path
 from ..ai.http import AIServiceError, HTTPStatusError, Timer, request, request_json
 from ..extract import html_to_text
 from .model import Attachment, MailRecord, iso_utc
-from .store import delete_mail, prepare_mail, retry_locked, write_mail
+from .store import delete_mail, prepare_mail, prune_cache_files, retry_locked, write_mail
 
 log = logging.getLogger("projektakte.mails.jmap")
 
@@ -69,6 +75,7 @@ class JMAPClient:
         self.page_size = page_size
         self._session: dict | None = None
         self.calls: list[str] = []  # method names used (read-only check in tests)
+        self.only_assigned = False  # set by sync_plmail: lists are read light, unassigned mails are skipped
 
     @property
     def has_project_extension(self) -> bool:
@@ -80,6 +87,10 @@ class JMAPClient:
 
     def _properties(self) -> list[str]:
         return PROPERTIES + [PROJECT_PROP] if self.has_project_extension else PROPERTIES
+
+    def _light_properties(self) -> list[str]:
+        """Enough to decide whether a mail is wanted: its id and the assignment made in plMail."""
+        return ["id", PROJECT_PROP] if self.has_project_extension else ["id"]
 
     # -- session ---------------------------------------------------------------------------------
     def session(self, refresh: bool = False) -> dict:
@@ -159,8 +170,7 @@ class JMAPClient:
                              "position": position, "limit": self.page_size, "calculateTotal": False}, "q0"],
             ["Email/get", {"accountId": account_id,
                            "#ids": {"resultOf": "q0", "name": "Email/query", "path": "/ids"},
-                           "properties": self._properties(), "fetchTextBodyValues": True,
-                           "fetchHTMLBodyValues": True}, "g0"],
+                           **self._get_args(self.only_assigned)}, "g0"],
         ])
         query = next(a for n, a, c in responses if c == "q0")
         self._adopt_limit(query)
@@ -196,9 +206,14 @@ class JMAPClient:
             found |= {str(e.get("id")) for e in responses[0][1].get("list") or []}
         return found
 
-    def get(self, account_id: str, ids: list[str]) -> tuple[list[dict], str | None]:
-        responses = self.call([["Email/get", {"accountId": account_id, "ids": ids, "properties": self._properties(),
-                                              "fetchTextBodyValues": True, "fetchHTMLBodyValues": True}, "g0"]])
+    def _get_args(self, light: bool) -> dict:
+        if light:
+            return {"properties": self._light_properties()}
+        return {"properties": self._properties(), "fetchTextBodyValues": True, "fetchHTMLBodyValues": True}
+
+    def get(self, account_id: str, ids: list[str], *, light: bool = False) -> tuple[list[dict], str | None]:
+        """Email/get; ``light``: only id and assignment (no content)."""
+        responses = self.call([["Email/get", {"accountId": account_id, "ids": ids, **self._get_args(light)}, "g0"]])
         got = responses[0][1]
         return _in_order(got.get("list") or [], ids), got.get("state")
 
@@ -318,6 +333,16 @@ def parse_assignment(value) -> dict | None:
     return out
 
 
+def assigned_by_human(conn: sqlite3.Connection, key: str, email: dict) -> bool:
+    """Did a human assign this mail to a project? plMail's decision counts first (also "kein
+    Projektbezug"); without one, a decision made in Projektakte (assign_decisions) counts."""
+    assignment = parse_assignment(email.get(PROJECT_PROP))
+    if assignment is not None:
+        return assignment["status"] == "assigned"
+    return conn.execute("SELECT 1 FROM assign_decisions WHERE source_key = ? AND action IN ('assign', 'confirm') "
+                        "AND COALESCE(project, '') != ''", (key,)).fetchone() is not None
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -393,6 +418,9 @@ def _store(conn: sqlite3.Connection, client: JMAPClient, account_id: str, email:
         log.warning("plMail-Konto %s: Mail ohne id übersprungen", account_id)
         return False
     key = f"jmap:{account_id}:{eid}"
+    if client.only_assigned and not assigned_by_human(conn, key, email):
+        _drop(conn, account_id, [eid], stats, cache_dir, retries, att_retries)
+        return False
     fp = fingerprint(email)
     if not force:
         row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"jmap_fp:{key}",)).fetchone()
@@ -463,6 +491,49 @@ def _delete_ids(conn: sqlite3.Connection, account_id: str, email_ids) -> int:
     return removed
 
 
+def _drop(conn: sqlite3.Connection, account_id: str, email_ids: list[str], stats: dict, cache_dir: Path,
+          retries: _Retries, att_retries: _Retries) -> None:
+    """Mails nobody assigned to a project: not stored; a copy stored before (assignment taken back,
+    or imported by an older version) is removed with its attachments. Commits."""
+    if not email_ids:
+        return
+
+    def apply() -> tuple[int, list[str]]:
+        stored = _stored_ids(conn, account_id)
+        removed, files = 0, []
+        for eid in email_ids:
+            if eid in stored:
+                files += delete_mail(conn, stored[eid])
+                removed += 1
+            conn.execute("DELETE FROM meta WHERE key = ?", (f"jmap_fp:jmap:{account_id}:{eid}",))
+            retries.done(eid)
+            att_retries.done(eid)
+        conn.commit()
+        return removed, files
+    removed, files = retry_locked(conn, apply, on_retry=_reloader(retries, att_retries))
+    if files:
+        prune_cache_files(conn, cache_dir, files)  # attachment files no other mail uses
+    stats["removed"] += removed
+    stats["not_assigned"] = stats.get("not_assigned", 0) + len(email_ids) - removed
+
+
+def _select(conn: sqlite3.Connection, client: JMAPClient, account_id: str, emails: list[dict], stats: dict,
+            cache_dir: Path, retries: _Retries, att_retries: _Retries) -> list[dict]:
+    """With ``only_assigned`` the mails come light (id, assignment): drop the unassigned ones and
+    fetch the content of the others. Without, the mails are returned as they are."""
+    if not client.only_assigned:
+        return emails
+    keep = [str(e.get("id")) for e in emails
+            if e.get("id") and assigned_by_human(conn, f"jmap:{account_id}:{e.get('id')}", e)]
+    _drop(conn, account_id, [str(e.get("id")) for e in emails if e.get("id") and str(e.get("id")) not in keep],
+          stats, cache_dir, retries, att_retries)
+    full: list[dict] = []
+    for i in range(0, len(keep), client.page_size):
+        got, _ = client.get(account_id, keep[i : i + client.page_size])
+        full += got
+    return full
+
+
 def _refetch(conn, client, account_id, stats, cache_dir, llm, retries: _Retries, att_retries: _Retries,
              todo: _Retries, *, force: bool) -> None:
     """Fetch the mails of ``todo`` (one of the two retry lists) that are due again and store them;
@@ -484,8 +555,8 @@ def _sync_changes(conn, client, account_id, state, stats, cache_dir, llm, retrie
         ch = client.changes(account_id, state)
         ids = list(dict.fromkeys((ch.get("created") or []) + (ch.get("updated") or [])))
         for i in range(0, len(ids), client.page_size):
-            emails, _ = client.get(account_id, ids[i : i + client.page_size])
-            for e in emails:
+            emails, _ = client.get(account_id, ids[i : i + client.page_size], light=client.only_assigned)
+            for e in _select(conn, client, account_id, emails, stats, cache_dir, retries, att_retries):
                 _store(conn, client, account_id, e, stats, cache_dir, llm, retries, att_retries)
         destroyed = [str(x) for x in ch.get("destroyed") or []]
         state = ch.get("newState") or state
@@ -542,8 +613,8 @@ def _sync_full(conn, client, account_id, stats, cache_dir, llm, retries, att_ret
         emails, page_state, ids = client.query_page(account_id, position)
         state = state or page_state  # state of the first page: later changes come via Email/changes
         fresh = [e for e in emails if str(e.get("id")) not in seen]
-        for e in fresh:
-            seen.add(str(e.get("id")))
+        seen |= {str(e.get("id")) for e in fresh}
+        for e in _select(conn, client, account_id, fresh, stats, cache_dir, retries, att_retries):
             _store(conn, client, account_id, e, stats, cache_dir, llm, retries, att_retries)
         if len(ids) < client.page_size or not ids:
             break
@@ -555,9 +626,9 @@ def _sync_full(conn, client, account_id, stats, cache_dir, llm, retries, att_ret
     current = _all_ids(client, account_id)
     missing = [i for i in current if i not in seen]
     for i in range(0, len(missing), client.page_size):
-        emails, _ = client.get(account_id, missing[i : i + client.page_size])
-        for e in emails:
-            seen.add(str(e.get("id")))
+        emails, _ = client.get(account_id, missing[i : i + client.page_size], light=client.only_assigned)
+        seen |= {str(e.get("id")) for e in emails}
+        for e in _select(conn, client, account_id, emails, stats, cache_dir, retries, att_retries):
             if _store(conn, client, account_id, e, stats, cache_dir, llm, retries, att_retries):
                 stats["recovered"] += 1
     listed = set(current)
@@ -580,7 +651,8 @@ def _sync_full(conn, client, account_id, stats, cache_dir, llm, retries, att_ret
 
 def sync_account(conn: sqlite3.Connection, client: JMAPClient, account_id: str, *, cache_dir: Path,
                  llm=None) -> dict:
-    stats = {"new": 0, "changed": 0, "unchanged": 0, "removed": 0, "errors": 0, "mode": "changes"}
+    stats = {"new": 0, "changed": 0, "unchanged": 0, "removed": 0, "errors": 0, "not_assigned": 0,
+             "mode": "changes"}
     retries = _Retries(conn, account_id)
     att_retries = _Retries(conn, account_id, "jmap_att_retry")
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"jmap_state:{account_id}",)).fetchone()
@@ -603,11 +675,17 @@ def sync_account(conn: sqlite3.Connection, client: JMAPClient, account_id: str, 
     return stats
 
 
-def sync_plmail(conn: sqlite3.Connection, client: JMAPClient, *, cache_dir: Path, llm=None) -> dict:
-    """Synchronise all accounts; problems are reported in the result, never raised."""
+def sync_plmail(conn: sqlite3.Connection, client: JMAPClient, *, cache_dir: Path, llm=None,
+                only_assigned: bool = True) -> dict:
+    """Synchronise all accounts; problems are reported in the result, never raised. ``only_assigned``:
+    only mails a human assigned to a project are stored (see the module docstring)."""
     result: dict = {"accounts": {}, "error": None}
+    client.only_assigned = only_assigned
     try:
         accounts = client.account_ids()
+        if only_assigned and not client.has_project_extension:
+            log.warning("plMail meldet keine Projektzuordnung (%s) – übernommen werden nur Mails, die in "
+                        "Projektakte einem Projekt zugeordnet wurden", PROJECT_CAP)
     except JMAPError as exc:
         log.warning("plMail: %s", exc)
         result["error"] = str(exc)
