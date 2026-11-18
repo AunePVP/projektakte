@@ -193,14 +193,6 @@ def _padded(mime: str, data: bytes) -> tuple[str, bytes]:
     return out_mime, out
 
 
-def _page_box(page) -> tuple[float, float] | None:
-    try:
-        box = page.mediabox
-        return float(box.width), float(box.height)
-    except Exception:  # noqa: BLE001 – a broken page box: no bound
-        return None
-
-
 # -- Tesseract (optional): the text of scanned pages without a text layer, before the model reads them ------
 OCR_COMMAND = "tesseract"
 OCR_LANGUAGE = "deu"
@@ -329,7 +321,11 @@ def _progress() -> None:
 # file of a format not read before is stored as incomplete (project files of such a format were not stored at
 # all, mail attachments as complete with "Format … nicht unterstützt") – it would only cost a pass over every
 # incomplete document (scans without vision, failed model calls) for nothing.
-EXTRACT_VERSION = 7
+# 8: the model gets every PDF page rendered as a viewer shows it (colour, VISION_DPI, crop box, /Rotate,
+#    annotations and form fields) instead of its embedded images put together – those lost stencil masks
+#    (/ImageMask, drawn opaque), the page's rotation and everything drawn besides the images (text, plans);
+#    pages read by the model before are read again.
+EXTRACT_VERSION = 8
 # Images of one PDF page that are sent to the model one by one (scanners write one image per page).
 # A page with more images – scanners and PDF tools that cut a page into strips or tiles – is put
 # together into one image at the images' positions on the page and sent as that.
@@ -651,7 +647,7 @@ def _without_vision(pages, empty_pages, layer_scans, name: str, doc: _DocState, 
     notes = []
     read = 0
     if empty_pages and ocr:
-        scan = _read_scanned_pages(empty_pages, None, name, ocr=True, doc=doc, compose=True)
+        scan = _read_scanned_pages(empty_pages, None, name, ocr=True, doc=doc)
         read = len(scan.pages)
         pages = sorted(pages + scan.pages, key=lambda p: p.number or 0)
         if read:
@@ -678,7 +674,7 @@ def _vision_later(pages, empty_pages, layer_scans, name: str, doc: _DocState, oc
     """Stage 1 of an indexing pass with vision: the file is stored at once with the text it has – text
     layers, and Tesseract's text for pages without one (if ``ocr``) – and its scan pages are listed for the
     model (Extracted.vision_pages, read by the phase "Bildauswertung"). No model call here."""
-    scan = _read_scanned_pages(empty_pages, None, name, ocr=ocr, doc=doc, compose=True) if empty_pages else None
+    scan = _read_scanned_pages(empty_pages, None, name, ocr=ocr, doc=doc) if empty_pages else None
     later = sorted({i for i, _page in layer_scans} | set(scan.with_images if scan else ()))
     if scan is not None and scan.rendered and vision_skip_cad():  # CAD plans keep Tesseract's text (VISION_SKIP_CAD)
         later = [i for i in later if i not in set(scan.rendered)]
@@ -1395,11 +1391,13 @@ class _Rendered:
     doc_limit: bool = False
 
 
-def _render_page(doc: _DocState, number: int, max_pixels: int, dpi: int | None = None) -> _Rendered | None:
-    """Page ``number`` rendered in grey at ``dpi`` (RENDER_DPI for Tesseract, VISION_DPI for the model; scaled down
-    to ``max_pixels``, large plans at a lower resolution) as PNG, or blank if nothing on it is darker than
-    RENDER_BLANK_LEVEL. None without PDFium. Charged to the document's MAX_DOC_PIXELS; rendering stops after
-    RENDER_SECONDS."""
+def _render_page(doc: _DocState, number: int, max_pixels: int, dpi: int | None = None, *,
+                 color: bool = False) -> _Rendered | None:
+    """Page ``number`` rendered as a PDF viewer shows it – its crop box, turned by /Rotate, with annotations and
+    filled-in form fields – at ``dpi`` (RENDER_DPI for Tesseract, VISION_DPI for the model; scaled down to
+    ``max_pixels``, large plans at a lower resolution): in grey as PNG, with ``color`` in RGB (JPEG); or blank if
+    nothing on it is darker than RENDER_BLANK_LEVEL in grey. None without PDFium. Charged to the document's
+    MAX_DOC_PIXELS; rendering stops after RENDER_SECONDS."""
     if doc.source is None:
         return None
     pdfium = _pdfium()
@@ -1413,6 +1411,10 @@ def _render_page(doc: _DocState, number: int, max_pixels: int, dpi: int | None =
     try:
         if doc.pdfium is None:
             doc.pdfium = pdfium.PdfDocument(doc.source)
+            try:  # form fields are drawn as a viewer shows them (before any page is opened)
+                doc.pdfium.init_forms()
+            except Exception as exc:  # noqa: BLE001 – a broken form: the page without its fields
+                log.debug("Formularfelder nicht lesbar (%s)", exc)
         page = doc.pdfium[number - 1]
         w_pt, h_pt = page.get_size()  # in points, as displayed (rotation applied)
         scale = (dpi or RENDER_DPI) / 72
@@ -1422,12 +1424,12 @@ def _render_page(doc: _DocState, number: int, max_pixels: int, dpi: int | None =
         if doc.decoded_pixels + width * height > MAX_DOC_PIXELS:
             return _Rendered(problem=f"Dokument zu umfangreich ({_doc_bounds()})", doc_limit=True)
         doc.decoded_pixels += width * height
-        bitmap = pdfium.PdfBitmap.new_native(width, height, raw.FPDFBitmap_Gray)
+        bitmap = pdfium.PdfBitmap.new_native(width, height, raw.FPDFBitmap_BGR if color else raw.FPDFBitmap_Gray)
         raw.FPDFBitmap_FillRect(bitmap, 0, 0, width, height, 0xFFFFFFFF)
         deadline = time.monotonic() + RENDER_SECONDS
         need_pause = raw.IFSDK_PAUSE._fields_[1][1](lambda _pause: time.monotonic() > deadline)
         pause = raw.IFSDK_PAUSE(version=1, NeedToPauseNow=need_pause)
-        flags = raw.FPDF_ANNOT | raw.FPDF_GRAYSCALE
+        flags = raw.FPDF_ANNOT | (0 if color else raw.FPDF_GRAYSCALE)
         status = raw.FPDF_RenderPageBitmap_Start(bitmap, page, 0, 0, width, height, 0, flags, ctypes.byref(pause))
         while status == raw.FPDF_RENDER_TOBECONTINUED and time.monotonic() <= deadline:
             status = raw.FPDF_RenderPage_Continue(page, ctypes.byref(pause))
@@ -1437,8 +1439,10 @@ def _render_page(doc: _DocState, number: int, max_pixels: int, dpi: int | None =
             late = status == raw.FPDF_RENDER_TOBECONTINUED
             return _Rendered(problem=f"Seite zu aufwendig (über {RENDER_SECONDS:.0f} s zum Zeichnen)" if late
                              else _RENDER_FAILED)
+        if doc.pdfium.formenv:  # filled-in form fields, over the page
+            raw.FPDF_FFLDraw(doc.pdfium.formenv, bitmap, page, 0, 0, width, height, 0, flags)
         img = bitmap.to_pil()
-        if img.getextrema()[0] > RENDER_BLANK_LEVEL:
+        if (img.convert("L") if color else img).getextrema()[0] > RENDER_BLANK_LEVEL:
             return _Rendered(blank=True)
         data, mime = _encode(img)
         return _Rendered(data, mime)
@@ -1947,21 +1951,21 @@ class _PageOutcome:
 
 
 def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases: dict | None = None,
-                        doc: _DocState | None = None, compose: bool = False) -> _ScanResult:
-    """Let the multimodal model (and Tesseract, if ``ocr``) read the images of scan pages – pages without
-    a text layer, and those in ``bases`` (number → their text layer), which is handed to the model with
-    the image and stands if the model gives nothing. ``llm`` None: Tesseract alone (``ocr``), or – neither –
-    only which pages draw an image (``with_images``), nothing decoded.
+                        doc: _DocState | None = None) -> _ScanResult:
+    """Let the multimodal model (and Tesseract, if ``ocr``) read scan pages – pages without a text layer, and
+    those in ``bases`` (number → their text layer), which is handed to the model with the image and stands if
+    the model gives nothing. ``llm`` None: Tesseract alone (``ocr``), or – neither – only which pages draw an
+    image (``with_images``), nothing decoded.
 
-    Up to MAX_IMAGES_PER_PAGE images of a page are sent one by one; a page with more (strip or tile
-    scans) – with ``compose``, and for a page with a text layer, any page with more than one – is put
-    together into one page image at the images' positions. Pages without any image (blank pages, vector
-    drawings) count as nothing to read. A page none of whose images could be read counts as undecodable
-    or failed – the document is retried later; only a page whose images the model read without finding
-    text counts as "no text". A page of which only some images were read counts as read *partly*: its
-    text is kept and the document stays incomplete (and is retried when the cause may go away). An image
-    (or page image) already read on an earlier page is not sent again: its answer is reused. Without a
-    text layer, Tesseract's text goes to the model with the image (and stands if the model fails)."""
+    The model gets each page rendered as a viewer shows it (_read_view, _view), never its embedded images.
+    Tesseract reads the page's images, put together into one page image at their positions (strip and tile
+    scans; if that is not possible, up to MAX_IMAGES_PER_PAGE of the largest). Pages without any image are rendered (vector
+    drawings, text as outlines) or count as blank. A page none of whose images could be read counts as
+    undecodable or failed – the document is retried later; only a page read without finding text counts as
+    "no text". A page of which only some images were read counts as read *partly*: its text is kept and the
+    document stays incomplete (and is retried when the cause may go away). A page (or image) already read
+    on an earlier page is not read again: its answer is reused. Without a text layer, Tesseract's text goes
+    to the model with the page (and stands if the model fails)."""
     result = _ScanResult()
     doc = doc if doc is not None else _DocState()
     bases = bases or {}
@@ -1999,7 +2003,7 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
             continue
         rendered = None
         if not drawn.images and not base:  # outlined text or a blank page: rendered (if PDFium is there)
-            rendered = _rendered_job(page, i, key, name, doc, full=reading)
+            rendered = _rendered_job(page, i, key, name, doc, full=ocr)  # full: Tesseract reads it
             if isinstance(rendered, _Rendered):
                 if rendered.doc_limit:
                     result.doc_limit += 1
@@ -2019,64 +2023,41 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
             result.rendered.append(i)
         if not reading:
             continue
-        if rendered is not None:
-            out = _PageOutcome(jobs=[rendered])
-        elif compose or base:  # one page image: the model sees the whole page next to its text
-            out = _page_payloads(decoder, drawn, name, i, result, doc, 1)
-        else:
-            out = _page_payloads(decoder, drawn, name, i, result, doc)
+        if llm is not None:  # the model sees the page as a viewer shows it (Tesseract's text with it)
+            _read_view(page, i, key, name, doc, llm, result, base=base, ocr=ocr, drawn=drawn, rendered=rendered,
+                       decoder=decoder)
+            continue
+        out = _PageOutcome(jobs=[rendered]) if rendered is not None else _page_payloads(decoder, drawn, name, i, result, doc)
         if out.doc_limited and not doc.warned:
             doc.warned = True
             log.warning("%s: ab Seite %d nicht mehr alle Bilder ausgewertet (%s)", name, i, _doc_bounds())
-        texts, kept, failed, answered = [], [], 0, False
+        texts = []
         for job in out.jobs:
             text = job.text
             if text is None:
-                known = base or (ocr_image(job.data) if ocr else "")
-                if llm is None or (rendered is not None and vision_skip_cad()):  # a CAD plan: Tesseract's text
-                    text = known
-                else:
-                    doc.vision_calls += 1
-                    try:
-                        box = _page_box(page)
-                        mime, data = for_model(job.mime, job.data, vision_pixels(*box) if box else None)
-                        text = llm.describe_image(data, mime, vision_prompt(known)).text or ""
-                    except Exception as exc:  # noqa: BLE001
-                        log.warning("%s Seite %d: Bildauswertung fehlgeschlagen (%s)", name, i, exc)
-                        failed += 1
-                        if known.strip() and not base:
-                            kept.append(known)  # Tesseract's text stands for now
-                        continue
-                    answered = answered or bool(text.strip())
-                    if not text.strip() and not base:
-                        text = known
+                text = base or (ocr_image(job.data) if ocr else "")
                 if job.reusable:
                     doc.transcripts[job.key] = text
             if text.strip():
                 texts.append(text)
-        texts += kept
-        if base and not texts:  # the model gave nothing: the text layer stands
+        if base and not texts:  # Tesseract gave nothing: the text layer stands
             texts = [base]
-        result.vision_read += answered
         if texts:
             result.pages.append(Page(i, "\n".join(texts)))
-            if out.undecodable or failed or out.missing() or out.truncated:
+            if out.undecodable or out.missing() or out.truncated:
                 result.partial += 1
                 result.partial_undecodable += out.undecodable
-                result.partial_failed += failed
                 result.partial_left_out += out.left_out
                 result.partial_over_limit += out.over_limit
                 result.partial_too_big += out.too_big
                 result.partial_unsized += out.unsized
                 result.partial_doc_limit += out.doc_limited
                 result.partial_truncated += out.truncated
-                log.warning("%s Seite %d nur teilweise gelesen (%d nicht lesbar, %d fehlgeschlagen, %d nicht "
-                            "ausgewertet%s)", name, i, out.undecodable, failed, out.missing(),
+                log.warning("%s Seite %d nur teilweise gelesen (%d nicht lesbar, %d nicht ausgewertet%s)",
+                            name, i, out.undecodable, out.missing(),
                             ", Inhalt nicht vollständig durchsucht" if out.truncated else "")
         elif out.undecodable:
             result.undecodable += 1
-        elif failed:
-            result.model_failed += 1
         elif out.jobs:
             result.no_text += 1
         elif out.over_limit:
@@ -2094,7 +2075,78 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
     return result
 
 
-def _rendered_job(page, number: int, key, name: str, doc: _DocState, *, full: bool, dpi: int | None = None):
+def _read_view(page, i: int, key, name: str, doc: _DocState, llm, result: _ScanResult, *, base: str, ocr: bool,
+               drawn: _Drawing, rendered, decoder) -> None:
+    """One scan page read by the model right away: it gets the page as a viewer shows it (_view), with the text
+    layer ``base`` or – without one, if ``ocr`` – Tesseract's text, which stands if the model fails or gives
+    nothing. A CAD plan (``rendered``, the page draws no image) keeps Tesseract's text with VISION_SKIP_CAD."""
+    known, out = base, None
+    if not base and ocr:  # Tesseract reads its own image of the page, as without the model
+        out = _PageOutcome(jobs=[rendered]) if rendered is not None else _page_payloads(decoder, drawn, name, i, result, doc)
+        known = "\n".join(t for t in (job.text if job.text is not None else ocr_image(job.data) for job in out.jobs)
+                          if t.strip())
+    if rendered is not None and vision_skip_cad():
+        if known.strip():
+            result.pages.append(Page(i, known))
+        else:
+            result.no_text += 1
+        return
+    view = None
+    if doc.vision_calls < MAX_DOC_VISION_CALLS:
+        view = _view(page, i, key, name, doc)
+    text, failed, problem = "", False, None
+    if isinstance(view, _Job) and view.text is not None:  # the same page content read on an earlier page
+        text = view.text
+    elif isinstance(view, _Job):
+        doc.vision_calls += 1
+        try:
+            mime, data = for_model(view.mime, view.data, None)
+            text = llm.describe_image(data, mime, vision_prompt(known)).text or ""
+            doc.transcripts[view.key] = text
+            result.vision_read += bool(text.strip())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s Seite %d: Bildauswertung fehlgeschlagen (%s)", name, i, exc)
+            failed = True
+    elif isinstance(view, _Rendered) and view.blank:
+        pass  # nothing on the page a model could read
+    elif isinstance(view, _Rendered):
+        problem = "doc" if view.doc_limit else "render"
+    else:
+        problem = "doc" if doc.vision_calls >= MAX_DOC_VISION_CALLS else "pdfium"
+    if problem == "doc" and not doc.warned:
+        doc.warned = True
+        log.warning("%s: ab Seite %d nicht mehr alle Seiten ausgewertet (%s)", name, i, _doc_bounds())
+    if text.strip():
+        result.pages.append(Page(i, text))
+        return
+    if known.strip():  # the text layer or Tesseract's text stands
+        result.pages.append(Page(i, known))
+        if failed or problem:
+            result.partial += 1
+            result.partial_failed += failed
+            result.partial_doc_limit += problem == "doc"
+            result.partial_undecodable += problem in ("render", "pdfium")
+            if problem in ("render", "pdfium"):
+                result.decode_error = result.decode_error or _view_problem(problem)
+        return
+    if failed:
+        result.model_failed += 1
+    elif problem == "doc":
+        result.doc_limit += 1
+    elif problem == "render":  # too costly to draw or broken: as for a page without images
+        result.too_complex += 1
+    elif problem:
+        result.decode_error = result.decode_error or _view_problem(problem)
+        result.undecodable += 1
+    else:
+        result.no_text += 1
+
+
+def _view_problem(problem: str) -> str:
+    return f"{_RENDER_FAILED} (pypdfium2 nicht installiert)" if problem == "pdfium" else _RENDER_FAILED
+
+
+def _rendered_job(page, number: int, key, name: str, doc: _DocState, *, full: bool):
     """A page without text layer and images, rendered (_render_page): a _Job with the page image (``full``;
     otherwise only a small render that tells whether it is blank, with an empty job), a _Rendered if it
     is blank or could not be rendered, None without PDFium (the page counts as blank, as before)."""
@@ -2103,7 +2155,7 @@ def _rendered_job(page, number: int, key, name: str, doc: _DocState, *, full: bo
         return _Rendered(blank=True)
     if job_key in doc.transcripts:  # the same content read on an earlier page
         return _Job(job_key, text=doc.transcripts[job_key])
-    rendered = _render_page(doc, number, MAX_IMAGE_PIXELS if full else RENDER_PROBE_PIXELS, dpi)
+    rendered = _render_page(doc, number, MAX_IMAGE_PIXELS if full else RENDER_PROBE_PIXELS)
     if rendered is None:
         return None
     if rendered.blank:
@@ -2118,8 +2170,8 @@ def _rendered_job(page, number: int, key, name: str, doc: _DocState, *, full: bo
 
 @dataclass
 class PageImages:
-    """The image(s) of one PDF page for the model in the phase "Bildauswertung" (see page_images): usually
-    one page image (several images of a page are put together), or why there is none."""
+    """The image of one PDF page for the model in the phase "Bildauswertung" (see page_images): the page as a
+    viewer shows it, or why there is none."""
     number: int
     images: list = field(default_factory=list)  # (mime, data)
     problem: str | None = None  # why there is no image
@@ -2160,15 +2212,14 @@ def cad_pages(data: bytes, numbers: list[int], name: str) -> list[int]:
 
 
 def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
-    """Decode and prepare the images of the given pages of a PDF for the model, nothing else – in an
-    indexing pass in the extraction worker, under its limits (the model is called by the app, see
-    vision.py). The same bounds as when the pages are read (MAX_PAGE_*, MAX_DOC_PIXELS for the pages of
-    one call)."""
+    """Render the given pages of a PDF for the model (_images_of: as a viewer shows them), nothing else – in an
+    indexing pass in the extraction worker, under its limits (the model is called by the app, see vision.py).
+    RENDER_SECONDS per page, MAX_DOC_PIXELS for the pages of one call."""
     with _pdf_limits():
         reader = _open_pdf(data)
         if reader is None:
             return [PageImages(n, problem=PDF_ENCRYPTED_TEXT) for n in numbers]
-        doc, decoder = _DocState(source=data), _Decoder()
+        doc = _DocState(source=data)
         out_pages = []
         count = len(reader.pages)
         for n in numbers:
@@ -2179,7 +2230,7 @@ def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
             shortage = _Shortage()
             token = _SHORTAGE.set(shortage)
             try:
-                page = _images_of(reader.pages[n - 1], n, name, doc, decoder)
+                page = _images_of(reader.pages[n - 1], n, name, doc)
             except MemoryError as exc:
                 _out_of_memory(exc)
                 page = PageImages(n, problem=f"Bilder zu groß zum Lesen ({_memory_bound()})")
@@ -2187,66 +2238,61 @@ def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
                 _SHORTAGE.reset(token)
             if shortage.met and MEMORY_LIMIT_MB and (page.problem or page.partial):
                 page.limit = f"memory={MEMORY_LIMIT_MB}"  # more memory may read it
-            if page.images:  # at VISION_DPI of the page's size
-                box = _page_box(reader.pages[n - 1])
-                pixels = vision_pixels(*box) if box else None
-                page.images = [for_model(m, d, pixels) for m, d in page.images]
+            if page.images:  # rendered at VISION_DPI already: only too thin a page is padded
+                page.images = [for_model(m, d, None) for m, d in page.images]
             out_pages.append(page)
             _progress()
         return out_pages
 
 
-def _images_of(page, number: int, name: str, doc: _DocState, decoder) -> PageImages:
-    result = _ScanResult()
-    try:
-        drawn = _page_images(page, name, number, doc) if _can_draw_images(page, doc) else _Drawing()
-    except MemoryError:
-        raise
-    except Exception as exc:  # noqa: BLE001 – broken resources
-        log.warning("%s Seite %d: Bilder nicht lesbar (%s)", name, number, exc)
-        return PageImages(number, problem=f"Bilder nicht lesbar: {_decode_problem(exc)}", retry=True)
-    if not drawn.images:
-        if vision_skip_cad():  # a CAD plan listed before VISION_SKIP_CAD was set: not drawn, not sent
+def _images_of(page, number: int, name: str, doc: _DocState) -> PageImages:
+    """The page as the model gets it: rendered as a viewer shows it (_view), never put together from its embedded
+    images – those miss what the page draws besides them (text, lines, stencil masks, annotations, form fields)
+    and its /Rotate. A page that draws no image is a CAD plan: with VISION_SKIP_CAD it is not sent."""
+    if vision_skip_cad():  # a CAD plan listed before VISION_SKIP_CAD was set: not drawn, not sent
+        try:
+            drawn = _page_images(page, name, number, doc) if _can_draw_images(page, doc) else _Drawing()
+        except MemoryError:
+            raise
+        except Exception as exc:  # noqa: BLE001 – broken resources: rendered all the same
+            log.debug("%s Seite %d: Bilder nicht bestimmbar (%s)", name, number, exc)
+            drawn = None
+        if drawn is not None and not drawn.images and not drawn.truncated:
             return PageImages(number, problem=CAD_SKIPPED)
-        # for the model only: drawn at VISION_DPI right away – drawing a CAD plan at 300 dpi and scaling it down
-        # afterwards took 15–30 s a page in the Bildauswertung, with no page going to the model meanwhile
-        rendered = _rendered_job(page, number, _text_key(page), name, doc, full=True, dpi=vision_dpi() or None)
-        if isinstance(rendered, _Job) and rendered.data is not None:
-            return PageImages(number, [(rendered.mime, rendered.data)])
-        if isinstance(rendered, _Rendered) and rendered.problem:
-            return PageImages(number, problem=rendered.problem)
-        return PageImages(number, problem="kein Bild auf der Seite")
-    out = _page_payloads(decoder, drawn, name, number, result, doc, 1)
-    images = [(job.mime, job.data) for job in out.jobs if job.data is not None]
-    if images:
-        if not (out.undecodable or out.missing() or out.truncated):
-            return PageImages(number, images)
-        result.partial = 1
-        result.partial_undecodable = out.undecodable
-        result.partial_left_out = out.left_out
-        result.partial_over_limit = out.over_limit
-        result.partial_too_big = out.too_big
-        result.partial_unsized = out.unsized
-        result.partial_doc_limit = out.doc_limited
-        result.partial_truncated = int(out.truncated)
-        return PageImages(number, images, partial=result.partial_reasons(), retry=bool(out.undecodable))
-    if out.undecodable:
-        result.undecodable = 1
-    elif out.over_limit:
-        result.too_large = 1
-    elif out.too_big:
-        result.too_big = 1
-    elif out.unsized:
-        result.unsized = 1
-    elif out.doc_limited:
-        result.doc_limit = 1
-    else:
-        result.too_complex = 1
-    return PageImages(number, problem=result.reason(), retry=result.retry)
+    view = _view(page, number, _text_key(page), name, doc)
+    if isinstance(view, _Job) and view.data is not None:
+        return PageImages(number, [(view.mime, view.data)])
+    if isinstance(view, _Rendered) and view.blank:
+        return PageImages(number, problem="Seite leer")
+    if isinstance(view, _Rendered) and view.problem:
+        return PageImages(number, problem=view.problem)
+    return PageImages(number, problem=f"{_RENDER_FAILED} (pypdfium2 nicht installiert)", retry=True)
+
+
+def _view(page, number: int, key, name: str, doc: _DocState):
+    """Page ``number`` for the model: rendered as a viewer shows it, in colour at VISION_DPI (0: RENDER_DPI), at
+    most MAX_IMAGE_PIXELS – a _Job (its answer if the same content was read on an earlier page), a _Rendered if
+    it is blank or could not be rendered, None without PDFium."""
+    job_key = ("view", key if key is not None else number)
+    if key is not None and key in doc.blank:
+        return _Rendered(blank=True)
+    if job_key in doc.transcripts:
+        return _Job(job_key, text=doc.transcripts[job_key])
+    rendered = _render_page(doc, number, MAX_IMAGE_PIXELS, vision_dpi() or None, color=True)
+    if rendered is None:
+        return None
+    if rendered.blank:
+        if key is not None:
+            doc.blank.add(key)
+        return rendered
+    if rendered.problem:
+        log.warning("%s Seite %d: %s", name, number, rendered.problem)
+        return rendered
+    return _Job(job_key, data=rendered.data, mime=rendered.mime)
 
 
 def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _ScanResult,
-                   doc: _DocState | None = None, compose_over: int = MAX_IMAGES_PER_PAGE) -> _PageOutcome:
+                   doc: _DocState | None = None) -> _PageOutcome:
     """The images of one page for the model (as _Job), with the numbers of images that could not be
     decoded, that were left out (more than MAX_IMAGES_PER_PAGE, not put together), that were over the
     page limits, too large to decode, without size and over the document's bounds. ``images`` decodes
@@ -2255,9 +2301,8 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
     Each different image is decoded and sent once, however often and under whatever names the page
     draws it – and once per document: an image read on an earlier page is not decoded again. Images
     beyond MAX_PAGE_IMAGES/MAX_PAGE_PIXELS (real sizes, measured from the headers, soft masks included)
-    are left out undecoded. More than MAX_IMAGES_PER_PAGE different images are put together into one page
-    image (``compose_over``: more than that many – 1 puts any page of several images together); if that is
-    not possible, the largest ones are sent. Every decoding is charged to the document
+    are left out undecoded. Several different images are put together into one page image; if that is not
+    possible, the MAX_IMAGES_PER_PAGE largest ones are sent. Every decoding is charged to the document
     with the work it took (see _MIN_DECODE_CHARGE) and checked against its bounds before it starts."""
     doc = doc if doc is not None else _DocState()
     out = _PageOutcome(truncated=drawn.truncated)
@@ -2294,7 +2339,7 @@ def _page_payloads(images, drawn: _Drawing, name: str, number: int, result: _Sca
         doc.decoded_pixels += getattr(decoded, "work", 0) or _decode_charge(image)
         return decoded
 
-    if len(chosen) + broken > compose_over and chosen:
+    if len(chosen) + broken > 1 and chosen:
         layout = _layout(chosen)
         if layout is not None:
             key = ("page", tuple((image.ident, tuple(image.placements)) for image in chosen))

@@ -60,7 +60,7 @@ def test_an_outlined_page_goes_to_tesseract_and_the_model_as_a_rendered_image(te
     with Image.open(io.BytesIO(tesseract[0])) as img:
         assert img.size == (2479, 3508) and img.mode == "L"  # Tesseract: A4 at 300 dpi, grey
     with Image.open(io.BytesIO(llm.images[0])) as img:
-        assert img.size == (1239, 1754) and img.mode == "L"  # the model: at VISION_DPI (150), grey
+        assert img.size == (1239, 1754) and img.mode == "RGB"  # the model: at VISION_DPI (150), as a viewer shows it
     assert "Stellplätze Garagen" in llm.prompts[0]  # Tesseract's text goes with the image
 
 
@@ -69,8 +69,8 @@ def test_stage_one_lists_the_outlined_page_and_page_images_renders_it(tesseract)
     r = extract(Path("Auszug.pdf"), data, llm=Vision(), ocr=True, defer_vision=True)
     assert r.status == "ok" and r.vision_pages == [1] and r.pages[0].text.startswith("Stellplätze")
     first, blank = extract_mod.page_images(data, [1, 2], "Auszug.pdf")
-    assert first.problem is None and first.images[0][0] == "image/png"
-    assert blank.images == [] and blank.problem == "kein Bild auf der Seite"
+    assert first.problem is None and first.images[0][0] == "image/jpeg"
+    assert blank.images == [] and blank.problem == "Seite leer"
 
 
 def test_a_render_over_the_time_bound_is_not_read(monkeypatch, tesseract):
@@ -122,9 +122,9 @@ def test_the_phase_draws_the_page_at_vision_dpi_right_away(monkeypatch, tesserac
     dpis = []
     real = extract_mod._render_page
 
-    def spy(doc, number, max_pixels, dpi=None):
+    def spy(doc, number, max_pixels, dpi=None, **kw):
         dpis.append(dpi)
-        return real(doc, number, max_pixels, dpi)
+        return real(doc, number, max_pixels, dpi, **kw)
 
     monkeypatch.setattr(extract_mod, "_render_page", spy)
     data = outlined_and_blank()

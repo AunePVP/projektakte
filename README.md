@@ -473,6 +473,12 @@ stehen in der Projektansicht im Ordner (Hinweis „nicht gelesen – Ordner in S
 Betrachter. Schon gelesene Dateien in solchen Ordnern verlieren beim Start des nächsten Laufs sofort ihren Text und
 ihre wartenden Seiten. Nimmt man den Ordner wieder heraus, werden sie gelesen.
 
+**Was das Modell sieht:** Jede PDF-Seite wird so gezeichnet, wie ein PDF-Betrachter sie zeigt – in Farbe, im
+Seitenrahmen (CropBox), gedreht nach `/Rotate`, mit Anmerkungen (Stempel, Freitext, Zeichnungen) und ausgefüllten
+Formularfeldern. Die eingebetteten Bilder einer Seite werden für das Modell nicht mehr zusammengesetzt: Dabei fehlten
+Text und Zeichnung neben den Bildern, Schablonenbilder (`/ImageMask`) deckten die Seite weiß ab und gedrehte Seiten
+kamen quer an. Tesseract liest in Stufe 1 weiter die eingebetteten Bilder in voller Auflösung.
+
 **Auflösung für das Modell (`VISION_DPI`, 150):** Die Seitenbilder gehen mit 150 dpi der echten Seitengröße an das
 Modell (A4 rund 2,2 Megapixel und 2.600 Bild-Tokens, A3 doppelt so viel, große Pläne höchstens 16 Megapixel). Gemessen
 mit Qwen3.5-4B erkennt es so genauso viel wie mit 300 dpi (rund 9.900 Tokens), aber drei- bis viermal schneller;
@@ -509,6 +515,8 @@ Seiten aus Ordnern `CAD` und `Bilder` sowie aus `SKIP_READ_FOLDERS`/`VISION_SKIP
 nichts in der Datenbank. `--training` exportiert Trainingsseiten aus allen Arten von Dokumenten (wartende Scans,
 CAD-Pläne, digitale PDF-Seiten, Fotos), `--ohne-seiten …/seiten.json` lässt den Prüfsatz aus. Vergleichen, Entwürfe,
 Korrektur und Training liegen im Repository **`aunepvp/tune`** (feingetunter Seitenleser, siehe `docs/feintuning.md`).
+`--erneuern --ziel …` schreibt die PDF-Seitenbilder eines früheren Exports neu, wie das Modell sie jetzt bekommt – unter
+denselben Nummern und Namen; Texte, Korrekturen und Fotos bleiben unverändert.
 Die Seiten sind echte Projektdaten – nur im Büronetz.
 
 **Wiederholungsschleifen:** Kleine Bildmodelle wiederholen beim Abschreiben von Formularen, Tabellen und Plänen

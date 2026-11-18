@@ -16,6 +16,7 @@ from projektakte import extract as extract_mod
 from projektakte.documents import index_all_documents
 from projektakte.extract import extract, extraction_profile
 from projektakte.registry import scan_projects, sync_projects
+from tests.scanlesen import read_scans
 
 PATTERN = r"BS-\d{4}-\d{4}"
 
@@ -139,8 +140,8 @@ def test_scanner_pdf_with_jpeg_and_ccitt_pages_is_read():
     r = extract(Path("Scan_Auflagen.pdf"), data, llm=llm)
     assert (r.status, r.method, r.incomplete, r.retry, r.message) == ("ok", "vision", False, False, None)
     assert [p.number for p in r.pages] == [1, 2, 3] and "Rauchabzug" in r.text
-    # JPEG goes as it is, the CCITT fax page (TIFF) as PNG, CMYK is converted for the model
-    assert [c[:2] for c in llm.calls] == [("image/jpeg", "RGB"), ("image/png", "1"), ("image/jpeg", "RGB")]
+    # the model gets each page rendered in colour, whatever the scanner wrote (JPEG, CCITT fax, CMYK)
+    assert [c[:2] for c in llm.calls] == [("image/jpeg", "RGB")] * 3
     without = extract(Path("Scan_Auflagen.pdf"), data)
     assert (without.status, without.incomplete) == ("skipped", True) and "LLM_VISION=0" in without.message
 
@@ -152,22 +153,22 @@ def test_mixed_pdf_reads_text_layer_and_png_and_jpeg_images():
     assert (r.status, r.method, r.incomplete) == ("ok", "vision", False)
     assert [p.number for p in r.pages] == [1, 2, 3]
     assert "Grundriss" in r.pages[1].text and "Brandwand" in r.pages[2].text
-    assert [c[0] for c in llm.calls] == ["image/jpeg", "image/png"]
+    assert [c[0] for c in llm.calls] == ["image/jpeg", "image/jpeg"]  # rendered pages
 
 
 def test_undecodable_images_fail_the_page_and_are_retried():
-    """JBIG2 without jbig2dec, a broken JPEG: the model is never asked, so this is no "no text"."""
+    """JBIG2 without jbig2dec, a broken JPEG: Tesseract is never asked, so this is no "no text"."""
     llm = Vision()
-    r = extract(Path("Scan_Zufahrt.pdf"), build_pdf([[jbig2_xobject()], [broken_jpeg_xobject()]]), llm=llm)
+    r = read_scans(Path("Scan_Zufahrt.pdf"), build_pdf([[jbig2_xobject()], [broken_jpeg_xobject()]]), llm)
     assert (r.status, r.incomplete, r.retry) == ("error", True, True)
     if shutil.which("jbig2dec") is None:  # as in the Docker image
         assert r.message == "Scan ohne Textebene – Bilder nicht lesbar: JBIG2-Bild, Programm jbig2dec nicht installiert"
     assert "Bilder nicht lesbar" in r.message and "keinen Text" not in r.message
     assert llm.calls == []
-    broken = extract(Path("x.pdf"), build_pdf([[broken_jpeg_xobject()]]), llm=llm)
+    broken = read_scans(Path("x.pdf"), build_pdf([[broken_jpeg_xobject()]]), llm)
     assert broken.message == "Scan ohne Textebene – Bilder nicht lesbar: Bilddaten beschädigt oder Format unbekannt"
     # next to readable pages: the document stays incomplete and is retried
-    mixed = extract(Path("x.pdf"), build_pdf([TEXT_PAGE, [jbig2_xobject()], [jpeg_xobject()]]), llm=Vision())
+    mixed = read_scans(Path("x.pdf"), build_pdf([TEXT_PAGE, [jbig2_xobject()], [jpeg_xobject()]]), Vision())
     assert (mixed.status, mixed.incomplete, mixed.retry) == ("ok", True, True)
     assert [p.number for p in mixed.pages] == [1, 3]
     assert mixed.message.startswith("1 Seite(n) ohne Textebene nicht gelesen (Bilder nicht lesbar")
@@ -186,7 +187,7 @@ def test_missing_pillow_is_a_retryable_failure(monkeypatch):
 
     monkeypatch.setattr(pypdf_images, "_xobj_to_image", no_pillow)
     llm = Vision()
-    r = extract(Path("scan.pdf"), pillow_scan_pdf(page_image("RGB")), llm=llm)
+    r = read_scans(Path("scan.pdf"), pillow_scan_pdf(page_image("RGB")), llm)
     assert (r.status, r.incomplete, r.retry) == ("error", True, True)
     assert r.message == "Scan ohne Textebene – Bilder nicht lesbar: Pillow nicht installiert"
     assert llm.calls == []
@@ -234,17 +235,16 @@ def _scan_row(conn):
                         "FROM documents WHERE filename = 'Scan_Auflagen.pdf'").fetchone()
 
 
-def test_scan_unreadable_without_pillow_is_read_once_it_is_installed(scan_project, monkeypatch):
+def test_scan_unreadable_without_pdfium_is_read_once_it_is_installed(scan_project, monkeypatch):
     conn, root = scan_project
     t0 = documents._utcnow()
     monkeypatch.setattr(documents, "_utcnow", lambda: t0)
     with monkeypatch.context() as m:
-        m.setattr(pypdf_images, "_xobj_to_image", lambda *a, **k: (_ for _ in ()).throw(
-            ImportError("pillow is required to do image extraction.")))
+        m.setattr(extract_mod, "_pdfium", lambda: None)  # the page cannot be rendered for the model
         index_all_documents(conn, llm=Vision(), projects_dir=root)
     row = _scan_row(conn)
     assert (row["status"], row["incomplete"], row["attempts"]) == ("error", 1, 1)
-    assert "Pillow nicht installiert" in row["message"]
+    assert "pypdfium2 nicht installiert" in row["message"]
     assert row["retry_after"] == documents._sqlite_time(t0 + timedelta(minutes=15))
 
     llm = Vision()

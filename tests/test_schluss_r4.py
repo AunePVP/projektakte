@@ -25,6 +25,7 @@ from projektakte.demo import generate
 from projektakte.extract import extract
 from projektakte.indexer import run_index
 from projektakte.startup import deadline_warnings
+from tests.scanlesen import read_scans
 
 from .conftest import fake_settings
 
@@ -317,7 +318,7 @@ def test_image_drawn_many_times_is_decoded_and_sent_once(monkeypatch):
     monkeypatch.setattr(extract_mod, "_page_payloads", counting)
     llm = _Vision()
     started = time.monotonic()
-    r = extract(Path("Plan.pdf"), pdf, llm=llm)
+    r = read_scans(Path("Plan.pdf"), pdf, llm)
     assert time.monotonic() - started < 5
     assert (r.status, r.incomplete) == ("ok", False)
     assert llm.calls == 1 and decodes["n"] == 1
@@ -336,7 +337,7 @@ def test_declared_huge_image_is_not_decoded():
     llm = _Vision()
     pdf = _repeat_pdf(_page_image((10, 10)), [(500, 0, 0, 500, 50, 50)], declared=(40_000, 40_000),
                       data=zlib.compress(b"\x00" * 100))
-    r = extract(Path("Bombe.pdf"), pdf, llm=llm)
+    r = read_scans(Path("Bombe.pdf"), pdf, llm)
     assert llm.calls == 0
     assert (r.status, r.incomplete, r.retry) == ("skipped", True, False)
     assert "Bilder zu groß (über 150 Megapixel je Seite)" in r.message
@@ -348,7 +349,7 @@ def test_more_different_images_than_the_page_limit(monkeypatch):
     monkeypatch.setattr(extract_mod, "MAX_PAGE_IMAGES", 4)
     original = page_scan()
     llm = Vision()
-    r = extract(Path("Streifen.pdf"), pdf([{"images": [(jpeg(s), m) for s, m in strips(original, 6)]}]), llm=llm)
+    r = read_scans(Path("Streifen.pdf"), pdf([{"images": [(jpeg(s), m) for s, m in strips(original, 6)]}]), llm)
     assert r.status == "ok" and r.incomplete and not r.retry
     assert len(llm.images) == 1  # the first four strips put together
     assert "2 Bild(er) nicht ausgewertet (mehr als 4 Bilder bzw. 150 Megapixel je Seite)" in r.message

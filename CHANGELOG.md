@@ -5,6 +5,19 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Das Bildmodell bekommt die Seite, wie ein PDF-Betrachter sie zeigt** (Fehler gefunden am Trainingsexport):
+  Bisher wurden die eingebetteten Bilder einer Seite zusammengesetzt. Dabei deckten Schablonenbilder (`/ImageMask`, 42
+  von 508 PDF-Seiten des Exports) die Seite mit weißen Rechtecken ab, `/Rotate` wurde nicht beachtet (Scans kamen quer
+  an), und auf Seiten mit Bild *und* Text oder Zeichnung fehlte alles außer den Bildern (CAD-Pläne als graue Flächen,
+  Seiten nur mit dem Logo). Anmerkungen und Formularfelder fehlten ganz. Jetzt zeichnet PDFium jede Seite in Farbe mit
+  `VISION_DPI` (höchstens 16 Megapixel), im Seitenrahmen (CropBox), gedreht, mit Anmerkungen und Formularfeldern – im
+  Leseprozess wie bei sofortigem Lesen. Tesseract liest in Stufe 1 weiter die eingebetteten Bilder (immer zu einem
+  Seitenbild zusammengesetzt). `EXTRACT_VERSION` 8; Migration 19 liest PDF-Dateien, deren Seiten das Modell schon gelesen
+  hat, noch einmal (Projektdateien und Mail-Anhänge).
+- **Export neu schreiben:** `python -m projektakte.ocr_testseiten --erneuern --ziel /data/training` schreibt die
+  PDF-Seitenbilder eines früheren Exports so neu, wie das Modell sie jetzt bekommt – unter denselben Nummern und Namen,
+  Texte, Korrekturen und Fotos bleiben.
+
 - **Feintuning in eigenes Repository `aunepvp/tune` verschoben:** Vorgabe, Vergleich, Entwürfe und Korrektur
   (`scripts/ocr_*.py`) liegen jetzt dort, mit eigener `CLAUDE.md` für eine eigene Sitzung. In Projektakte bleiben der
   Export der Seiten (`projektakte.ocr_testseiten`, auch `--training`) und `docs/feintuning.md` als Verweis.

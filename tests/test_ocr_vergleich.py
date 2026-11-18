@@ -6,9 +6,16 @@ import json
 from pathlib import Path
 
 from projektakte import extract as extract_mod
-from projektakte.ocr_testseiten import _candidates, _named, export
+from projektakte.ocr_testseiten import _candidates, _named, export, renew
 
-from .test_bildauswertung_stufen import Vision, _setup, _stage1, ocr_layer_scan, plain_scan
+from .test_bildauswertung_stufen import (
+    Vision,
+    _setup,
+    _stage1,
+    ocr_layer_scan,
+    plain_scan,
+)
+
 
 def test_export_writes_page_images_with_their_text(tmp_path, monkeypatch):
     monkeypatch.setattr(extract_mod, "ocr_available", lambda: True)
@@ -36,6 +43,34 @@ def test_export_writes_page_images_with_their_text(tmp_path, monkeypatch):
     again = export(conn, settings, tmp_path / "ocr-test", wanted[:1])
     images = sorted(p.name for p in (tmp_path / "ocr-test").iterdir() if p.suffix in (".jpg", ".png"))
     assert images == [again[0]["datei"]] and (tmp_path / "ocr-test" / "notiz.txt").exists()
+
+
+def test_renew_writes_the_pdf_pages_again_under_the_same_numbers(tmp_path, monkeypatch):
+    """An export whose pages were corrected meanwhile: the PDF page images are written again as the model gets
+    them now (rendered pages), under the same names – nothing renumbered, texts and other files untouched."""
+    monkeypatch.setattr(extract_mod, "ocr_available", lambda: True)
+    monkeypatch.setattr(extract_mod, "ocr_image", lambda data: "Seite gescannt Rauchabzug Treppenraum erkannt")
+    conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan(3)})
+    _stage1(conn, root, Vision())
+    settings = type("S", (), {"projects_dir": root})()
+    target = tmp_path / "training"
+    out = export(conn, settings, target, _candidates(conn, 10, seed=1))
+    first = out[0]
+    stem = Path(first["datei"]).stem
+    (target / f"{stem}.tesseract.txt").write_text("korrigiert", encoding="utf-8")
+    (target / f"{stem}.png").write_bytes(b"alt")  # an old image of another type under the same number
+    listed = json.loads((target / "seiten.json").read_text(encoding="utf-8"))
+    listed[0]["datei"], listed[0]["mime"] = f"{stem}.png", "image/png"
+    listed.append({"datei": "009_Foto_S1.jpg", "dokument": "Foto.jpg", "seite": 1, "mime": "image/jpeg"})
+    (target / "seiten.json").write_text(json.dumps(listed), encoding="utf-8")
+    (target / "009_Foto_S1.jpg").write_bytes(b"foto")
+    assert renew(conn, settings, target) == (len(out), 0)
+    again = json.loads((target / "seiten.json").read_text(encoding="utf-8"))
+    assert [e["datei"] for e in again[:-1]] == [e["datei"] for e in out]  # same numbers and names
+    assert all(e["mime"] == "image/jpeg" for e in again[:-1])  # rendered pages, in colour
+    assert not (target / f"{stem}.png").exists() and (target / first["datei"]).stat().st_size > 100
+    assert (target / f"{stem}.tesseract.txt").read_text(encoding="utf-8") == "korrigiert"
+    assert (target / "009_Foto_S1.jpg").read_bytes() == b"foto" and again[-1]["datei"] == "009_Foto_S1.jpg"
 
 
 def test_pages_from_cad_and_bilder_folders_are_left_out(tmp_path, monkeypatch):

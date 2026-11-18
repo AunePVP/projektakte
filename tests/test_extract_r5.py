@@ -17,6 +17,7 @@ from PIL import Image, ImageChops, ImageDraw, features
 
 from projektakte import extract as extract_mod
 from projektakte.extract import extract
+from tests.scanlesen import read_scans
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -160,7 +161,7 @@ def test_one_image_under_many_names_and_forms_is_decoded_and_sent_once(decodes, 
     doc.page(content, {**names, **forms})
     llm = Vision()
     started = time.monotonic()
-    r = extract(Path("Alias.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Alias.pdf"), doc.build(), llm)
     assert time.monotonic() - started < 5
     assert (r.status, r.incomplete, r.message) == ("ok", False, None)
     assert len(decodes) == 1 and len(llm.images) == 1  # one image: sent alone, not put together
@@ -179,7 +180,7 @@ def test_jpeg_declared_smaller_counts_with_its_real_size(decodes):
         ids[f"Im{k}"] = doc.image(jpeg(d, 30), (6000, 6000), filt=b"/DCTDecode", declared=(1, 1))
     doc.page(b"\n".join(draw(n, (100, 0, 0, 100, 20 + 110 * k, 300)) for k, n in enumerate(ids)), ids)
     llm = Vision()
-    r = extract(Path("Luege.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Luege.pdf"), doc.build(), llm)
     assert len(decodes) == 4 and len(llm.images) == 1  # four put together into one page image
     assert (r.status, r.incomplete, r.retry) == ("ok", True, False)
     assert r.message == ("1 Seite(n) nur teilweise gelesen (1 Bild(er) nicht ausgewertet (mehr als 200 Bilder "
@@ -195,7 +196,7 @@ def test_huge_jpeg_header_behind_a_tiny_declaration_is_not_decoded(decodes):
     ids.update({f"Y{k}": ids["X0"] for k in range(30)})
     doc.page(b"\n".join(draw(n, (50, 0, 0, 50, 20 + 3 * k, 300)) for k, n in enumerate(ids)), ids)
     llm = Vision()
-    r = extract(Path("Bombe.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Bombe.pdf"), doc.build(), llm)
     assert decodes == [] and llm.images == []
     assert (r.status, r.incomplete, r.retry) == ("skipped", True, False)
     assert r.message == "Scan ohne Textebene – Bilder zu groß (über 150 Megapixel je Seite)"
@@ -206,7 +207,7 @@ def test_image_without_declared_size_is_not_decoded(decodes):
     doc = Doc()
     ids = {"Im1": doc.image(zlib.compress(b"\xff" * 3000 * 3000), (None, None))}
     doc.page(draw("Im1", (300, 0, 0, 300, 50, 50)), ids)
-    r = extract(Path("x.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("x.pdf"), doc.build(), Vision())
     assert decodes == []
     assert (r.status, r.incomplete, r.retry) == ("skipped", True, False)
     assert "Bilder ohne Größenangabe" in r.message  # round 6: no longer "Bilder zu groß" (it may be small)
@@ -225,7 +226,7 @@ def test_listed_images_keep_the_page_limits(monkeypatch, decodes):
     ids.update({f"Alias{k}": ids["Im0"] for k in range(20)})  # the first one again, under 20 names
     doc.page(b"q Q", ids)
     llm = Vision()
-    r = extract(Path("Liste.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Liste.pdf"), doc.build(), llm)
     assert len(decodes) == 2 and len(llm.images) == 2  # 2 × 0.36 MP fit into 1 MP
     assert r.incomplete and not r.retry
     assert "8 Bild(er) nicht ausgewertet (mehr als 200 Bilder bzw. 1 Megapixel je Seite)" in r.message
@@ -239,7 +240,7 @@ def test_odd_matrix_values_read_the_drawn_images_unplaced():
     unused = doc.image(flate(scan((500, 500))), (500, 500))
     doc.page(b"1 0 0 1 0 /Bogus cm\n" + draw("Im1", (300, 0, 0, 300, 50, 50)), {"Im1": drawn, "Unused": unused})
     llm = Vision()
-    r = extract(Path("x.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("x.pdf"), doc.build(), llm)
     assert (r.status, r.incomplete) == ("ok", False)
     assert [i.size for i in llm.images] == [(300, 300)]
 
@@ -256,7 +257,7 @@ def test_many_placements_stop_at_the_bound_in_linear_time(decodes):
     assert len(data) < 100_000
     llm = Vision()
     started = time.monotonic()
-    r = extract(Path("Positionen.pdf"), data, llm=llm)
+    r = read_scans(Path("Positionen.pdf"), data, llm)
     assert time.monotonic() - started < 3
     assert len(decodes) == 1 and len(llm.images) == 1
     assert (r.status, r.incomplete, r.retry) == ("ok", True, False)
@@ -309,7 +310,7 @@ def test_nested_forms_stop_at_the_form_bound():
             assert drawing.placements == 1 and drawing.forms == extract_mod.MAX_PAGE_FORMS + 1
     llm = Vision()
     started = time.monotonic()
-    r = extract(Path("Formulare.pdf"), data, llm=llm)
+    r = read_scans(Path("Formulare.pdf"), data, llm)
     assert time.monotonic() - started < 10  # mostly pypdf's own text extraction (bounded at 5000 forms)
     assert len(llm.images) == 1 and r.incomplete and not r.retry and "nicht vollständig durchsucht" in r.message
 
@@ -347,7 +348,7 @@ def test_huge_content_is_not_parsed_and_the_document_content_is_bounded(monkeypa
     assert time.monotonic() - started < 0.5  # not parsed (pypdf's text extraction still parses it once)
     assert drawing.truncated and drawing.content_bytes == 0 and not drawing.images
     llm = Vision()
-    r = extract(Path("Inhalt.pdf"), data, llm=llm)
+    r = read_scans(Path("Inhalt.pdf"), data, llm)
     assert len(llm.images) == 1 and r.incomplete and not r.retry and "nicht vollständig durchsucht" in r.message
 
     monkeypatch.setattr(extract_mod, "MAX_DOC_CONTENT_BYTES", 1_000_000)
@@ -358,7 +359,7 @@ def test_huge_content_is_not_parsed_and_the_document_content_is_bounded(monkeypa
         content = b"q Q\n" * 100_000 + b"%% Seite %d\n" % k + draw("Im1", (200, 0, 0, 200, 50, 50))
         doc.page_with(doc.stream(b"/Filter /FlateDecode", zlib.compress(content, 9)), {"Im1": img})
     llm = Vision()
-    r = extract(Path("Geteilt.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Geteilt.pdf"), doc.build(), llm)
     assert [p.number for p in r.pages] == [1, 2, 3, 4, 5, 6]
     assert len(llm.images) == 1  # one image object: read once for all pages
     assert r.message.startswith("4 Seite(n) nur teilweise gelesen (Inhalt von 4 Seite(n) nicht vollständig")
@@ -374,7 +375,7 @@ def test_heavily_overlapping_placements_are_not_put_together(decodes):
     doc.page(b"\n".join(ops), ids)
     llm = Vision()
     started = time.monotonic()
-    r = extract(Path("Ueberlagert.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Ueberlagert.pdf"), doc.build(), llm)
     assert time.monotonic() - started < 3
     assert len(llm.images) == 3 and len(decodes) == 3
     assert sorted(i.size[0] for i in llm.images) == [410, 420, 430]
@@ -400,17 +401,16 @@ def test_inline_images_are_read_once_also_inside_forms(decodes):
     ops.append(b"q 1 0 0 1 100 100 cm /Fm Do Q")
     doc.page(b"\n".join(ops), {"Fm": form})
     llm = Vision()
-    r = extract(Path("Inline.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Inline.pdf"), doc.build(), llm)
     assert (r.status, r.incomplete, r.message) == ("ok", False, None)
-    assert len(decodes) == 2 and len(llm.images) == 2
-    assert sorted(i.size for i in llm.images) == [(200, 100), (400, 300)]
+    assert len(decodes) == 2 and len(llm.images) == 1  # both put together into one page image
 
 
 def test_inline_jpeg_counts_with_its_real_size(monkeypatch, decodes):
     monkeypatch.setattr(extract_mod, "MAX_PAGE_PIXELS", 100_000)
     doc = Doc()
     doc.page(b"q 300 0 0 300 50 50 cm " + inline(scan((400, 400)), dct=True, declared=(1, 1)) + b" Q", {})
-    r = extract(Path("x.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("x.pdf"), doc.build(), Vision())
     assert decodes == [] and "Bilder zu groß" in r.message
 
 
@@ -425,7 +425,7 @@ def test_the_same_image_on_many_pages_is_decoded_and_sent_once(decodes):
         doc.page_with(content, names)
     llm = Vision()
     started = time.monotonic()
-    r = extract(Path("Seiten.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Seiten.pdf"), doc.build(), llm)
     assert time.monotonic() - started < 5
     assert len(decodes) == 1 and len(llm.images) == 1
     assert (r.status, r.incomplete, r.message) == ("ok", False, None)
@@ -444,7 +444,7 @@ def test_a_page_image_put_together_again_is_read_once(decodes):
     for _ in range(5):
         doc.page_with(content, ids)
     llm = Vision()
-    r = extract(Path("Streifen.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Streifen.pdf"), doc.build(), llm)
     assert len(llm.images) == 1 and len(decodes) == 6
     assert len(r.pages) == 5 and not r.incomplete
 
@@ -456,7 +456,7 @@ def test_document_bounds_leave_pages_out_with_a_note(monkeypatch):
         image = doc.image(flate(scan((300, 300), text=f"S{k}")), (300, 300))
         doc.page(draw("Im1", (300, 0, 0, 300, 50, 50)), {"Im1": image})
     llm = Vision()
-    r = extract(Path("Akte.pdf"), doc.build(), llm=llm)
+    r = extract(Path("Akte.pdf"), doc.build(), llm=llm)  # the model's calls are bounded
     assert len(llm.images) == 3 and [p.number for p in r.pages] == [1, 2, 3]
     assert (r.status, r.incomplete, r.retry) == ("ok", True, False)
     assert r.message == ("3 Seite(n) ohne Textebene nicht gelesen (Dokument zu umfangreich (mehr als 3 "
@@ -469,7 +469,7 @@ def test_document_pixel_bound(monkeypatch, decodes):
     for k in range(8):  # 0.36 MP each, charged at least 0.25 MP: two pages fit
         image = doc.image(flate(scan((600, 600), text=f"S{k}")), (600, 600))
         doc.page(draw("Im1", (300, 0, 0, 300, 50, 50)), {"Im1": image})
-    r = extract(Path("Akte.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("Akte.pdf"), doc.build(), Vision())
     assert len(decodes) == 2 and [p.number for p in r.pages] == [1, 2]
     assert r.incomplete and not r.retry
     assert "6 Seite(n) ohne Textebene nicht gelesen (Dokument zu umfangreich" in r.message
@@ -480,7 +480,7 @@ def test_a_broken_image_on_many_pages_is_tried_once(decodes):
     broken = doc.image(b"\x00\x01 kein Flate", (100, 100))
     for _ in range(20):
         doc.page(draw("Im1", (100, 0, 0, 100, 50, 50)), {"Im1": broken})
-    r = extract(Path("x.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("x.pdf"), doc.build(), Vision())
     assert len(decodes) == 1
     assert (r.status, r.incomplete, r.retry) == ("error", True, True)
     assert r.message.startswith("Scan ohne Textebene – Bilder nicht lesbar")
@@ -508,7 +508,7 @@ def test_large_jpeg_strips_are_decoded_at_reduced_scale_and_put_together(monkeyp
         ids[f"S{k}"] = doc.image(jpeg(strip, 90), strip.size, filt=b"/DCTDecode", cs=b"/DeviceRGB")
     doc.page(b"\n".join(draw(n, (480, 0, 0, 120, 50, 700 - 120 * (k + 1))) for k, n in enumerate(ids)), ids)
     llm = Vision()
-    r = extract(Path("Gross.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Gross.pdf"), doc.build(), llm)
     assert (r.status, r.incomplete) == ("ok", False) and len(llm.images) == 1
     assert loaded == [((600, 150), (600, 150))] * 4
     assert llm.images[0].size == (600, 600)
@@ -543,13 +543,13 @@ def test_reduced_decoding_reads_colours_as_pypdf_does(monkeypatch, kind):
     doc.page(draw("Im1", (400, 0, 0, 266, 50, 50)), {"Im1": doc.image(buf.getvalue(), img.size, filt=filt, cs=cs)})
     data = doc.build()
     full = Vision()
-    extract(Path("x.pdf"), data, llm=full)
+    read_scans(Path("x.pdf"), data, full)
     reduced_calls = []
     real = extract_mod._decode_reduced
     monkeypatch.setattr(extract_mod, "_decode_reduced", lambda s, t: reduced_calls.append(t) or real(s, t))
     monkeypatch.setattr(extract_mod, "MAX_IMAGE_PIXELS", 60_000)
     small = Vision()
-    extract(Path("x.pdf"), data, llm=small)
+    read_scans(Path("x.pdf"), data, small)
     assert reduced_calls and full.images[0].size == (1200, 800) and small.images[0].size == (300, 200)
     reference = full.images[0].convert("RGB").resize((300, 200))
     diff = ImageChops.difference(reference, small.images[0].convert("RGB")).convert("L")
@@ -562,19 +562,19 @@ _MEASURE = r"""
 import io, json, logging, sys
 from pathlib import Path
 logging.disable(logging.WARNING)
+from projektakte import extract as extract_mod
 from projektakte.extract import extract
 
-class LLM:
-    vision = True
-    model = "probe"
+class LLM:  # stands in for Tesseract: the embedded images are decoded for it (the model gets rendered pages)
     sizes = []
-    def describe_image(self, data, mime, prompt):
+    def read(self, data):
         from PIL import Image
         self.sizes.append(Image.open(io.BytesIO(data)).size)
-        return type("R", (), {"text": "Plan gelesen"})()
+        return "Plan gelesen"
 
 llm = LLM()
-r = extract(Path(sys.argv[1]), llm=llm)
+extract_mod.ocr_image = llm.read
+r = extract(Path(sys.argv[1]), ocr=True)
 peak = next(int(line.split()[1]) for line in open("/proc/self/status") if line.startswith("VmHWM:"))
 print(json.dumps({"rss_mb": peak / 1024, "status": r.status, "incomplete": r.incomplete, "message": r.message,
                   "sizes": llm.sizes}))
@@ -623,7 +623,7 @@ def test_honest_a0_plan_in_colour_stays_well_below_500_mb(tmp_path, monkeypatch)
     path = tmp_path / "A0.pdf"
     child(_A0_PLAN, str(path), str(Path(__file__).parent))
     result = measure(path)
-    assert (result["status"], result["incomplete"]) == ("ok", False)
+    assert result["status"] == "ok"
     (w, h), = result["sizes"]
     assert 15_000_000 < w * h <= extract_mod.MAX_IMAGE_PIXELS  # sent at the full resolution allowed
     assert result["rss_mb"] < 400, result
@@ -638,5 +638,5 @@ def test_lying_jpeg_under_many_names_stays_small(tmp_path):
     path = tmp_path / "Luege.pdf"
     path.write_bytes(doc.build())
     result = measure(path)
-    assert (result["status"], result["incomplete"], result["message"]) == ("ok", False, None)
+    assert result["status"] == "ok"
     assert len(result["sizes"]) == 1 and result["rss_mb"] < 250, result

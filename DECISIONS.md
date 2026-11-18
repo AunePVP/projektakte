@@ -1357,3 +1357,16 @@ Hand indexiert?“:
   `CLAUDE.md`). Ein eigenes Repository, weil Training andere Technik (PyTorch, Trainingswerkzeuge, ARM-Container) und
   einen anderen Rhythmus hat; in Projektakte bleiben der Export der Seiten und der spätere Einbau.
 
+## Das Modell sieht die Seite, nicht ihre Bilder
+
+Bis Version 7 bekam das Bildmodell bei Seiten mit eingebetteten Bildern nur diese Bilder, an ihren Stellen
+zusammengesetzt; gezeichnet wurde nur eine Seite ganz ohne Bild. Am Trainingsexport (599 Seiten) zeigte sich, dass das
+für viele Seiten falsch ist: Schablonenbilder (`/ImageMask`) wurden deckend eingesetzt, `/Rotate` ignoriert, und Text,
+Vektorzeichnung, Anmerkungen und Formularfelder neben den Bildern fehlten (160 Seiten mit Bild und Sichtbarem daneben).
+Jeden dieser Fälle einzeln nachzubauen hieße, einen PDF-Betrachter nachzubauen. Entscheidung des Nutzers: Jede PDF-Seite
+wird für das Modell so gezeichnet, wie ein Betrachter sie zeigt (PDFium; RGB, `VISION_DPI`, höchstens
+`MAX_IMAGE_PIXELS`, mit Anmerkungen und Formularfeldern) – kein Zusammensetzen eingebetteter Bilder mehr, auch nicht als
+schnellerer Sonderfall für reine Scans. Das kostet bei Scans etwas Rechenzeit im Leseprozess, die gegenüber dem
+Modellaufruf nicht ins Gewicht fällt. Das Zusammensetzen der Bilder bleibt nur für Tesseract (Stufe 1, volle Auflösung
+der Scans) und für das Erkennen von Scan-Seiten; seine Grenzen gegen präparierte PDF-Dateien gelten dort weiter.
+

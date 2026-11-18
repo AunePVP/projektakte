@@ -63,7 +63,7 @@ def test_the_phase_gets_the_page_at_vision_dpi(monkeypatch):
     assert w * h <= A4_150 * 1.01 and w > 1000
     monkeypatch.setenv("VISION_DPI", "0")  # off: as before, up to MAX_IMAGE_PIXELS
     (page,) = page_images(pdf, [1], "Scan.pdf")
-    assert _size(page.images[0][1]) == (2480, 3508)
+    assert _size(page.images[0][1]) == (2479, 3508)  # the page rendered at 300 dpi
 
 
 def test_tesseract_keeps_the_full_image(monkeypatch):

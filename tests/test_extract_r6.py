@@ -22,6 +22,7 @@ from projektakte.ai.llm import LLMClient
 from projektakte.config import load_settings
 from projektakte.extract import extract
 from projektakte.extract_worker import ExtractionAborted, ExtractWorker, Limits
+from tests.scanlesen import read_scans
 
 from .conftest import fake_settings
 from .test_extract_r5 import Doc, Vision, child, draw, flate, grid, jpeg, measure, scan
@@ -159,7 +160,7 @@ def test_llm_client_is_rebuilt_from_its_configuration():
 
 # -- the worker ----------------------------------------------------------------------------------------------------
 def test_isolated_extraction_gives_the_same_results(fake_ai, worker):
-    """Text PDF, strip scan read by the vision model, Word, mail: identical with and without isolation,
+    """Text PDF, strip scan read by the vision model (the rendered page), Word, mail: identical with and without isolation,
     in one reused worker process."""
     llm = vision_llm(fake_ai)
     w = worker()
@@ -195,10 +196,9 @@ def test_memory_limit_keeps_the_app_small(worker):
     w = worker(memory_mb=256)
     w.extract("warm.pdf", text_pdf(), None)  # the worker runs; the app's memory from here on
     before = rss_mb()
-    # the image is too large before the model is called: an unreachable one does not matter
-    r = w.extract("Gross.pdf", raw_rgb_pdf(), LLMClient("http://127.0.0.1:9/v1", "m", vision=True, timeout=1))
+    # Tesseract's image of the page is decoded from the embedded image (the model gets the rendered page)
+    r = w.extract("Gross.pdf", raw_rgb_pdf(), None, ocr=True)
     assert (r.status, r.incomplete, r.retry) == ("skipped", True, False)
-    assert r.message == "Scan ohne Textebene – Bilder zu groß zum Lesen (Speicher- oder Datengrenze überschritten)"
     assert rss_mb() - before < 40
     assert w.extract("Konzept.pdf", text_pdf(), None).status == "ok"
 
@@ -299,7 +299,6 @@ def test_worker_log_records_and_model_errors_reach_the_app(fresh_fake_ai, worker
         r = worker().extract("Scan.pdf", doc.build(), llm)
     assert (r.status, r.retry) == ("error", True)
     messages = [(rec.name, rec.getMessage()) for rec in caplog.records]
-    assert any(name == "projektakte.extract" and "Bild nicht lesbar" in text for name, text in messages)
     assert any(name == "projektakte.extract" and "Bildauswertung fehlgeschlagen" in text for name, text in messages)
     assert llm.last_error and "500" in llm.last_error  # the status page shows the model's last error
 
@@ -414,7 +413,7 @@ def test_a_soft_mask_counts_against_the_page_limit(monkeypatch, decodes):
     doc = Doc()
     mask = doc.image(jpeg(scan((1200, 1200))), (10, 10), filt=b"/DCTDecode")  # declared small, really 1.4 MP
     doc.page(draw("Im1", (300, 0, 0, 300, 50, 50)), {"Im1": masked_image(doc, mask)})
-    r = extract(Path("Maske.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("Maske.pdf"), doc.build(), Vision())
     assert decodes == []
     assert (r.status, r.retry) == ("skipped", False)
     assert r.message == "Scan ohne Textebene – Bilder zu groß (über 1 Megapixel je Seite)"
@@ -432,7 +431,7 @@ def test_a_soft_mask_is_applied_onto_white():
                      b"/Filter /FlateDecode /SMask %d 0 R" % (w, h, mask), zlib.compress(b"\x00" * (w * h * 3)))
     doc.page(draw("Im1", (400, 0, 0, 200, 50, 50)), {"Im1": ink})
     llm = Vision()
-    r = extract(Path("Stempel.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Stempel.pdf"), doc.build(), llm)
     assert r.status == "ok"
     sent = llm.images[0].convert("L")
     assert sent.getpixel((10, 10)) > 240 and sent.getpixel((200, 100)) < 20  # white around, ink inside
@@ -450,7 +449,7 @@ def test_one_mask_shared_by_many_images_is_decoded_once(monkeypatch):
     monkeypatch.setattr(extract_mod, "_decode_stream",
                         lambda stream, size, *a: sizes.append(size) or real(stream, size, *a))
     llm = Vision()
-    r = extract(Path("Geteilt.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Geteilt.pdf"), doc.build(), llm)
     assert (r.status, r.incomplete) == ("ok", False) and len(llm.images) == 1
     assert sizes.count((1600, 1600)) == 1 and len(sizes) == 201
 
@@ -467,7 +466,7 @@ def test_masks_of_masks_are_not_followed(monkeypatch):
     real = extract_mod._decode_stream
     monkeypatch.setattr(extract_mod, "_decode_stream",
                         lambda stream, size, *a: sizes.append(size) or real(stream, size, *a))
-    r = extract(Path("Kette.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("Kette.pdf"), doc.build(), Vision())
     assert r.status == "ok" and (2000, 2000) not in sizes
 
 
@@ -496,7 +495,7 @@ def test_jpeg2000_with_a_decode_array_is_decoded_at_reduced_scale_with_pypdfs_co
     monkeypatch.setattr(extract_mod, "_decode_reduced", lambda s, t: reduced.append(t) or real(s, t))
     monkeypatch.setattr(extract_mod, "MAX_IMAGE_PIXELS", 60_000)
     llm = Vision()
-    assert extract(Path("x.pdf"), data, llm=llm).status == "ok"
+    assert read_scans(Path("x.pdf"), data, llm).status == "ok"
     assert reduced == [(300, 200)] and llm.images[0].size == (300, 200)
     stream = PdfReader(io.BytesIO(data)).pages[0]["/Resources"]["/XObject"]["/Im1"]
     reference = _xobj_to_image(stream)[2].convert("RGB").resize((300, 200))
@@ -522,7 +521,7 @@ def test_masked_jpeg_is_decoded_at_reduced_scale_not_reencoded(monkeypatch):
                      jpeg(scan((1200, 800), mode="RGB")))
     doc.page(draw("Im1", (400, 0, 0, 266, 50, 50)), {"Im1": img})
     llm = Vision()
-    assert extract(Path("x.pdf"), doc.build(), llm=llm).status == "ok"
+    assert read_scans(Path("x.pdf"), doc.build(), llm).status == "ok"
     assert all(s.get("/Filter") != "/DCTDecode" for s in calls)  # only the small Flate mask went through pypdf
     assert llm.images[0].size[0] * llm.images[0].size[1] <= 100_000
 
@@ -582,7 +581,7 @@ def test_vector_drawings_are_blank_pages_and_use_no_content_bound(monkeypatch):
     monkeypatch.setattr(extract_mod, "MAX_DOC_CONTENT_BYTES", 1_000_000)
     doc = Doc()
     doc.page(vector_content(500), {}, compress=True)
-    r = extract(Path("CAD.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("CAD.pdf"), doc.build(), Vision())
     assert (r.status, r.incomplete, r.message) == ("empty", False, "kein Text gefunden")
 
     doc = Doc()
@@ -592,7 +591,7 @@ def test_vector_drawings_are_blank_pages_and_use_no_content_bound(monkeypatch):
     for k in range(3):
         doc.page(draw("Im1", (400, 0, 0, 300, 50 + k, 400)), {"Im1": img})
     llm = Vision()
-    r = extract(Path("Gemischt.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Gemischt.pdf"), doc.build(), llm)
     assert (r.status, r.incomplete, r.message) == ("ok", False, None)
     assert [p.number for p in r.pages] == [5, 6, 7]
 
@@ -603,10 +602,10 @@ def test_large_content_with_an_inline_image_is_still_walked(monkeypatch):
     inline = b"q 60 0 0 40 50 50 cm BI /W 60 /H 40 /CS /G /BPC 8 ID " + small.tobytes() + b" EI Q\n"
     doc = Doc()
     doc.page(vector_content(500) + inline, {}, compress=True)
-    r = extract(Path("Inline.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("Inline.pdf"), doc.build(), Vision())
     assert r.status == "ok"  # rendered by PDFium and read whole
     monkeypatch.setattr(extract_mod, "_pdfium", lambda: None)
-    r = extract(Path("Inline.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("Inline.pdf"), doc.build(), Vision())
     assert r.status == "skipped" and "Seiteninhalt zu umfangreich" in r.message  # not known to be blank
 
 
@@ -616,7 +615,7 @@ def test_an_image_without_size_is_named_as_such_in_the_note():
     unsized = doc.image(zlib.compress(b"\x80" * 90_000), (None, None))
     doc.page(draw("A", (400, 0, 0, 300, 50, 400)) + b"\n" + draw("B", (300, 0, 0, 300, 50, 50)),
              {"A": good, "B": unsized})
-    r = extract(Path("x.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("x.pdf"), doc.build(), Vision())
     assert (r.status, r.incomplete, r.retry) == ("ok", True, False)
     assert r.message == "1 Seite(n) nur teilweise gelesen (1 Bild(er) ohne Größenangabe nicht ausgewertet)"
 
@@ -632,7 +631,7 @@ def test_image_over_pypdfs_data_limit_is_too_big_and_not_retried(monkeypatch):
                      b"<FFFFFF000000>] /BitsPerComponent 1 /Filter /FlateDecode" % (w, h),
                      zlib.compress(b"\x00" * ((w + 7) // 8 * h)))
     doc.page(draw("Im1", (595, 0, 0, 842, 0, 0)), {"Im1": img})
-    r = extract(Path("Plan.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("Plan.pdf"), doc.build(), Vision())
     assert (r.status, r.incomplete, r.retry) == ("skipped", True, False)
     assert r.message == "Scan ohne Textebene – Bilder zu groß zum Lesen (Speicher- oder Datengrenze überschritten)"
 
@@ -644,7 +643,7 @@ def test_decodings_are_charged_by_their_work(monkeypatch, decodes):
     doc = Doc()
     names = {f"B{k}": doc.image(zlib.compress(bytes([k]) * 8_000_000, 9), (10, 10)) for k in range(30)}
     doc.page(b"\n".join(draw(n, m) for n, m in zip(names, grid(30))), names)
-    r = extract(Path("Bombe.pdf"), doc.build(), llm=Vision())
+    r = read_scans(Path("Bombe.pdf"), doc.build(), Vision())
     assert len(decodes) <= 8
     assert r.incomplete and not r.retry and "je Dokument" in r.message
 
@@ -663,7 +662,7 @@ def test_pages_with_the_same_content_are_read_once(monkeypatch):
     monkeypatch.setattr(extract_mod, "_drawn_images", lambda page, d=None: walks.append(1) or real(page, d))
     llm = Vision()
     started = time.monotonic()
-    r = extract(Path("Wiederholt.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("Wiederholt.pdf"), doc.build(), llm)
     assert time.monotonic() - started < 10
     assert (r.status, len(r.pages), len(llm.images), len(walks)) == ("ok", 200, 1, 1)
 
@@ -673,7 +672,7 @@ def test_memory_errors_are_too_big_to_read_without_retry(monkeypatch):
         raise MemoryError
 
     monkeypatch.setattr(extract_mod, "_decode_stream", no_memory)
-    r = extract(Path("Scan.pdf"), scan_pages_pdf(), llm=Vision())
+    r = read_scans(Path("Scan.pdf"), scan_pages_pdf(), Vision())
     assert (r.status, r.incomplete, r.retry) == ("skipped", True, False)
     assert "Bilder zu groß zum Lesen" in r.message
     monkeypatch.setattr(extract_mod, "_docx", no_memory)
@@ -710,5 +709,5 @@ def test_a_broken_soft_mask_leaves_the_image_readable(mask_data):
                      b"/BitsPerComponent 8 /Filter /DCTDecode /SMask %d 0 R" % mask, jpeg(scan((300, 300))))
     doc.page(draw("Im1", (300, 0, 0, 300, 50, 50)), {"Im1": img})
     llm = Vision()
-    r = extract(Path("x.pdf"), doc.build(), llm=llm)
+    r = read_scans(Path("x.pdf"), doc.build(), llm)
     assert (r.status, r.incomplete, r.retry) == ("ok", False, False) and len(llm.images) == 1

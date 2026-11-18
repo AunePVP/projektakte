@@ -14,6 +14,7 @@ from projektakte.documents import index_all_documents
 from projektakte.extract import MAX_IMAGES_PER_PAGE, extract, mime_text
 from projektakte.mails.model import parse_eml
 from projektakte.registry import scan_projects, sync_projects
+from tests.scanlesen import read_scans
 
 
 # -- PDF builder with free placement ------------------------------------------------------------------
@@ -142,8 +143,8 @@ def test_strip_scan_is_put_together_into_one_page_image():
     original = page_scan()
     data = pdf([{"images": [(jpeg(s), m) for s, m in strips(original, 8)]}])
     llm = Vision()
-    r = extract(Path("Streifen.pdf"), data, llm=llm)
-    assert (r.status, r.method, r.incomplete, r.retry, r.message) == ("ok", "vision", False, False, None)
+    r = read_scans(Path("Streifen.pdf"), data, llm)
+    assert (r.status, r.method, r.incomplete, r.retry, r.message) == ("ok", "text", False, False, None)
     assert len(llm.images) == 1  # one call for the whole page, not 3 of 8 strips
     sent = llm.images[0]
     assert abs(sent.size[0] / sent.size[1] - 480 / 640) < 0.02
@@ -162,7 +163,7 @@ def test_tiles_of_different_formats_and_an_image_inside_a_form():
             tiles.append((x, (100, 0, 0, 100, 100 + col * 100, 600 - (row + 1) * 100)))
     tiles.append((jpeg(original.crop((0, 0, 50, 50))), (5, 0, 0, 5, 100, 600)))  # tiny logo above
     llm = Vision()
-    r = extract(Path("Kacheln.pdf"), pdf([{"images": tiles, "form": True}]), llm=llm)
+    r = read_scans(Path("Kacheln.pdf"), pdf([{"images": tiles, "form": True}]), llm)
     assert (r.status, r.incomplete, r.message) == ("ok", False, None)
     assert len(llm.images) == 1
     sent = llm.images[0].convert("RGB")
@@ -178,7 +179,7 @@ def test_rotated_placement_is_turned_back():
     llm = Vision()
     images = [(jpeg(original), turned)] + [(jpeg(page_scan((60, 60))), (30, 0, 0, 30, 450 + 40 * k, 700))
                                            for k in range(3)]
-    r = extract(Path("Quer.pdf"), pdf([{"images": images}]), llm=llm)
+    r = read_scans(Path("Quer.pdf"), pdf([{"images": images}]), llm)
     assert r.status == "ok" and len(llm.images) == 1
     sent = llm.images[0].convert("RGB")
     # the big image fills the left part of the page image: turned counter-clockwise like on the page
@@ -194,7 +195,7 @@ def test_images_that_cannot_be_put_together_leave_the_page_incomplete():
     images = [(jpeg(page_scan((200 + 20 * k, 200))), (100, 0, 0, 100, 50, 50 + 110 * k)) for k in range(5)]
     images.append((jpeg(page_scan((100, 100))), skew))
     llm = Vision()
-    r = extract(Path("Schief.pdf"), pdf([{"images": images}]), llm=llm)
+    r = read_scans(Path("Schief.pdf"), pdf([{"images": images}]), llm)
     assert (r.status, r.incomplete, r.retry) == ("ok", True, False)
     assert len(llm.images) == MAX_IMAGES_PER_PAGE
     assert sorted(i.size[0] for i in llm.images) == [240, 260, 280]  # the largest ones
@@ -205,10 +206,9 @@ def test_images_that_cannot_be_put_together_leave_the_page_incomplete():
 # -- partly read pages --------------------------------------------------------------------------------
 def test_page_with_one_unreadable_image_is_incomplete_and_retried():
     llm = Vision()
-    r = extract(Path("x.pdf"), pdf([{"images": [(broken(), (200, 0, 0, 200, 50, 50)),
-                                                  (grey(page_scan((200, 200))), (200, 0, 0, 200, 300, 50))]}]),
-                llm=llm)
-    assert (r.status, r.method, r.incomplete, r.retry) == ("ok", "vision", True, True)
+    r = read_scans(Path("x.pdf"), pdf([{"images": [(broken(), (200, 0, 0, 200, 50, 50)),
+                                                     (grey(page_scan((200, 200))), (200, 0, 0, 200, 300, 50))]}]), llm)
+    assert (r.status, r.method, r.incomplete, r.retry) == ("ok", "text", True, True)
     assert len(llm.images) == 1 and "Rauchabzug" in r.text
     assert r.message == ("1 Seite(n) nur teilweise gelesen (1 Bild(er) nicht lesbar: Bilddaten beschädigt oder "
                          "Format unbekannt)")
@@ -218,27 +218,19 @@ def test_strip_scan_with_a_broken_strip_is_put_together_but_incomplete():
     parts = strips(page_scan(), 5)
     images = [(broken() if k == 2 else jpeg(s), m) for k, (s, m) in enumerate(parts)]
     llm = Vision()
-    r = extract(Path("x.pdf"), pdf([{"images": images}]), llm=llm)
+    r = read_scans(Path("x.pdf"), pdf([{"images": images}]), llm)
     assert len(llm.images) == 1
     assert (r.status, r.incomplete, r.retry) == ("ok", True, True)
     assert "1 Bild(er) nicht lesbar" in r.message
 
 
-def test_failed_model_call_for_one_image_is_incomplete_and_retried():
+def test_failed_model_call_for_one_page_is_incomplete_and_retried():
     llm = Vision(["Grundriss", RuntimeError("timeout")])
-    r = extract(Path("x.pdf"), pdf([{"images": [(jpeg(page_scan((200, 200))), (200, 0, 0, 200, 50, 50)),
-                                                  (jpeg(page_scan((200, 200))), (200, 0, 0, 200, 300, 50))]}]),
+    r = extract(Path("x.pdf"), pdf([{"images": [(jpeg(page_scan((200, 200))), (200, 0, 0, 200, 50, 50))]},
+                                    {"images": [(jpeg(page_scan((200, 200))), (200, 0, 0, 200, 300, 50))]}]),
                 llm=llm)
     assert (r.status, r.incomplete, r.retry) == ("ok", True, True) and r.text == "Grundriss"
-    assert r.message == "1 Seite(n) nur teilweise gelesen (1 Bild(er): Bildauswertung fehlgeschlagen)"
-
-
-def test_an_empty_answer_for_a_logo_is_no_gap():
-    llm = Vision(["Grundriss", ""])
-    r = extract(Path("x.pdf"), pdf([{"images": [(jpeg(page_scan((300, 300))), (300, 0, 0, 300, 50, 50)),
-                                                  (jpeg(page_scan((40, 40))), (20, 0, 0, 20, 500, 800))]}]),
-                llm=llm)
-    assert (r.status, r.incomplete, r.retry, r.message) == ("ok", False, False, None)
+    assert r.message == "1 Seite(n) ohne Textebene nicht gelesen (Bildauswertung fehlgeschlagen)"
 
 
 def test_only_images_drawn_on_the_page_are_read():
@@ -246,27 +238,9 @@ def test_only_images_drawn_on_the_page_are_read():
     drawn = page_scan((300, 300))
     unused = [(jpeg(page_scan((500, 500))), None) for _ in range(4)]
     llm = Vision()
-    r = extract(Path("x.pdf"), pdf([{"images": unused + [(jpeg(drawn), (300, 0, 0, 300, 50, 50))]}]), llm=llm)
+    r = read_scans(Path("x.pdf"), pdf([{"images": unused + [(jpeg(drawn), (300, 0, 0, 300, 50, 50))]}]), llm)
     assert (r.status, r.incomplete) == ("ok", False)
     assert [i.size for i in llm.images] == [(300, 300)]
-
-
-def test_partly_read_scan_is_stored_incomplete_with_retry_time(tmp_path):
-    root = tmp_path / "projekte"
-    proj = root / "BS-2024-0001 Testhalle"
-    proj.mkdir(parents=True)
-    images = [(broken(), (200, 0, 0, 200, 50, 50)), (jpeg(page_scan((200, 200))), (200, 0, 0, 200, 300, 50))]
-    (proj / "Teilweise.pdf").write_bytes(pdf([{"images": images}]))
-    dbp = tmp_path / "x.sqlite3"
-    db.init_db(dbp)
-    conn = db.connect(dbp)
-    sync_projects(conn, scan_projects(root, r"BS-\d{4}-\d{4}"))
-    conn.commit()
-    index_all_documents(conn, llm=Vision(), projects_dir=root)
-    row = conn.execute("SELECT status, incomplete, attempts, retry_after, message FROM documents").fetchone()
-    assert (row["status"], row["incomplete"], row["attempts"]) == ("ok", 1, 1)
-    assert row["retry_after"] and "nur teilweise gelesen" in row["message"]
-    conn.close()
 
 
 # -- mail body without charset ------------------------------------------------------------------------

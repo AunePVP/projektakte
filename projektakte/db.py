@@ -266,6 +266,17 @@ MIGRATIONS: list[str] = [
     """
     UPDATE documents SET loop_check = 1 WHERE method = 'vision';
     """,
+    # 19 – the model gets every PDF page rendered as a viewer shows it (extract.EXTRACT_VERSION 8); before, it got the
+    #      page's embedded images put together – stencil masks drawn opaque, /Rotate ignored, text and drawings
+    #      beside the images missing. PDFs whose pages the model read (complete or still waiting for more) are read
+    #      once more (an unknown profile makes them due, see documents.reprocess_due) – project files and mail
+    #      attachments alike. Run once.
+    """
+    UPDATE documents SET incomplete = 1, extract_profile = '', retry_after = NULL
+    WHERE ext = '.pdf' AND (method = 'vision'
+       OR id IN (SELECT doc_id FROM page_texts WHERE state = 'done'
+                 AND COALESCE(note, '') != 'CAD-Plan – nicht an das Bildmodell (VISION_SKIP_CAD)'));
+    """,
 ]
 
 # projects.kind

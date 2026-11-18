@@ -23,6 +23,7 @@ import zlib
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from projektakte import documents, extract_worker
 from projektakte import extract as extract_mod
@@ -38,7 +39,6 @@ from .test_extract_r6 import (
     EML,
     cpu_heavy_pdf,
     docx_bytes,
-    raw_rgb_pdf,
     scan_pages_pdf,
     strip_scan_pdf,
     text_pdf,
@@ -52,6 +52,14 @@ ROOT = Path(__file__).resolve().parent.parent
 def _no_worker_left():
     yield
     extract_worker.shutdown()
+
+
+def white_scan_pdf() -> bytes:
+    """A scan page whose only image is white: listed for the model, rendered blank – incomplete, no retry."""
+    doc = Doc()
+    doc.page(draw("A", (400, 0, 0, 300, 50, 400)), {"A": doc.image(jpeg(Image.new("L", (400, 300), 255)), (400, 300),
+                                                                   filt=b"/DCTDecode")})
+    return doc.build()
 
 
 def unsized_pdf() -> bytes:
@@ -149,10 +157,11 @@ def test_memory_shortage_names_the_limit_only_within_one(monkeypatch):
         raise MemoryError
 
     monkeypatch.setattr(extract_mod, "_compose", no_memory)
-    r = extract(Path("Streifen.pdf"), strip_scan_pdf(), llm=Vision())
+    monkeypatch.setattr(extract_mod, "ocr_image", lambda data: "Rauchabzug Treppenraum")  # Tesseract puts it together
+    r = extract(Path("Streifen.pdf"), strip_scan_pdf(), ocr=True)
     assert (r.status, r.incomplete, r.retry, r.limit) == ("ok", True, False, None)  # no limit: nothing to raise
     monkeypatch.setattr(extract_mod, "MEMORY_LIMIT_MB", 512)
-    r = extract(Path("Streifen.pdf"), strip_scan_pdf(), llm=Vision())
+    r = extract(Path("Streifen.pdf"), strip_scan_pdf(), ocr=True)
     assert (r.status, r.incomplete, r.retry, r.limit) == ("ok", True, False, "memory=512")
     monkeypatch.setattr(extract_mod, "_docx", no_memory)
     r = extract(Path("Bericht.docx"), docx_bytes())
@@ -171,7 +180,7 @@ def test_raising_the_cpu_limit_reads_a_refused_file_again(fake_ai, tmp_path):
     project = tmp_path / "projekte" / "BS-2024-0011 Werkhalle"
     project.mkdir(parents=True)
     (project / "Aufwendig.pdf").write_bytes(cpu_heavy_pdf(pages=3, mb=2.0))  # about 5 s of CPU time
-    (project / "Ohne.pdf").write_bytes(unsized_pdf())
+    (project / "Ohne.pdf").write_bytes(white_scan_pdf())
     settings, stats, profile = index(fake_ai, tmp_path, EXTRACT_CPU_SECONDS=1)
     first = rows(settings)
     assert first["Aufwendig.pdf"][:4] == ("skipped", "Datei zu aufwendig zum Lesen (über 1 s Rechenzeit)", 1,
@@ -190,17 +199,18 @@ def test_raising_the_cpu_limit_reads_a_refused_file_again(fake_ai, tmp_path):
 
 
 def test_raising_the_memory_limit_reads_refused_files_and_attachments_again(fake_ai, tmp_path):
-    """A scan whose image does not fit into 256 MB – as a project file and as a mail attachment, which
-    cannot be touched to force a new reading – is read once EXTRACT_MEMORY_MB is raised."""
+    """A PDF whose content does not fit into 256 MB to parse (a scan's image no longer does: the model gets the
+    rendered page) – as a project file and as a mail attachment, which cannot be touched to force a new reading –
+    is read once EXTRACT_MEMORY_MB is raised."""
     project = tmp_path / "projekte" / "BS-2024-0012 Lager"
     project.mkdir(parents=True)
-    big = raw_rgb_pdf()
+    big = cpu_heavy_pdf(pages=1, mb=6.0)  # about 350 MB to parse its text
     (project / "Gross.pdf").write_bytes(big)
     (tmp_path / "mails").mkdir()
     (tmp_path / "mails" / "anhang.eml").write_bytes(mail_with("Anhang.pdf", big))
     settings, stats, profile = index(fake_ai, tmp_path, EXTRACT_MEMORY_MB=256)
     assert stats["mails"]["new"] == 1
-    refused = "Scan ohne Textebene – Bilder zu groß zum Lesen (Speicher- oder Datengrenze überschritten)"
+    refused = "Datei zu groß zum Lesen (Speichergrenze von 256 MB erreicht)"
     for name in ("Gross.pdf", "Anhang.pdf"):
         assert rows(settings)[name][:4] == ("skipped", refused, 1, f"{profile}|limit:memory=256"), name
     _, stats, _ = index(fake_ai, tmp_path, EXTRACT_MEMORY_MB=256, EXTRACT_CPU_SECONDS=600)  # another limit

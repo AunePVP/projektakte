@@ -2,6 +2,7 @@
 
     python -m projektakte.ocr_testseiten --anzahl 50 --ziel /data/ocr-test
     python -m projektakte.ocr_testseiten --datei "DG-Ausbau_Teil 1" --seiten 49,56 --ziel /data/ocr-test
+    python -m projektakte.ocr_testseiten --erneuern --ziel /data/training
 
 Takes scan pages waiting for the Bildauswertung (a mix over many documents, oldest file dates first so that old
 scans are in) or the given pages of one file, prepares each page image exactly as the model gets it now
@@ -184,6 +185,50 @@ def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None) ->
     return out
 
 
+def renew(conn, settings, target: Path, *, worker=None) -> tuple[int, int]:
+    """Write the page images of the PDF pages listed in ``target``/seiten.json again, as the model gets them now,
+    under the same numbers and names (an export whose pages were already corrected or transcribed keeps them):
+    only the image file is replaced (with another extension if its type changed) and its entry updated. Texts
+    (``….tesseract.txt``), image files and other files are left as they are. Returns (written, not written)."""
+    listing = target / "seiten.json"
+    entries = json.loads(listing.read_text(encoding="utf-8"))
+    vp = VisionPass(conn, None, projects_dir=getattr(settings, "projects_dir", None), worker=worker)
+    rows = {printable(r["rel_path"]): r for r in conn.execute(
+        "SELECT id, project, path, rel_path, filename, ext, sha256, cache_path, mail_id FROM documents "
+        "WHERE ext = '.pdf' ORDER BY id DESC")}  # the oldest row of a path wins
+    by_doc: dict[str, list[dict]] = {}
+    for entry in entries:
+        if entry.get("dokument", "").lower().endswith(".pdf"):
+            by_doc.setdefault(entry["dokument"], []).append(entry)
+    written, missed = 0, 0
+    for path, todo in by_doc.items():
+        row = rows.get(path)
+        data = vp._read(dict(row)) if row is not None else None
+        if data is None:
+            log.warning("%s nicht gefunden oder nicht lesbar – %d Seite(n) bleiben", path, len(todo))
+            missed += len(todo)
+            continue
+        pages = {p.number: p for p in extract_worker.page_images(
+            row["filename"], data, sorted({int(e["seite"]) for e in todo}), vp.prepare, worker=worker)}
+        for entry in todo:
+            page = pages.get(int(entry["seite"]))
+            if page is None or not page.images:
+                log.warning("%s Seite %s: kein Bild (%s) – %s bleibt", path, entry["seite"],
+                            page.problem if page else "?", entry["datei"])
+                missed += 1
+                continue
+            mime, image = page.images[0]
+            old = target / entry["datei"]
+            new = old.with_suffix(_EXT.get(mime, ".bin"))
+            new.write_bytes(image)
+            if new != old and old.exists():
+                old.unlink()
+            entry["datei"], entry["mime"] = new.name, mime
+            written += 1
+    listing.write_text(json.dumps(entries, ensure_ascii=False, indent=1), encoding="utf-8")
+    return written, missed
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m projektakte.ocr_testseiten",
                                  description="Seitenbilder für einen Vergleich von OCR-Modellen exportieren")
@@ -200,14 +245,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ohne-ordner", default=",".join(DEFAULT_SKIP),
                     help="keine Seiten aus Ordnern dieses Namens, kommagetrennt (Voreinstellung: CAD,Bilder; "
                          "dazu SKIP_READ_FOLDERS und VISION_SKIP_FOLDERS); leer: alle")
+    ap.add_argument("--erneuern", action="store_true",
+                    help="die PDF-Seitenbilder eines früheren Exports in --ziel neu schreiben, wie das Modell sie jetzt "
+                         "bekommt – unter denselben Nummern; Texte und übrige Dateien bleiben")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = load_settings()
     conn = db.connect(settings.db_path)
-    if args.training:  # CAD plans are part of the training: drawn, not passed over (VISION_SKIP_CAD)
+    if args.training or args.erneuern:  # CAD plans are part of the training: drawn, not passed over (VISION_SKIP_CAD)
         os.environ["VISION_SKIP_CAD"] = "0"
     worker = extract_worker.own_worker(settings)
     try:
+        if args.erneuern:
+            if not (Path(args.ziel) / "seiten.json").is_file():
+                print(f"Keine seiten.json in {args.ziel}.")
+                return 1
+            written, missed = renew(conn, settings, Path(args.ziel), worker=worker)
+            print(f"{written} PDF-Seitenbild(er) in {args.ziel} neu geschrieben"
+                  + (f", {missed} nicht (siehe Meldungen)." if missed else "."))
+            return 0 if not missed else 1
         if args.training:
             wanted = _training_candidates(conn, max(1, args.anzahl), args.seed, _excluded(args.ohne_seiten))
         elif args.datei:
