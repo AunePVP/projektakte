@@ -67,25 +67,27 @@ def _candidates(conn, count: int, seed: int, skip: tuple[str, ...] = DEFAULT_SKI
 TRAINING_MIX = (("scan", 0.55), ("cad", 0.15), ("digital", 0.15), ("foto", 0.15))
 
 
-def _training_candidates(conn, count: int, seed: int, exclude: set[tuple[str, int]] = frozenset()
-                         ) -> list[tuple[int, int, str]]:
+def _training_candidates(conn, count: int, seed: int, exclude: set[tuple[str, int]] = frozenset(),
+                         *, mails: bool = True) -> list[tuple[int, int, str]]:
     """(document id, page, kind) for a training set: every kind of page the model should learn – scan pages waiting
     for the model (any folder), plans from CAD folders (also files not read, SKIP_READ_FOLDERS), digital PDFs
     (data sheets, plans with a text layer) and image files (photos) – at most two pages per document, without the
-    pages in ``exclude`` ((path inside the project, page), e.g. the comparison set: it must stay unseen)."""
+    pages in ``exclude`` ((path inside the project, page), e.g. the comparison set: it must stay unseen).
+    ``mails=False``: no mail attachments, only files of the project folders."""
+    only_files = "" if mails else " AND d.mail_id IS NULL"
     rnd = random.Random(seed)
     pools: dict[str, list[tuple[int, int]]] = {kind: [] for kind, _share in TRAINING_MIX}
     pending: dict[int, list[int]] = {}
     for doc_id, page, rel_path in conn.execute(
             f"SELECT p.doc_id, p.page, d.rel_path FROM page_texts p JOIN documents d ON d.id = p.doc_id "
-            f"WHERE p.state IN {WAITING} AND d.ext = '.pdf'"):
+            f"WHERE p.state IN {WAITING} AND d.ext = '.pdf'{only_files}"):
         if not _in_folder(rel_path, "", ("CAD",)):  # plans of CAD folders are the kind "cad"
             pending.setdefault(doc_id, []).append(page)
     for doc_id, pages in pending.items():
         rnd.shuffle(pages)
         pools["scan"] += [(doc_id, p) for p in pages[:2]]
     for doc_id, rel_path, ext, pages in conn.execute(
-            "SELECT id, rel_path, ext, pages FROM documents"):
+            f"SELECT id, rel_path, ext, pages FROM documents d WHERE 1 = 1{only_files}"):
         if ext == ".pdf" and _in_folder(rel_path, "", ("CAD",)):
             pools["cad"].append((doc_id, rnd.randint(1, pages) if pages else 1))
         elif ext == ".pdf" and doc_id not in pending and pages:
@@ -245,6 +247,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ohne-ordner", default=",".join(DEFAULT_SKIP),
                     help="keine Seiten aus Ordnern dieses Namens, kommagetrennt (Voreinstellung: CAD,Bilder; "
                          "dazu SKIP_READ_FOLDERS und VISION_SKIP_FOLDERS); leer: alle")
+    ap.add_argument("--ohne-mails", action="store_true",
+                    help="mit --training: keine Mail-Anhänge, nur Dateien aus den Projektordnern")
     ap.add_argument("--erneuern", action="store_true",
                     help="die PDF-Seitenbilder eines früheren Exports in --ziel neu schreiben, wie das Modell sie jetzt "
                          "bekommt – unter denselben Nummern; Texte und übrige Dateien bleiben")
@@ -265,7 +269,8 @@ def main(argv: list[str] | None = None) -> int:
                   + (f", {missed} nicht (siehe Meldungen)." if missed else "."))
             return 0 if not missed else 1
         if args.training:
-            wanted = _training_candidates(conn, max(1, args.anzahl), args.seed, _excluded(args.ohne_seiten))
+            wanted = _training_candidates(conn, max(1, args.anzahl), args.seed, _excluded(args.ohne_seiten),
+                                          mails=not args.ohne_mails)
         elif args.datei:
             pages = [int(x) for x in args.seiten.split(",") if x.strip()]
             wanted = _named(conn, args.datei, pages)
