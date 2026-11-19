@@ -12,6 +12,11 @@ In Projektakte bleibt:
   docker compose exec app python -m projektakte.ocr_testseiten --training --anzahl 600 --ziel /data/training --ohne-seiten /data/ocr-test-2/seiten.json
   ```
   `--ohne-mails`: keine Mail-Anhänge, nur Dateien aus den Projektordnern.
+  Für einen Seitentyp-Klassifizierer: `--alle --je-dokument 3` nimmt Seiten gleichmäßig aus allen PDF- und
+  Bilddateien aller Ordner, gelesen oder nicht, ohne feste Mischung:
+  ```bash
+  docker compose exec app python -m projektakte.ocr_testseiten --alle --anzahl 3000 --ohne-mails --ziel /data/seitentypen
+  ```
   Nach einer Änderung der Bildaufbereitung die Seitenbilder eines Exports unter denselben Nummern neu schreiben
   (Texte und Korrekturen bleiben):
   ```bash

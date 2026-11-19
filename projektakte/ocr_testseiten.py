@@ -104,6 +104,37 @@ def _training_candidates(conn, count: int, seed: int, exclude: set[tuple[str, in
     return picked[:count]
 
 
+def _all_candidates(conn, count: int, seed: int, exclude: set[tuple[str, int]] = frozenset(), *,
+                    mails: bool = True, per_doc: int = 3) -> list[tuple[int, int, str]]:
+    """(document id, page, kind) drawn evenly over every PDF and image file in the index – all folders, read or not,
+    whatever state the pages are in – up to ``per_doc`` random pages per document. For a page-type classifier,
+    which needs many pages of every kind rather than the mix of the transcription training."""
+    rnd = random.Random(seed)
+    image_ext = tuple(IMAGE_EXT)
+    rows = conn.execute(
+        "SELECT id, rel_path, ext, COALESCE(pages, (SELECT MAX(page) FROM page_texts WHERE doc_id = d.id), "
+        "(SELECT MAX(page) FROM chunks WHERE doc_id = d.id)) FROM documents d WHERE (ext = '.pdf' OR ext IN (%s))%s"
+        % (",".join("?" * len(image_ext)), "" if mails else " AND d.mail_id IS NULL"), image_ext).fetchall()
+    rows = [tuple(r) for r in rows]
+    rnd.shuffle(rows)
+    picked: list[tuple[int, int, str]] = []
+    for doc_id, rel_path, ext, pages in rows:
+        if ext in IMAGE_EXT:
+            choice, kind = [1], "foto"
+        else:
+            numbers = list(range(1, (pages or 1) + 1))
+            rnd.shuffle(numbers)
+            choice = numbers[:max(1, per_doc)]
+            kind = "cad" if _in_folder(rel_path, "", ("CAD",)) else "pdf"
+        for page in choice:
+            if (printable(rel_path), page) in exclude:
+                continue
+            picked.append((doc_id, page, kind))
+            if len(picked) >= count:
+                return picked
+    return picked
+
+
 def _excluded(files: list[str]) -> set[tuple[str, int]]:
     out: set[tuple[str, int]] = set()
     for f in files:
@@ -247,8 +278,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ohne-ordner", default=",".join(DEFAULT_SKIP),
                     help="keine Seiten aus Ordnern dieses Namens, kommagetrennt (Voreinstellung: CAD,Bilder; "
                          "dazu SKIP_READ_FOLDERS und VISION_SKIP_FOLDERS); leer: alle")
+    ap.add_argument("--alle", action="store_true",
+                    help="Seiten gleichmäßig aus allen PDF- und Bilddateien aller Ordner, gelesen oder nicht, ohne "
+                         "feste Mischung (z. B. für einen Seitentyp-Klassifizierer)")
+    ap.add_argument("--je-dokument", type=int, default=3, help="mit --alle: höchstens so viele Seiten je Dokument")
     ap.add_argument("--ohne-mails", action="store_true",
-                    help="mit --training: keine Mail-Anhänge, nur Dateien aus den Projektordnern")
+                    help="mit --training oder --alle: keine Mail-Anhänge, nur Dateien aus den Projektordnern")
     ap.add_argument("--erneuern", action="store_true",
                     help="die PDF-Seitenbilder eines früheren Exports in --ziel neu schreiben, wie das Modell sie jetzt "
                          "bekommt – unter denselben Nummern; Texte und übrige Dateien bleiben")
@@ -256,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = load_settings()
     conn = db.connect(settings.db_path)
-    if args.training or args.erneuern:  # CAD plans are part of the training: drawn, not passed over (VISION_SKIP_CAD)
+    if args.training or args.erneuern or args.alle:  # CAD plans are part of the training: drawn, not passed over (VISION_SKIP_CAD)
         os.environ["VISION_SKIP_CAD"] = "0"
     worker = extract_worker.own_worker(settings)
     try:
@@ -268,7 +303,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{written} PDF-Seitenbild(er) in {args.ziel} neu geschrieben"
                   + (f", {missed} nicht (siehe Meldungen)." if missed else "."))
             return 0 if not missed else 1
-        if args.training:
+        if args.alle:
+            wanted = _all_candidates(conn, max(1, args.anzahl), args.seed, _excluded(args.ohne_seiten),
+                                     mails=not args.ohne_mails, per_doc=args.je_dokument)
+        elif args.training:
             wanted = _training_candidates(conn, max(1, args.anzahl), args.seed, _excluded(args.ohne_seiten),
                                           mails=not args.ohne_mails)
         elif args.datei:
