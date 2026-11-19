@@ -174,8 +174,9 @@ def _clear(target: Path) -> int:
 
 
 def fit(mime: str, data: bytes, max_size: tuple[int, int] | None) -> tuple[str, bytes]:
-    """Scale a page image down to fit ``max_size`` (width, height), keeping its aspect ratio – never distorted,
-    never enlarged. Images that fit are returned unchanged; JPEG stays JPEG, everything else becomes PNG."""
+    """Scale a page image down to fit ``max_size``, keeping its aspect ratio – never distorted, never enlarged.
+    The box turns with the image: the longer side may be up to the larger value (1664x2048 allows a landscape
+    page up to 2048x1664). Images that fit are returned unchanged; JPEG stays JPEG, everything else becomes PNG."""
     if not max_size:
         return mime, data
     import io
@@ -184,7 +185,9 @@ def fit(mime: str, data: bytes, max_size: tuple[int, int] | None) -> tuple[str, 
 
     with Image.open(io.BytesIO(data)) as img:
         w, h = img.size
-        scale = min(max_size[0] / w, max_size[1] / h)
+        short, long_ = sorted(max_size)
+        box = (long_, short) if w > h else (short, long_)
+        scale = min(box[0] / w, box[1] / h)
         if scale >= 1:
             return mime, data
         size = (max(1, round(w * scale)), max(1, round(h * scale)))
@@ -197,12 +200,39 @@ def fit(mime: str, data: bytes, max_size: tuple[int, int] | None) -> tuple[str, 
     return "image/png", buf.getvalue()
 
 
+def _render(conn, vp, worker, doc_id: int, pages: list[int], max_size) -> tuple[dict | None, list]:
+    """(document row, [(page, mime, image, known text)]) of one document; nothing written."""
+    row = conn.execute("SELECT id, project, path, rel_path, filename, ext, sha256, cache_path, mail_id "
+                       "FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    if row is None:
+        return None, []
+    data = vp._read(dict(row))
+    if data is None:
+        log.warning("%s nicht lesbar – übersprungen", printable(row["rel_path"]))
+        return None, []
+    if row["ext"] in IMAGE_EXT:  # an image file goes to the model as it is
+        from .extract import PageImages
+
+        prepared = [PageImages(1, [(IMAGE_EXT[row["ext"]], data)])]
+    else:
+        prepared = extract_worker.page_images(row["filename"], data, sorted(pages), vp.prepare, worker=worker)
+    done = []
+    for p in prepared:
+        if not p.images:
+            log.info("%s Seite %d: kein Bild (%s)", printable(row["rel_path"]), p.number, p.problem)
+            continue
+        mime, image = fit(*p.images[0], max_size)
+        done.append((p.number, mime, image, _known_text(conn, doc_id, p.number)))
+    return dict(row), done
+
+
 def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None,
-           max_size: tuple[int, int] | None = None) -> list[dict]:
+           max_size: tuple[int, int] | None = None, parallel: int = 1) -> list[dict]:
+    """Write the pages; ``parallel`` documents at a time, each in its own reading process and database
+    connection (numbers and names stay in the order of ``wanted``)."""
     target.mkdir(parents=True, exist_ok=True)
     if _clear(target):
         log.info("Seiten eines früheren Exports in %s entfernt", target)
-    vp = VisionPass(conn, None, projects_dir=getattr(settings, "projects_dir", None), worker=worker)
     by_doc: dict[int, list[int]] = {}
     kinds: dict[tuple[int, int], str] = {}
     for doc_id, page, *kind in wanted:
@@ -210,35 +240,55 @@ def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None,
         if kind:
             kinds[(doc_id, page)] = kind[0]
     out: list[dict] = []
-    for doc_id, pages in by_doc.items():
-        row = conn.execute("SELECT id, project, path, rel_path, filename, ext, sha256, cache_path, mail_id "
-                           "FROM documents WHERE id = ?", (doc_id,)).fetchone()
-        if row is None:
-            continue
-        data = vp._read(dict(row))
-        if data is None:
-            log.warning("%s nicht lesbar – übersprungen", printable(row["rel_path"]))
-            continue
-        if row["ext"] in IMAGE_EXT:  # an image file goes to the model as it is
-            from .extract import PageImages
 
-            prepared = [PageImages(1, [(IMAGE_EXT[row["ext"]], data)])]
-        else:
-            prepared = extract_worker.page_images(row["filename"], data, sorted(pages), vp.prepare, worker=worker)
-        for p in prepared:
-            if not p.images:
-                log.info("%s Seite %d: kein Bild (%s)", printable(row["rel_path"]), p.number, p.problem)
-                continue
-            mime, image = fit(*p.images[0], max_size)
-            stem = f"{len(out) + 1:03d}_{_safe(Path(row['filename']).stem)}_S{p.number}"
+    def write(row: dict | None, done: list) -> None:
+        for number, mime, image, known in done:
+            stem = f"{len(out) + 1:03d}_{_safe(Path(row['filename']).stem)}_S{number}"
             (target / f"{stem}{_EXT.get(mime, '.bin')}").write_bytes(image)
-            known = _known_text(conn, doc_id, p.number)
             (target / f"{stem}.tesseract.txt").write_text(known, encoding="utf-8")
             entry = {"datei": f"{stem}{_EXT.get(mime, '.bin')}", "dokument": printable(row["rel_path"]),
-                     "seite": p.number, "mime": mime, "tesseract_zeichen": len(known)}
-            if (doc_id, p.number) in kinds:
-                entry["quelle"] = kinds[(doc_id, p.number)]
+                     "seite": number, "mime": mime, "tesseract_zeichen": len(known)}
+            if (row["id"], number) in kinds:
+                entry["quelle"] = kinds[(row["id"], number)]
             out.append(entry)
+        if len(out) and len(out) % 200 < len(done):
+            log.info("%d Seiten …", len(out))
+
+    docs = list(by_doc.items())
+    db_path = getattr(settings, "db_path", None)
+    if parallel <= 1 or db_path is None or len(docs) < 2:
+        vp = VisionPass(conn, None, projects_dir=getattr(settings, "projects_dir", None), worker=worker)
+        for doc_id, pages in docs:
+            write(*_render(conn, vp, worker, doc_id, pages, max_size))
+    else:
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        local = threading.local()
+        opened: list = []
+        lock = threading.Lock()
+
+        def job(item):
+            if not hasattr(local, "vp"):  # one connection and one reading process per thread
+                local.conn = db.connect(db_path)
+                local.worker = extract_worker.own_worker(settings)
+                local.vp = VisionPass(local.conn, None, projects_dir=getattr(settings, "projects_dir", None),
+                                      worker=local.worker)
+                with lock:
+                    opened.append((local.conn, local.worker))
+            return _render(local.conn, local.vp, local.worker, item[0], item[1], max_size)
+
+        try:
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                window = parallel * 4  # bounded: rendered pages wait in memory only for a few documents
+                for i in range(0, len(docs), window):
+                    for result in pool.map(job, docs[i : i + window]):
+                        write(*result)
+        finally:
+            for c, w in opened:
+                if w is not None:
+                    w.close()
+                c.close()
     (target / "seiten.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     return out
 
@@ -312,6 +362,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-aufloesung", metavar="BREITExHOEHE",
                     help="Seitenbilder höchstens so groß, z. B. 1664x2048 – verkleinert mit gleichem "
                          "Seitenverhältnis (nie verzerrt, nie vergrößert)")
+    ap.add_argument("--parallel", type=int, default=min(8, os.cpu_count() or 1),
+                    help="so viele Dokumente gleichzeitig, je in einem eigenen Leseprozess (Voreinstellung: Kerne, "
+                         "höchstens 8)")
     ap.add_argument("--erneuern", action="store_true",
                     help="die PDF-Seitenbilder eines früheren Exports in --ziel neu schreiben, wie das Modell sie jetzt "
                          "bekommt – unter denselben Nummern; Texte und übrige Dateien bleiben")
@@ -356,7 +409,8 @@ def main(argv: list[str] | None = None) -> int:
         if not wanted:
             print("Keine passenden Seiten gefunden.")
             return 1
-        out = export(conn, settings, Path(args.ziel), wanted, worker=worker, max_size=max_size)
+        out = export(conn, settings, Path(args.ziel), wanted, worker=worker, max_size=max_size,
+                     parallel=max(1, args.parallel))
     finally:
         if worker is not None:
             worker.close()

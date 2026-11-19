@@ -49,6 +49,11 @@ def test_all_pages_of_every_folder_for_a_type_classifier(tmp_path, monkeypatch):
     assert len(_all_candidates(conn, 3, seed=1)) == 3
     out = export(conn, type("S", (), {"projects_dir": root})(), tmp_path / "typen", picked)
     assert len(out) == len(picked)
+    # several documents at a time: same pages, same order and names
+    db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+    settings = type("S", (), {"projects_dir": root, "db_path": db_path})()
+    again = export(conn, settings, tmp_path / "typen-parallel", picked, parallel=3)
+    assert [e["datei"] for e in again] == [e["datei"] for e in out]
 
 
 def test_max_resolution_keeps_the_aspect_ratio():
@@ -64,8 +69,8 @@ def test_max_resolution_keeps_the_aspect_ratio():
     def size(data):
         return Image.open(io.BytesIO(data)).size
 
-    mime, data = fit("image/png", image(3328, 2048), (1664, 2048))  # landscape plan: width limits
-    assert size(data) == (1664, 1024)
+    mime, data = fit("image/png", image(3328, 2048), (1664, 2048))  # landscape: the box turns to 2048x1664
+    assert size(data) == (2048, 1260)
     mime, data = fit("image/jpeg", image(1754, 2480, "JPEG"), (1664, 2048))  # A4 at 150 dpi: height limits
     assert mime == "image/jpeg" and size(data) == (1448, 2048)
     small = image(800, 600)

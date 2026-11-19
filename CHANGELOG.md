@@ -18,7 +18,9 @@ Roadmap-Schritt.
   Mails (überschreibt die gelöschten Inhalte in der Datenbank). `PLMAIL_ALLE_MAILS=1` für das alte Verhalten.
   Auftrag an plMail für die serverseitige Sperre: `docs/plmail-prompt-nur-zugeordnet.md`.
 - **Export `--max-aufloesung BREITExHOEHE`** (z. B. `1664x2048`): Seitenbilder höchstens so groß, verkleinert mit
-  gleichem Seitenverhältnis, nie verzerrt oder vergrößert; auch mit `--erneuern`.
+  gleichem Seitenverhältnis, nie verzerrt oder vergrößert; der Rahmen dreht mit (Querformat bis 2048x1664); auch mit
+  `--erneuern`. **`--parallel N`**: so viele Dokumente gleichzeitig, je in eigenem Leseprozess (Voreinstellung: Kerne,
+  höchstens 8).
 - **Export `--alle [--je-dokument N]`:** Seiten gleichmäßig aus allen PDF- und Bilddateien aller Ordner, gelesen
   oder nicht, ohne feste Mischung (für einen Seitentyp-Klassifizierer).
 - **Trainingsexport `--ohne-mails`:** nur Dateien aus den Projektordnern, keine Mail-Anhänge.
