@@ -92,3 +92,13 @@ def test_a_file_pypdf_gives_up_on_is_drawn_by_pdfium(monkeypatch):
     assert [bool(p.images) for p in pages] == [True, True, False]
     assert pages[2].problem == "Seite nicht vorhanden"
     assert all(mime == "image/jpeg" for p in pages[:2] for mime, _ in p.images)
+
+
+def test_a_new_export_clears_pages_numbered_beyond_999(tmp_path):
+    from projektakte.ocr_testseiten import _clear
+
+    for name in ("001_a_S1.png", "999_b_S1.jpg", "1000_c_S1.png", "2992_d_S2.jpg", "1000_c_S1.tesseract.txt",
+                 "seiten.json", "seitentypen.csv", "notiz.txt"):
+        (tmp_path / name).write_text("x")
+    assert _clear(tmp_path) == 6
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["notiz.txt", "seitentypen.csv"]

@@ -159,7 +159,7 @@ def _known_text(conn, doc_id: int, page: int) -> str:
         "SELECT text FROM chunks WHERE doc_id = ? AND page = ? ORDER BY ord", (doc_id, page)))
 
 
-_OLD = re.compile(r"^\d{3}_.*\.(jpg|png|tif|webp|bin|tesseract\.txt)$")
+_OLD = re.compile(r"^\d{3,}_.*\.(jpg|png|tif|webp|bin|tesseract\.txt)$")
 
 
 def _clear(target: Path) -> int:
