@@ -173,7 +173,32 @@ def _clear(target: Path) -> int:
     return removed
 
 
-def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None) -> list[dict]:
+def fit(mime: str, data: bytes, max_size: tuple[int, int] | None) -> tuple[str, bytes]:
+    """Scale a page image down to fit ``max_size`` (width, height), keeping its aspect ratio – never distorted,
+    never enlarged. Images that fit are returned unchanged; JPEG stays JPEG, everything else becomes PNG."""
+    if not max_size:
+        return mime, data
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(data)) as img:
+        w, h = img.size
+        scale = min(max_size[0] / w, max_size[1] / h)
+        if scale >= 1:
+            return mime, data
+        size = (max(1, round(w * scale)), max(1, round(h * scale)))
+        small = img.convert("RGB" if img.mode not in ("RGB", "L") else img.mode).resize(size, Image.LANCZOS)
+    buf = io.BytesIO()
+    if mime == "image/jpeg":
+        small.save(buf, "JPEG", quality=90)
+        return mime, buf.getvalue()
+    small.save(buf, "PNG", optimize=True)
+    return "image/png", buf.getvalue()
+
+
+def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None,
+           max_size: tuple[int, int] | None = None) -> list[dict]:
     target.mkdir(parents=True, exist_ok=True)
     if _clear(target):
         log.info("Seiten eines früheren Exports in %s entfernt", target)
@@ -204,7 +229,7 @@ def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None) ->
             if not p.images:
                 log.info("%s Seite %d: kein Bild (%s)", printable(row["rel_path"]), p.number, p.problem)
                 continue
-            mime, image = p.images[0]
+            mime, image = fit(*p.images[0], max_size)
             stem = f"{len(out) + 1:03d}_{_safe(Path(row['filename']).stem)}_S{p.number}"
             (target / f"{stem}{_EXT.get(mime, '.bin')}").write_bytes(image)
             known = _known_text(conn, doc_id, p.number)
@@ -218,7 +243,7 @@ def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None) ->
     return out
 
 
-def renew(conn, settings, target: Path, *, worker=None) -> tuple[int, int]:
+def renew(conn, settings, target: Path, *, worker=None, max_size: tuple[int, int] | None = None) -> tuple[int, int]:
     """Write the page images of the PDF pages listed in ``target``/seiten.json again, as the model gets them now,
     under the same numbers and names (an export whose pages were already corrected or transcribed keeps them):
     only the image file is replaced (with another extension if its type changed) and its entry updated. Texts
@@ -250,7 +275,7 @@ def renew(conn, settings, target: Path, *, worker=None) -> tuple[int, int]:
                             page.problem if page else "?", entry["datei"])
                 missed += 1
                 continue
-            mime, image = page.images[0]
+            mime, image = fit(*page.images[0], max_size)
             old = target / entry["datei"]
             new = old.with_suffix(_EXT.get(mime, ".bin"))
             new.write_bytes(image)
@@ -284,10 +309,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--je-dokument", type=int, default=3, help="mit --alle: höchstens so viele Seiten je Dokument")
     ap.add_argument("--ohne-mails", action="store_true",
                     help="mit --training oder --alle: keine Mail-Anhänge, nur Dateien aus den Projektordnern")
+    ap.add_argument("--max-aufloesung", metavar="BREITExHOEHE",
+                    help="Seitenbilder höchstens so groß, z. B. 1664x2048 – verkleinert mit gleichem "
+                         "Seitenverhältnis (nie verzerrt, nie vergrößert)")
     ap.add_argument("--erneuern", action="store_true",
                     help="die PDF-Seitenbilder eines früheren Exports in --ziel neu schreiben, wie das Modell sie jetzt "
                          "bekommt – unter denselben Nummern; Texte und übrige Dateien bleiben")
     args = ap.parse_args(argv)
+    max_size = None
+    if args.max_aufloesung:
+        try:
+            w, h = (int(x) for x in args.max_aufloesung.lower().replace("×", "x").split("x"))
+            assert w > 0 and h > 0
+            max_size = (w, h)
+        except (ValueError, AssertionError):
+            ap.error("--max-aufloesung: BREITExHOEHE erwartet, z. B. 1664x2048")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = load_settings()
     conn = db.connect(settings.db_path)
@@ -299,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
             if not (Path(args.ziel) / "seiten.json").is_file():
                 print(f"Keine seiten.json in {args.ziel}.")
                 return 1
-            written, missed = renew(conn, settings, Path(args.ziel), worker=worker)
+            written, missed = renew(conn, settings, Path(args.ziel), worker=worker, max_size=max_size)
             print(f"{written} PDF-Seitenbild(er) in {args.ziel} neu geschrieben"
                   + (f", {missed} nicht (siehe Meldungen)." if missed else "."))
             return 0 if not missed else 1
@@ -320,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         if not wanted:
             print("Keine passenden Seiten gefunden.")
             return 1
-        out = export(conn, settings, Path(args.ziel), wanted, worker=worker)
+        out = export(conn, settings, Path(args.ziel), wanted, worker=worker, max_size=max_size)
     finally:
         if worker is not None:
             worker.close()

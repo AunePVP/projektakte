@@ -17,6 +17,8 @@ Roadmap-Schritt.
   Anhängen. Neu: `python -m projektakte.mails_bereinigen [--loeschen]` entfernt alte Kopien nicht zugeordneter
   Mails (überschreibt die gelöschten Inhalte in der Datenbank). `PLMAIL_ALLE_MAILS=1` für das alte Verhalten.
   Auftrag an plMail für die serverseitige Sperre: `docs/plmail-prompt-nur-zugeordnet.md`.
+- **Export `--max-aufloesung BREITExHOEHE`** (z. B. `1664x2048`): Seitenbilder höchstens so groß, verkleinert mit
+  gleichem Seitenverhältnis, nie verzerrt oder vergrößert; auch mit `--erneuern`.
 - **Export `--alle [--je-dokument N]`:** Seiten gleichmäßig aus allen PDF- und Bilddateien aller Ordner, gelesen
   oder nicht, ohne feste Mischung (für einen Seitentyp-Klassifizierer).
 - **Trainingsexport `--ohne-mails`:** nur Dateien aus den Projektordnern, keine Mail-Anhänge.

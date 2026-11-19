@@ -49,3 +49,25 @@ def test_all_pages_of_every_folder_for_a_type_classifier(tmp_path, monkeypatch):
     assert len(_all_candidates(conn, 3, seed=1)) == 3
     out = export(conn, type("S", (), {"projects_dir": root})(), tmp_path / "typen", picked)
     assert len(out) == len(picked)
+
+
+def test_max_resolution_keeps_the_aspect_ratio():
+    import io
+
+    from projektakte.ocr_testseiten import fit
+
+    def image(w, h, fmt="PNG"):
+        buf = io.BytesIO()
+        Image.new("RGB", (w, h), "white").save(buf, fmt)
+        return buf.getvalue()
+
+    def size(data):
+        return Image.open(io.BytesIO(data)).size
+
+    mime, data = fit("image/png", image(3328, 2048), (1664, 2048))  # landscape plan: width limits
+    assert size(data) == (1664, 1024)
+    mime, data = fit("image/jpeg", image(1754, 2480, "JPEG"), (1664, 2048))  # A4 at 150 dpi: height limits
+    assert mime == "image/jpeg" and size(data) == (1448, 2048)
+    small = image(800, 600)
+    assert fit("image/png", small, (1664, 2048)) == ("image/png", small)  # never enlarged
+    assert fit("image/png", small, None) == ("image/png", small)

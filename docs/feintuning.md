@@ -14,6 +14,7 @@ In Projektakte bleibt:
   `--ohne-mails`: keine Mail-Anhänge, nur Dateien aus den Projektordnern.
   Für einen Seitentyp-Klassifizierer: `--alle --je-dokument 3` nimmt Seiten gleichmäßig aus allen PDF- und
   Bilddateien aller Ordner, gelesen oder nicht, ohne feste Mischung:
+  `--max-aufloesung 1664x2048` begrenzt die Bildgröße (Seitenverhältnis bleibt).
   ```bash
   docker compose exec app python -m projektakte.ocr_testseiten --alle --anzahl 3000 --ohne-mails --ziel /data/seitentypen
   ```
