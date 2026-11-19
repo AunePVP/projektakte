@@ -20,7 +20,7 @@ Roadmap-Schritt.
 - **Export `--max-aufloesung BREITExHOEHE`** (z. B. `1664x2048`): Seitenbilder höchstens so groß, verkleinert mit
   gleichem Seitenverhältnis, nie verzerrt oder vergrößert; der Rahmen dreht mit (Querformat bis 2048x1664); auch mit
   `--erneuern`. **`--parallel N`**: so viele Dokumente gleichzeitig, je in eigenem Leseprozess (Voreinstellung: Kerne,
-  höchstens 8).
+  höchstens 8). **`--ohne-text`**: keine `….tesseract.txt` (bei `--alle` immer ohne).
 - **Export `--alle [--je-dokument N]`:** Seiten gleichmäßig aus allen PDF- und Bilddateien aller Ordner, gelesen
   oder nicht, ohne feste Mischung (für einen Seitentyp-Klassifizierer).
 - **Trainingsexport `--ohne-mails`:** nur Dateien aus den Projektordnern, keine Mail-Anhänge.

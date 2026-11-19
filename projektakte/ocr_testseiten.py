@@ -227,7 +227,7 @@ def _render(conn, vp, worker, doc_id: int, pages: list[int], max_size) -> tuple[
 
 
 def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None,
-           max_size: tuple[int, int] | None = None, parallel: int = 1) -> list[dict]:
+           max_size: tuple[int, int] | None = None, parallel: int = 1, texts: bool = True) -> list[dict]:
     """Write the pages; ``parallel`` documents at a time, each in its own reading process and database
     connection (numbers and names stay in the order of ``wanted``)."""
     target.mkdir(parents=True, exist_ok=True)
@@ -245,7 +245,8 @@ def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None,
         for number, mime, image, known in done:
             stem = f"{len(out) + 1:03d}_{_safe(Path(row['filename']).stem)}_S{number}"
             (target / f"{stem}{_EXT.get(mime, '.bin')}").write_bytes(image)
-            (target / f"{stem}.tesseract.txt").write_text(known, encoding="utf-8")
+            if texts:  # the text Projektakte has for the page (comparison in the correction tool)
+                (target / f"{stem}.tesseract.txt").write_text(known, encoding="utf-8")
             entry = {"datei": f"{stem}{_EXT.get(mime, '.bin')}", "dokument": printable(row["rel_path"]),
                      "seite": number, "mime": mime, "tesseract_zeichen": len(known)}
             if (row["id"], number) in kinds:
@@ -362,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-aufloesung", metavar="BREITExHOEHE",
                     help="Seitenbilder höchstens so groß, z. B. 1664x2048 – verkleinert mit gleichem "
                          "Seitenverhältnis (nie verzerrt, nie vergrößert)")
+    ap.add_argument("--ohne-text", action="store_true",
+                    help="keine ….tesseract.txt schreiben, nur Bilder und seiten.json (bei --alle immer)")
     ap.add_argument("--parallel", type=int, default=min(8, os.cpu_count() or 1),
                     help="so viele Dokumente gleichzeitig, je in einem eigenen Leseprozess (Voreinstellung: Kerne, "
                          "höchstens 8)")
@@ -410,12 +413,13 @@ def main(argv: list[str] | None = None) -> int:
             print("Keine passenden Seiten gefunden.")
             return 1
         out = export(conn, settings, Path(args.ziel), wanted, worker=worker, max_size=max_size,
-                     parallel=max(1, args.parallel))
+                     parallel=max(1, args.parallel), texts=not (args.ohne_text or args.alle))
     finally:
         if worker is not None:
             worker.close()
         conn.close()
-    print(f"{len(out)} Seite(n) nach {args.ziel} exportiert (Bilder, Tesseract-Text, seiten.json).")
+    what = "Bilder, seiten.json" if (args.ohne_text or args.alle) else "Bilder, Tesseract-Text, seiten.json"
+    print(f"{len(out)} Seite(n) nach {args.ziel} exportiert ({what}).")
     return 0
 
 

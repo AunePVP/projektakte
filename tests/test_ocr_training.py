@@ -54,6 +54,8 @@ def test_all_pages_of_every_folder_for_a_type_classifier(tmp_path, monkeypatch):
     settings = type("S", (), {"projects_dir": root, "db_path": db_path})()
     again = export(conn, settings, tmp_path / "typen-parallel", picked, parallel=3)
     assert [e["datei"] for e in again] == [e["datei"] for e in out]
+    bare = export(conn, settings, tmp_path / "ohne-text", picked, texts=False)
+    assert len(bare) == len(out) and not list((tmp_path / "ohne-text").glob("*.txt"))
 
 
 def test_max_resolution_keeps_the_aspect_ratio():
