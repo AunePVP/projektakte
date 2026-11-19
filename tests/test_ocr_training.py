@@ -78,3 +78,17 @@ def test_max_resolution_keeps_the_aspect_ratio():
     small = image(800, 600)
     assert fit("image/png", small, (1664, 2048)) == ("image/png", small)  # never enlarged
     assert fit("image/png", small, None) == ("image/png", small)
+
+
+def test_a_file_pypdf_gives_up_on_is_drawn_by_pdfium(monkeypatch):
+    from pypdf.errors import PdfStreamError
+
+    from .test_bildauswertung_stufen import plain_scan as scan
+
+    def broken(_data):
+        raise PdfStreamError("Stream has ended unexpectedly")
+    monkeypatch.setattr(extract_mod, "_open_pdf", broken)
+    pages = extract_mod.page_images(scan(2), [1, 2, 3], "kaputt.pdf")
+    assert [bool(p.images) for p in pages] == [True, True, False]
+    assert pages[2].problem == "Seite nicht vorhanden"
+    assert all(mime == "image/jpeg" for p in pages[:2] for mime, _ in p.images)

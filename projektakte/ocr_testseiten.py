@@ -200,6 +200,11 @@ def fit(mime: str, data: bytes, max_size: tuple[int, int] | None) -> tuple[str, 
     return "image/png", buf.getvalue()
 
 
+def _where(row) -> str:
+    """The whole path of a document for messages (with the project folder), not only the path inside the project."""
+    return printable(row["path"] or row["rel_path"])
+
+
 def _render(conn, vp, worker, doc_id: int, pages: list[int], max_size) -> tuple[dict | None, list]:
     """(document row, [(page, mime, image, known text)]) of one document; nothing written."""
     row = conn.execute("SELECT id, project, path, rel_path, filename, ext, sha256, cache_path, mail_id "
@@ -208,7 +213,7 @@ def _render(conn, vp, worker, doc_id: int, pages: list[int], max_size) -> tuple[
         return None, []
     data = vp._read(dict(row))
     if data is None:
-        log.warning("%s nicht lesbar – übersprungen", printable(row["rel_path"]))
+        log.warning("%s nicht lesbar – übersprungen", _where(row))
         return None, []
     if row["ext"] in IMAGE_EXT:  # an image file goes to the model as it is
         from .extract import PageImages
@@ -219,7 +224,7 @@ def _render(conn, vp, worker, doc_id: int, pages: list[int], max_size) -> tuple[
     done = []
     for p in prepared:
         if not p.images:
-            log.info("%s Seite %d: kein Bild (%s)", printable(row["rel_path"]), p.number, p.problem)
+            log.info("%s Seite %d: kein Bild (%s)", _where(row), p.number, p.problem)
             continue
         mime, image = fit(*p.images[0], max_size)
         done.append((p.number, mime, image, _known_text(conn, doc_id, p.number)))

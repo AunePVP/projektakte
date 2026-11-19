@@ -2216,7 +2216,14 @@ def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
     indexing pass in the extraction worker, under its limits (the model is called by the app, see vision.py).
     RENDER_SECONDS per page, MAX_DOC_PIXELS for the pages of one call."""
     with _pdf_limits():
-        reader = _open_pdf(data)
+        try:
+            reader = _open_pdf(data)
+        except MemoryError:
+            raise
+        except Exception as exc:  # noqa: BLE001 – pypdf gives up on files a viewer still shows (damaged, cut off)
+            log.info("%s: Aufbau nicht lesbar (%s: %s) – Seiten werden nur mit PDFium gezeichnet", name,
+                     type(exc).__name__, exc)
+            return _pdfium_page_images(data, numbers, name, f"{type(exc).__name__}: {exc}")
         if reader is None:
             return [PageImages(n, problem=PDF_ENCRYPTED_TEXT) for n in numbers]
         doc = _DocState(source=data)
@@ -2243,6 +2250,43 @@ def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
             out_pages.append(page)
             _progress()
         return out_pages
+
+
+def _pdfium_page_images(data: bytes, numbers: list[int], name: str, why: str) -> list[PageImages]:
+    """The pages rendered by PDFium alone, for a file pypdf cannot open (PDFium repairs damaged files the way
+    viewers do). Without pypdf there is no CAD check and no repeated-page shortcut; ``why`` is pypdf's error,
+    reported if PDFium cannot open the file either."""
+    pdfium = _pdfium()
+    if pdfium is None:
+        return [PageImages(n, problem=f"Datei nicht lesbar ({why})") for n in numbers]
+    doc = _DocState(source=data)
+    try:
+        doc.pdfium = pdfium.PdfDocument(data)
+        count = len(doc.pdfium)
+    except Exception as exc:  # noqa: BLE001 – not even PDFium can open it
+        return [PageImages(n, problem=f"Datei nicht lesbar ({why}; PDFium: {exc})") for n in numbers]
+    out = []
+    for n in numbers:
+        _check_page()
+        if not 1 <= n <= count:
+            out.append(PageImages(n, problem="Seite nicht vorhanden"))
+            continue
+        try:
+            rendered = _render_page(doc, n, MAX_IMAGE_PIXELS, vision_dpi() or None, color=True)
+        except MemoryError as exc:
+            _out_of_memory(exc)
+            out.append(PageImages(n, problem=f"Bilder zu groß zum Lesen ({_memory_bound()})"))
+            continue
+        if rendered is None:
+            out.append(PageImages(n, problem=f"{_RENDER_FAILED} (pypdfium2 nicht installiert)", retry=True))
+        elif rendered.blank:
+            out.append(PageImages(n, problem="Seite leer"))
+        elif rendered.problem:
+            out.append(PageImages(n, problem=rendered.problem))
+        else:
+            out.append(PageImages(n, [for_model(rendered.mime, rendered.data, None)]))
+        _progress()
+    return out
 
 
 def _images_of(page, number: int, name: str, doc: _DocState) -> PageImages:

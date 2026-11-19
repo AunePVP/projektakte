@@ -5,6 +5,10 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Beschädigte PDFs:** Gibt pypdf beim Öffnen auf (z. B. „Stream has ended unexpectedly“), zeichnet PDFium die Seiten
+  trotzdem für das Bildmodell – wie ein PDF-Betrachter, der die Datei repariert (Bildauswertung und Seitenexport).
+  Der Seitenexport nennt in Meldungen den ganzen Pfad der Datei.
+
 - **Push von plMail:** plMail kann die zugeordneten Mails selbst senden (`PUT/DELETE /api/integration/mails/…`,
   `PUT …/zuordnung`, `GET` zum Prüfen); Projektakte braucht dann keinen Postfachzugang mehr. Eingang in
   `DATA_DIR/plmail-eingang`, Übernahme in der Phase „Mails“. Mit `INTEGRATION_TOKEN` gilt jetzt auch ohne JMAP
