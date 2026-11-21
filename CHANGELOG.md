@@ -5,6 +5,12 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Seitenexport, genau dieselben Seiten neu:** `--erneuern` schreibt jetzt auch Bilddateien (Fotos) neu, findet das
+  Dokument über seine id (neu in `seiten.json`, mit `pfad`) oder bei älteren Exporten über den Pfad – gibt es den
+  Pfad mehrfach, entscheidet der Bildvergleich mit dem alten Seitenbild, sonst bleibt die Seite. Jedes neue Bild wird
+  mit dem alten verglichen, Abweichungen werden gemeldet. `--max-aufloesung` gilt jetzt streng als Breite × Höhe
+  (Querformat höchstens so breit, nichts gedreht), das Bildformat bleibt (gleiche Dateinamen). Neu: `--dpi`.
+
 - **Beschädigte PDFs:** Gibt pypdf beim Öffnen auf (z. B. „Stream has ended unexpectedly“), zeichnet PDFium die Seiten
   trotzdem für das Bildmodell – wie ein PDF-Betrachter, der die Datei repariert (Bildauswertung und Seitenexport).
   Der Seitenexport nennt in Meldungen den ganzen Pfad der Datei.

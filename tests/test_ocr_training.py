@@ -71,8 +71,10 @@ def test_max_resolution_keeps_the_aspect_ratio():
     def size(data):
         return Image.open(io.BytesIO(data)).size
 
-    mime, data = fit("image/png", image(3328, 2048), (1664, 2048))  # landscape: the box turns to 2048x1664
-    assert size(data) == (2048, 1260)
+    mime, data = fit("image/png", image(3328, 2048), (1664, 2048))  # landscape: still at most 1664 wide
+    assert size(data) == (1664, 1024)
+    mime, data = fit("image/tiff", image(3000, 4000, "TIFF"), (1664, 2048))  # format kept: same file name
+    assert mime == "image/tiff" and size(data) == (1536, 2048)
     mime, data = fit("image/jpeg", image(1754, 2480, "JPEG"), (1664, 2048))  # A4 at 150 dpi: height limits
     assert mime == "image/jpeg" and size(data) == (1448, 2048)
     small = image(800, 600)
@@ -102,3 +104,31 @@ def test_a_new_export_clears_pages_numbered_beyond_999(tmp_path):
         (tmp_path / name).write_text("x")
     assert _clear(tmp_path) == 6
     assert sorted(p.name for p in tmp_path.iterdir()) == ["notiz.txt", "seitentypen.csv"]
+
+
+def test_renewing_writes_the_same_pages_smaller(tmp_path, monkeypatch):
+    import io
+
+    from projektakte.ocr_testseiten import renew
+
+    monkeypatch.setattr(extract_mod, "ocr_available", lambda: False)
+    png = tmp_path / "x.png"
+    Image.new("RGB", (3000, 2000), "white").save(png)
+    conn, root = _setup(tmp_path, {"A/Scan.pdf": plain_scan(2), "Bilder/Foto.png": png.read_bytes()})
+    _stage1(conn, root, Vision())
+    settings = type("S", (), {"projects_dir": root})()
+    picked = _all_candidates(conn, 10, seed=1, per_doc=2)
+    out = export(conn, settings, tmp_path / "typen", picked)
+    listing = tmp_path / "typen" / "seiten.json"
+    old = json.loads(listing.read_text(encoding="utf-8"))
+    for e in old:  # an export before 20.11.2026: found by its path
+        e.pop("id"), e.pop("pfad")
+    listing.write_text(json.dumps(old), encoding="utf-8")
+    stats = renew(conn, settings, tmp_path / "typen", max_size=(600, 800))
+    assert stats["fehlt"] == stats["mehrdeutig"] == stats["abweichend"] == 0
+    new = json.loads(listing.read_text(encoding="utf-8"))
+    assert [e["datei"] for e in new] == [e["datei"] for e in out]  # same names, same pages
+    assert all(e["id"] for e in new)
+    for e in new:
+        w, h = Image.open(io.BytesIO((tmp_path / "typen" / e["datei"]).read_bytes())).size
+        assert w <= 600 and h <= 800

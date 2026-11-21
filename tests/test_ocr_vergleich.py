@@ -64,7 +64,10 @@ def test_renew_writes_the_pdf_pages_again_under_the_same_numbers(tmp_path, monke
     listed.append({"datei": "009_Foto_S1.jpg", "dokument": "Foto.jpg", "seite": 1, "mime": "image/jpeg"})
     (target / "seiten.json").write_text(json.dumps(listed), encoding="utf-8")
     (target / "009_Foto_S1.jpg").write_bytes(b"foto")
-    assert renew(conn, settings, target) == (len(out), 0)
+    stats = renew(conn, settings, target)
+    assert stats["neu"] + stats["unverändert"] == len(out)
+    assert stats["fehlt"] == 1  # the photo is not in Projektakte: left as it was
+    assert stats["abweichend"] == 1  # the broken old image of the first page
     again = json.loads((target / "seiten.json").read_text(encoding="utf-8"))
     assert [e["datei"] for e in again[:-1]] == [e["datei"] for e in out]  # same numbers and names
     assert all(e["mime"] == "image/jpeg" for e in again[:-1])  # rendered pages, in colour

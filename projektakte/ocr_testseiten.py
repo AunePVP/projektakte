@@ -174,9 +174,10 @@ def _clear(target: Path) -> int:
 
 
 def fit(mime: str, data: bytes, max_size: tuple[int, int] | None) -> tuple[str, bytes]:
-    """Scale a page image down to fit ``max_size``, keeping its aspect ratio – never distorted, never enlarged.
-    The box turns with the image: the longer side may be up to the larger value (1664x2048 allows a landscape
-    page up to 2048x1664). Images that fit are returned unchanged; JPEG stays JPEG, everything else becomes PNG."""
+    """Scale a page image down so that its width is at most ``max_size[0]`` and its height at most ``max_size[1]``,
+    keeping its aspect ratio – never distorted, never turned, never enlarged (a landscape page with 1664x2048 is at
+    most 1664 wide). Images that fit are returned byte for byte; a scaled image keeps its format (JPEG, PNG, TIFF,
+    WebP), so its file name does not change."""
     if not max_size:
         return mime, data
     import io
@@ -185,19 +186,41 @@ def fit(mime: str, data: bytes, max_size: tuple[int, int] | None) -> tuple[str, 
 
     with Image.open(io.BytesIO(data)) as img:
         w, h = img.size
-        short, long_ = sorted(max_size)
-        box = (long_, short) if w > h else (short, long_)
-        scale = min(box[0] / w, box[1] / h)
-        if scale >= 1:
+        max_w, max_h = max_size
+        if w <= max_w and h <= max_h:
             return mime, data
-        size = (max(1, round(w * scale)), max(1, round(h * scale)))
+        # whole-number arithmetic: the limiting side gets exactly its limit, the other is rounded down
+        size = (max_w, max(1, h * max_w // w)) if max_w * h <= max_h * w else (max(1, w * max_h // h), max_h)
         small = img.convert("RGB" if img.mode not in ("RGB", "L") else img.mode).resize(size, Image.LANCZOS)
     buf = io.BytesIO()
-    if mime == "image/jpeg":
-        small.save(buf, "JPEG", quality=90)
-        return mime, buf.getvalue()
-    small.save(buf, "PNG", optimize=True)
-    return "image/png", buf.getvalue()
+    formats = {"image/jpeg": ("JPEG", {"quality": 90}), "image/tiff": ("TIFF", {"compression": "tiff_lzw"}),
+               "image/webp": ("WEBP", {"quality": 90})}
+    fmt, options = formats.get(mime, ("PNG", {"optimize": True}))
+    small.save(buf, fmt, **options)
+    return (mime if mime in formats else "image/png"), buf.getvalue()
+
+
+def _thumb(data: bytes) -> bytes | None:
+    """A 16x16 grey thumbnail, to tell whether two renderings show the same page."""
+    import io
+
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            return img.convert("L").resize((16, 16), Image.BILINEAR).tobytes()
+    except Exception:  # noqa: BLE001 – unreadable image: not comparable
+        return None
+
+
+def _difference(a: bytes | None, b: bytes | None) -> float:
+    """Mean grey difference of two thumbnails (0 = same, 255 = opposite); 255 if one is missing."""
+    if a is None or b is None:
+        return 255.0
+    return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+
+
+SAME_PAGE = 12.0  # thumbnails closer than this show the same page (other resolution, other JPEG)
 
 
 def _where(row) -> str:
@@ -253,7 +276,8 @@ def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None,
             if texts:  # the text Projektakte has for the page (comparison in the correction tool)
                 (target / f"{stem}.tesseract.txt").write_text(known, encoding="utf-8")
             entry = {"datei": f"{stem}{_EXT.get(mime, '.bin')}", "dokument": printable(row["rel_path"]),
-                     "seite": number, "mime": mime, "tesseract_zeichen": len(known)}
+                     "seite": number, "mime": mime, "tesseract_zeichen": len(known), "id": row["id"],
+                     "pfad": _where(row)}
             if (row["id"], number) in kinds:
                 entry["quelle"] = kinds[(row["id"], number)]
             out.append(entry)
@@ -299,48 +323,91 @@ def export(conn, settings, target: Path, wanted: list[tuple], *, worker=None,
     return out
 
 
-def renew(conn, settings, target: Path, *, worker=None, max_size: tuple[int, int] | None = None) -> tuple[int, int]:
-    """Write the page images of the PDF pages listed in ``target``/seiten.json again, as the model gets them now,
-    under the same numbers and names (an export whose pages were already corrected or transcribed keeps them):
-    only the image file is replaced (with another extension if its type changed) and its entry updated. Texts
-    (``….tesseract.txt``), image files and other files are left as they are. Returns (written, not written)."""
+def _page_image(vp, worker, row: dict, pages: list[int], max_size) -> dict[int, tuple[str, bytes] | str]:
+    """page -> (mime, image) as exported now, or the reason there is none."""
+    data = vp._read(row)
+    if data is None:
+        return {n: "nicht gefunden oder nicht lesbar" for n in pages}
+    if row["ext"] in IMAGE_EXT:  # an image file goes to the model as it is
+        return {n: fit(IMAGE_EXT[row["ext"]], data, max_size) for n in pages}
+    out: dict[int, tuple[str, bytes] | str] = {}
+    for p in extract_worker.page_images(row["filename"], data, sorted(pages), vp.prepare, worker=worker):
+        out[p.number] = fit(*p.images[0], max_size) if p.images else f"kein Bild ({p.problem})"
+    return out
+
+
+def renew(conn, settings, target: Path, *, worker=None, max_size: tuple[int, int] | None = None,
+          mails: bool = True) -> dict:
+    """Write the page images listed in ``target``/seiten.json again, as they are exported now (PDF pages and image
+    files), under the same numbers and names – the same pages, nothing else: an export whose pages were already
+    typed, corrected or transcribed keeps them. The document is found by its id (exports from 20.11.2026 on), else
+    by its path inside the project; if several documents have that path, the one whose page looks like the old
+    image is taken – or none, then the page is left as it was. Every new image is compared with the old one; pages
+    that look different are counted (the file may have changed since). Texts and other files are left alone."""
     listing = target / "seiten.json"
     entries = json.loads(listing.read_text(encoding="utf-8"))
     vp = VisionPass(conn, None, projects_dir=getattr(settings, "projects_dir", None), worker=worker)
-    rows = {printable(r["rel_path"]): r for r in conn.execute(
-        "SELECT id, project, path, rel_path, filename, ext, sha256, cache_path, mail_id FROM documents "
-        "WHERE ext = '.pdf' ORDER BY id DESC")}  # the oldest row of a path wins
-    by_doc: dict[str, list[dict]] = {}
+    cols = "id, project, path, rel_path, filename, ext, sha256, cache_path, mail_id"
+    by_id = {r["id"]: dict(r) for r in conn.execute(f"SELECT {cols} FROM documents")}
+    by_rel: dict[str, list[dict]] = {}
+    for r in by_id.values():
+        if mails or r["mail_id"] is None:
+            by_rel.setdefault(printable(r["rel_path"]), []).append(r)
+    stats = {"neu": 0, "unverändert": 0, "fehlt": 0, "mehrdeutig": 0, "abweichend": 0, "liste": []}
+    groups: dict[tuple, list[dict]] = {}
     for entry in entries:
-        if entry.get("dokument", "").lower().endswith(".pdf"):
-            by_doc.setdefault(entry["dokument"], []).append(entry)
-    written, missed = 0, 0
-    for path, todo in by_doc.items():
-        row = rows.get(path)
-        data = vp._read(dict(row)) if row is not None else None
-        if data is None:
-            log.warning("%s nicht gefunden oder nicht lesbar – %d Seite(n) bleiben", path, len(todo))
-            missed += len(todo)
-            continue
-        pages = {p.number: p for p in extract_worker.page_images(
-            row["filename"], data, sorted({int(e["seite"]) for e in todo}), vp.prepare, worker=worker)}
-        for entry in todo:
-            page = pages.get(int(entry["seite"]))
-            if page is None or not page.images:
-                log.warning("%s Seite %s: kein Bild (%s) – %s bleibt", path, entry["seite"],
-                            page.problem if page else "?", entry["datei"])
-                missed += 1
+        key = ("id", entry["id"]) if entry.get("id") in by_id else ("pfad", entry.get("dokument", ""))
+        groups.setdefault(key, []).append(entry)
+    for (how, what), todo in groups.items():
+        pages = sorted({int(e["seite"]) for e in todo})
+        candidates = [by_id[what]] if how == "id" else by_rel.get(what, [])
+        old = {e["datei"]: _thumb((target / e["datei"]).read_bytes()) if (target / e["datei"]).exists() else None
+               for e in todo}
+        rendered = {r["id"]: _page_image(vp, worker, r, pages, max_size) for r in candidates}
+        chosen = None
+        if len(candidates) == 1:
+            chosen = candidates[0]
+        elif len(candidates) > 1:  # same path in several projects: the one that looks like the old images
+            def distance(r) -> float:
+                worst = 0.0
+                for e in todo:
+                    got = rendered[r["id"]].get(int(e["seite"]))
+                    worst = max(worst, _difference(old[e["datei"]], _thumb(got[1]) if isinstance(got, tuple) else None))
+                return worst
+            ranked = sorted(candidates, key=distance)
+            if distance(ranked[0]) < SAME_PAGE <= distance(ranked[1]):
+                chosen = ranked[0]
+            else:
+                log.warning("%s: %d Dokumente mit diesem Pfad, keines eindeutig gleich – %d Seite(n) bleiben",
+                            what, len(candidates), len(todo))
+                stats["mehrdeutig"] += len(todo)
                 continue
-            mime, image = fit(*page.images[0], max_size)
-            old = target / entry["datei"]
-            new = old.with_suffix(_EXT.get(mime, ".bin"))
-            new.write_bytes(image)
-            if new != old and old.exists():
-                old.unlink()
-            entry["datei"], entry["mime"] = new.name, mime
-            written += 1
+        if chosen is None:
+            log.warning("%s nicht mehr in Projektakte – %d Seite(n) bleiben", what, len(todo))
+            stats["fehlt"] += len(todo)
+            continue
+        for entry in todo:
+            got = rendered[chosen["id"]].get(int(entry["seite"]), "Seite nicht vorhanden")
+            if isinstance(got, str):
+                log.warning("%s Seite %s: %s – %s bleibt", _where(chosen), entry["seite"], got, entry["datei"])
+                stats["fehlt"] += 1
+                continue
+            mime, image = got
+            if _difference(old[entry["datei"]], _thumb(image)) >= SAME_PAGE:
+                stats["abweichend"] += 1
+                stats["liste"].append(entry["datei"])
+                log.warning("%s sieht anders aus als vorher (%s Seite %s) – trotzdem neu geschrieben",
+                            entry["datei"], _where(chosen), entry["seite"])
+            old_file = target / entry["datei"]
+            new_file = old_file.with_suffix(_EXT.get(mime, old_file.suffix))
+            before = old_file.read_bytes() if old_file.exists() else None
+            new_file.write_bytes(image)
+            if new_file != old_file and old_file.exists():
+                old_file.unlink()
+            stats["neu" if before != image else "unverändert"] += 1
+            entry.update(datei=new_file.name, mime=mime, id=chosen["id"], pfad=_where(chosen))
     listing.write_text(json.dumps(entries, ensure_ascii=False, indent=1), encoding="utf-8")
-    return written, missed
+    return stats
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -366,8 +433,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ohne-mails", action="store_true",
                     help="mit --training oder --alle: keine Mail-Anhänge, nur Dateien aus den Projektordnern")
     ap.add_argument("--max-aufloesung", metavar="BREITExHOEHE",
-                    help="Seitenbilder höchstens so groß, z. B. 1664x2048 – verkleinert mit gleichem "
-                         "Seitenverhältnis (nie verzerrt, nie vergrößert)")
+                    help="Seitenbilder höchstens so breit und so hoch, z. B. 1664x2048 – verkleinert mit gleichem "
+                         "Seitenverhältnis (nie verzerrt, gedreht oder vergrößert; auch Querformat höchstens 1664 breit)")
+    ap.add_argument("--dpi", type=int, help="PDF-Seiten mit höchstens so vielen dpi zeichnen (Voreinstellung: "
+                                            "VISION_DPI, sonst 150); die Grenze aus --max-aufloesung gilt danach")
     ap.add_argument("--ohne-text", action="store_true",
                     help="keine ….tesseract.txt schreiben, nur Bilder und seiten.json (bei --alle immer)")
     ap.add_argument("--parallel", type=int, default=min(8, os.cpu_count() or 1),
@@ -386,6 +455,10 @@ def main(argv: list[str] | None = None) -> int:
         except (ValueError, AssertionError):
             ap.error("--max-aufloesung: BREITExHOEHE erwartet, z. B. 1664x2048")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if args.dpi is not None:  # read by the reading processes as well (extract.vision_dpi)
+        if args.dpi < 1:
+            ap.error("--dpi: eine positive ganze Zahl, z. B. 175")
+        os.environ["VISION_DPI"] = str(args.dpi)
     settings = load_settings()
     conn = db.connect(settings.db_path)
     if args.training or args.erneuern or args.alle:  # CAD plans are part of the training: drawn, not passed over (VISION_SKIP_CAD)
@@ -396,10 +469,13 @@ def main(argv: list[str] | None = None) -> int:
             if not (Path(args.ziel) / "seiten.json").is_file():
                 print(f"Keine seiten.json in {args.ziel}.")
                 return 1
-            written, missed = renew(conn, settings, Path(args.ziel), worker=worker, max_size=max_size)
-            print(f"{written} PDF-Seitenbild(er) in {args.ziel} neu geschrieben"
-                  + (f", {missed} nicht (siehe Meldungen)." if missed else "."))
-            return 0 if not missed else 1
+            stats = renew(conn, settings, Path(args.ziel), worker=worker, max_size=max_size,
+                          mails=not args.ohne_mails)
+            print(f"{stats['neu']} Seitenbild(er) in {args.ziel} neu geschrieben, {stats['unverändert']} unverändert"
+                  f" (passten schon). Nicht erneuert: {stats['fehlt']} (Datei oder Seite fehlt), "
+                  f"{stats['mehrdeutig']} (Pfad mehrdeutig). Anders aussehend als vorher: {stats['abweichend']}"
+                  + (f" – {', '.join(stats['liste'][:10])}" if stats["liste"] else ""))
+            return 0 if not (stats["fehlt"] or stats["mehrdeutig"]) else 1
         if args.alle:
             wanted = _all_candidates(conn, max(1, args.anzahl), args.seed, _excluded(args.ohne_seiten),
                                      mails=not args.ohne_mails, per_doc=args.je_dokument)
