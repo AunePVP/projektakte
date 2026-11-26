@@ -69,6 +69,7 @@ _STOP_SECONDS = 3.0  # a worker asked to stop that has not ended by then is kill
 _SLICE_SECONDS = 0.5  # waiting for the worker is done in slices: a close() from another thread is noticed
 _MAX_LOG_RECORDS = 200  # log records forwarded per file: a crafted file must not flood the app's log
 _STOP = b'{"stop": true}'
+_PAGE_LISTS = ("layer_pages", "cad_pages", "blank_pages")  # Extracted: pages listed or typed for the page model
 _FLAGS = ("defer_vision", "recheck", "ocr")  # flags of extract.extract a request may carry
 
 
@@ -221,12 +222,13 @@ class ExtractWorker:
                     return self._result(filename, llm)
             return failed(NOT_STARTED_TEXT, retry=True)
 
-    def page_images(self, filename: str, data: bytes, pages: list[int]) -> list[PageImages]:
+    def page_images(self, filename: str, data: bytes, pages: list[int],
+                    skip_cad: bool | None = None) -> list[PageImages]:
         """Decode and prepare the images of ``pages`` of a PDF for the model (extract.page_images) in the
         worker, under its limits; the model is called by the app (vision.py). A failure of the worker
         (limits, crash, not started) is the problem of every page: deterministic limits without retry."""
         request = json.dumps({"op": "images", "filename": filename, "pages": [int(n) for n in pages],
-                              "level": logging.getLogger().getEffectiveLevel()}).encode()
+                              "skip_cad": skip_cad, "level": logging.getLogger().getEffectiveLevel()}).encode()
         with self._lock:
             if self._closed:
                 raise ExtractionAborted("Leseprozess wurde beendet")
@@ -450,7 +452,8 @@ def _extracted(data: dict) -> Extracted:
     return Extracted([Page(number, text) for number, text in data["pages"]], status=data["status"],
                      message=data["message"], method=data["method"], incomplete=bool(data["incomplete"]),
                      retry=bool(data["retry"]), limit=str(data["limit"]) if data.get("limit") else None,
-                     vision_pages=[int(n) for n in data.get("vision_pages") or ()])
+                     vision_pages=[int(n) for n in data.get("vision_pages") or ()],
+                     **{key: [int(n) for n in data.get(key) or ()] for key in _PAGE_LISTS})
 
 
 # -- the worker's side ------------------------------------------------------------------------------------
@@ -504,7 +507,8 @@ def _serve(conn, limits: Limits, parent: int) -> None:  # pragma: no cover - run
                      "result": {"pages": [[p.number, p.text] for p in result.pages], "status": result.status,
                                 "message": result.message, "method": result.method,
                                 "incomplete": result.incomplete, "retry": result.retry,
-                                "limit": result.limit, "vision_pages": result.vision_pages}})
+                                "limit": result.limit, "vision_pages": result.vision_pages,
+                                **{key: getattr(result, key) for key in _PAGE_LISTS}}})
         if recycle:
             return
 
@@ -515,7 +519,8 @@ def _send_images(conn, request: dict, data: bytes, limits: Limits) -> bool:  # p
     from . import extract
 
     try:
-        pages = extract.page_images(data, [int(n) for n in request["pages"]], Path(request["filename"]).name)
+        pages = extract.page_images(data, [int(n) for n in request["pages"]], Path(request["filename"]).name,
+                                    skip_cad=request.get("skip_cad"))
     except MemoryError:
         pages = [PageImages(int(n), problem=f"Bilder zu groß zum Lesen ({extract._memory_bound()})",
                             limit=limits.memory_limit()) for n in request["pages"]]
@@ -760,13 +765,17 @@ def extract_file(filename: str, data: bytes, llm, extract, *, worker=_PASS, **fl
     return extract(Path(filename), data, llm=llm, **flags)
 
 
-def page_images(filename: str, data: bytes, pages: list[int], prepare, *, worker=_PASS) -> list[PageImages]:
+def page_images(filename: str, data: bytes, pages: list[int], prepare, *, worker=_PASS,
+                skip_cad: bool | None = None) -> list[PageImages]:
     """The page images of a PDF for the model: in the worker of the running pass (or ``worker``) if there is
-    one, else in this process with ``prepare`` (extract.page_images, the caller's)."""
+    one, else in this process with ``prepare`` (extract.page_images, the caller's). ``skip_cad``: see
+    extract.page_images (None: VISION_SKIP_CAD)."""
     worker = _active if worker is _PASS else worker
     if worker is not None and Path(filename).suffix.lower() == ".pdf":
-        return worker.page_images(filename, data, pages)
-    return prepare(data, pages, Path(filename).name)
+        return worker.page_images(filename, data, pages, skip_cad)
+    if skip_cad is None:
+        return prepare(data, pages, Path(filename).name)
+    return prepare(data, pages, Path(filename).name, skip_cad=skip_cad)
 
 
 def limits_for(filename: str, llm) -> Limits | None:

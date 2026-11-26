@@ -34,6 +34,27 @@ def known(conn: sqlite3.Connection, doc_id: int) -> dict[int, sqlite3.Row]:
     return {r["page"]: r for r in conn.execute("SELECT * FROM page_types WHERE doc_id = ?", (doc_id,))}
 
 
+def final_texts(stage1: dict[int, str], rows: dict) -> dict[int, str]:
+    """The text of every page of a document, from its text of the first stage (``stage1``: text layer or
+    Tesseract) and what the page model said (``rows``: page → row of page_types). A page with a real text layer
+    keeps its text whatever its type. A scan page: Text → the model's text made from the raw text (headers and
+    footers that come back kept once, seitentext.document_texts); Leer → no text; Plan, Foto, Unsicher and pages
+    without a type → the text of the first stage."""
+    from .seitentext import document_texts
+
+    written = document_texts({n: r["raw"] for n, r in rows.items()
+                              if r["typ"] == "Text" and not r["layer"] and (r["raw"] or "").strip()})
+    out = dict(stage1)
+    for n, r in rows.items():
+        if r["layer"]:
+            continue
+        if n in written and written[n].strip():
+            out[n] = written[n]
+        elif r["typ"] == "Leer":
+            out[n] = ""
+    return out
+
+
 def counts(conn: sqlite3.Connection, doc_id: int) -> dict[str, int]:
     """Pages of a document per type, and under "Schleife" those the service cut a loop short on."""
     out = {typ: n for typ, n in conn.execute(

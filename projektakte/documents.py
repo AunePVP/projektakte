@@ -20,11 +20,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import dokumentarten, extract_worker, reihenfolge
+from . import dokumentarten, extract_worker, reihenfolge, seitentypen
 from .vectors import CHUNKS_WAITING
 from .db import BAUVORHABEN
 from .chunking import Chunk, chunk_pages
-from .extract import IMAGE_EXT, SUPPORTED_EXT, Extracted, Page, extract, extraction_profile, profile_key
+from .extract import (IMAGE_EXT, PAGE_MODEL_MARK, SUPPORTED_EXT, Extracted, Page, extract, extraction_profile,
+                      page_model, profile_key)
 from .pause import PAUSE
 from .textutil import find_date, fold
 
@@ -111,6 +112,8 @@ def reprocess_due(row, profile: str, now: str, limits: extract_worker.Limits | N
     a result cut short by a limit of the extraction worker (EXTRACT_CPU_SECONDS, EXTRACT_MEMORY_MB) –
     when ``limits``, those the file would be read under now (None: none, it is read in this process),
     raise that limit."""
+    if PAGE_MODEL_MARK in profile and PAGE_MODEL_MARK not in (row["extract_profile"] or "") and _paged(row):
+        return True  # a PDF or image read before the page model: its pages have no type yet (also a complete one)
     if not row["incomplete"]:
         return False
     base, marked, limit = (row["extract_profile"] or "").partition(LIMIT_MARK)
@@ -128,6 +131,14 @@ def reprocess_due(row, profile: str, now: str, limits: extract_worker.Limits | N
     if marked and (limits is None or limits.lifts(limit)):
         return True
     return bool(row["retry_after"]) and row["retry_after"] <= now
+
+
+def _paged(row) -> bool:
+    """A file with page images (PDF, image file): what the page model types."""
+    keys = row.keys()
+    name = next((row[k] for k in ("ext", "rel_path", "path") if k in keys and row[k]), "")
+    ext = name if name.startswith(".") and "/" not in name else Path(name).suffix
+    return ext.lower() == ".pdf" or ext.lower() in IMAGE_EXT
 
 
 @dataclass
@@ -184,6 +195,8 @@ def prepare_document(*, rel_path: str, data: bytes, mtime: float | None, llm=Non
     result = extract_worker.extract_file(filename, data, llm, extract, defer_vision=later, ocr=ocr)
     chunks = chunk_pages(result.pages) if result.status == "ok" else []
     pending = f", Bildauswertung ausstehend: {len(result.vision_pages)} Seite(n)" if result.vision_pages else ""
+    if result.vision_pages and len(result.layer_pages) == len(result.vision_pages):
+        pending = f", Seitentyp ausstehend: {len(result.vision_pages)} Seite(n)"
     log.info("Gelesen: %s – %s%s, %d Seite(n), %d Abschnitt(e), %.1f s%s%s", printable(rel_path), _STATUS_DE.get(
         result.status, result.status), " (Bildauswertung)" if result.method == "vision" else "", len(result.pages),
         len(chunks), time.monotonic() - started, f" – {result.message}" if result.message else "", pending)
@@ -209,20 +222,33 @@ def write_document(conn: sqlite3.Connection, doc: PreparedDocument, *, path: str
     chunks, status, message, method = doc.chunks, r.status, r.message, r.method
     pending: list[int] = []
     known: dict[int, str] = {}
+    paged = PAGE_MODEL_MARK in (doc.profile or "")  # the page model types the pages (extract.page_model)
+    layer = set(r.layer_pages) if paged else set()
+    same = bool(row) and row[1] == doc.sha256
+    if paged and row and not same:
+        seitentypen.clear(conn, row[0])  # another file: what the model said of the old one is gone
     if r.vision_pages:
         # pages the model already read for this content and profile stay read (the file was read again)
-        if row and row[1] == doc.sha256 and row[3] == doc.profile:
+        if paged and same:  # the page model: the types are kept for good, the pages' texts are made from them
+            rows = {n: t for n, t in seitentypen.known(conn, row[0]).items() if n in set(r.vision_pages)}
+            texts = seitentypen.final_texts({p.number: p.text for p in r.pages}, rows)
+            known = {n: texts.get(n, "") for n in rows}
+        elif same and row[3] == doc.profile:
             known = {n: t for n, t in conn.execute(
                 "SELECT page, text FROM page_texts WHERE doc_id = ? AND state = 'done'", (row[0],))}
         pending = [n for n in r.vision_pages if n not in known]
         if known:
             pages = _merged_pages(r.pages, known)
             chunks = chunk_pages(pages)
-            status, method = ("ok" if any(p.text.strip() for p in pages) else status), "vision"
+            status = "ok" if any(p.text.strip() for p in pages) else status
+            if any(n not in layer for n in known):
+                method = "vision"
         if pending:
-            message = pending_message(r.message, len(pending))
+            message = pending_message(r.message, len(pending), types_only=all(n in layer for n in pending))
+    # a page with a real text layer that only waits for its type does not make the document incomplete
+    waiting = any(n not in layer for n in pending)
     values = (project, mail_id, doc.rel_path, doc.filename, doc.ext, doc.size, doc.mtime, doc.sha256,
-              doc.doc_date, doc.pages, status, message, method, doc.profile, int(r.incomplete or bool(pending)),
+              doc.doc_date, doc.pages, status, message, method, doc.profile, int(r.incomplete or waiting),
               attempts, retry_after, len(pending), r.message if pending else None, int(r.incomplete))
     if row:
         doc_id = row[0]
@@ -239,17 +265,23 @@ def write_document(conn: sqlite3.Connection, doc: PreparedDocument, *, path: str
             "doc_date, pages, status, message, method, extract_profile, incomplete, attempts, retry_after, "
             "vision_pending, vision_note, vision_incomplete, path, indexed_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))", (*values, path)).lastrowid
+    if paged:  # typed without the model: CAD plans (not sent) and pages rendered blank
+        for n in r.cad_pages:
+            seitentypen.store(conn, doc_id, n, typ="Plan", source=seitentypen.CAD)
+        for n in r.blank_pages:
+            seitentypen.store(conn, doc_id, n, typ="Leer", source=seitentypen.RENDER)
     if pending:
-        store_page_texts(conn, doc_id, r.pages, pending, known)
+        store_page_texts(conn, doc_id, r.pages, pending, known, layer)
         VISION_WAITING.set()
     write_chunks(conn, doc_id, chunks, filename=doc.filename, project=project, project_name=project_name,
                  mail_id=mail_id)
     return doc_id
 
 
-def pending_message(note: str | None, pages: int) -> str:
-    """The message of a document whose scan pages wait for the model."""
-    text = f"Bildauswertung ausstehend: {pages} Seite(n)"
+def pending_message(note: str | None, pages: int, *, types_only: bool = False) -> str:
+    """The message of a document whose scan pages wait for the model; ``types_only``: only pages with a real
+    text layer wait, for their type (the page model) – the document's text is complete."""
+    text = f"{'Seitentyp' if types_only else 'Bildauswertung'} ausstehend: {pages} Seite(n)"
     return f"{note}; {text}" if note else text
 
 
@@ -261,16 +293,18 @@ def _merged_pages(pages: list[Page], known: dict[int, str]) -> list[Page]:
 
 
 def store_page_texts(conn: sqlite3.Connection, doc_id: int, pages: list[Page], pending: list[int],
-                     done: dict[int, str] | None = None) -> None:
+                     done: dict[int, str] | None = None, layer: set[int] | frozenset = frozenset()) -> None:
     """The texts of all pages of a document whose scan pages wait for the model (``pending``), so that the
     phase "Bildauswertung" can put the document together again with the model's texts; ``done`` are pages
-    already read by it."""
+    already read by it. ``layer`` (the page model): pages with a real text layer – their text stands, the model
+    only gives their type."""
     done = done or {}
     texts = {p.number: p.text for p in pages if p.number is not None}
     rows = [(doc_id, n, text, "text") for n, text in texts.items() if n not in pending and n not in done]
     rows += [(doc_id, n, texts.get(n, ""), "pending") for n in pending]
     rows += [(doc_id, n, text, "done") for n, text in done.items()]
-    conn.executemany("INSERT OR REPLACE INTO page_texts(doc_id, page, text, state) VALUES(?,?,?,?)", rows)
+    conn.executemany("INSERT OR REPLACE INTO page_texts(doc_id, page, text, state, layer) VALUES(?,?,?,?,?)",
+                     [(*row, int(row[1] in layer)) for row in rows])
 
 
 def write_chunks(conn: sqlite3.Connection, doc_id: int, chunks: list[Chunk], *, filename: str,
@@ -742,7 +776,8 @@ def _index_folder(conn: sqlite3.Connection, project: dict, state: _ProjectState,
         # a photo in a folder of VISION_SKIP_FOLDERS: not sent to the vision model; its own profile, so that
         # removing the folder from the setting reads it
         photo = bool(skip_photos) and f.suffix.lower() in IMAGE_EXT and _in_folder(shown, stored.name, skip_photos)
-        file_profile = f"{profile}{PHOTO_MARK}" if photo and getattr(llm, "vision", False) else profile
+        reads_images = getattr(llm, "vision", False) or bool(page_model(llm))
+        file_profile = f"{profile}{PHOTO_MARK}" if photo and reads_images else profile
         due = row is not None and reprocess_due(row, file_profile, now, extract_worker.limits_for(f.name, llm))
         if row and row["size"] == st.st_size and row["mtime"] == st.st_mtime and not due:
             stats["unchanged"] += 1
@@ -1062,9 +1097,11 @@ def reprocess_attachments(conn: sqlite3.Connection, llm=None) -> dict:
     stats = {"reprocessed": 0, "errors": 0}
     rows = conn.execute(
         "SELECT d.id, d.path, d.rel_path, d.project, d.mail_id, d.doc_date, d.cache_path, d.incomplete, "
-        "d.extract_profile, d.retry_after, d.attempts, d.vision_pending, p.name AS project_name FROM documents d "
-        "LEFT JOIN projects p ON p.number = d.project WHERE d.mail_id IS NOT NULL AND d.incomplete = 1"
-    ).fetchall()
+        "d.extract_profile, d.retry_after, d.attempts, d.vision_pending, d.ext, p.name AS project_name "
+        "FROM documents d LEFT JOIN projects p ON p.number = d.project WHERE d.mail_id IS NOT NULL AND "
+        # with the page model also complete PDF and image attachments read before it (their pages have no type)
+        "(d.incomplete = 1 OR (? AND COALESCE(d.extract_profile, '') NOT LIKE ?))",
+        (int(PAGE_MODEL_MARK in profile), f"%{PAGE_MODEL_MARK}%")).fetchall()
     for row in rows:
         if not reprocess_due(row, profile, now, extract_worker.limits_for(Path(row["rel_path"]).name, llm)):
             continue

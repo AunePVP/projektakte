@@ -385,6 +385,16 @@ SCAN_MIN_COVERAGE = 0.5
 UNCHANGED = "unchanged"
 
 
+def page_model(llm) -> str:
+    """Name of the page model that reads the page images instead of ``llm`` (VISION_URL, ai/seitenmodell.py);
+    "" without one. With it every page of a PDF and every image file is listed for the phase "Bildauswertung"
+    – also pages with a real text layer, which keep their text and only get their type."""
+    return str(getattr(llm, "page_model", "") or "") if llm is not None else ""
+
+
+PAGE_MODEL_MARK = ":seitenmodell:"  # in the profile of a file whose pages are (to be) typed by the page model
+
+
 def extraction_profile(llm, ocr: bool | None = None) -> str:
     """What the extraction can read with this model: without vision the LLM plays no part; Tesseract
     (``ocr``, default: whether it is installed) adds "+ocr".
@@ -393,12 +403,14 @@ def extraction_profile(llm, ocr: bool | None = None) -> str:
     (e.g. LLM_VISION switched on, another multimodal model, Tesseract installed)."""
     ocr = ocr_available() if ocr is None else ocr
     tail = "+ocr" if ocr else ""
+    if page_model(llm):
+        return f"v{EXTRACT_VERSION}{PAGE_MODEL_MARK}{page_model(llm)}{tail}"
     if llm is not None and getattr(llm, "vision", False):
         return f"v{EXTRACT_VERSION}:vision:{getattr(llm, 'model', '') or '?'}{tail}"
     return f"v{EXTRACT_VERSION}:text{tail}"
 
 
-_PROFILE_MODEL = re.compile(r":vision:.*?(?=\+ocr|:ohne-fotos|$)")
+_PROFILE_MODEL = re.compile(r":(vision|seitenmodell):.*?(?=\+ocr|:ohne-fotos|$)")
 
 
 def profile_key(profile: str) -> str:
@@ -406,7 +418,7 @@ def profile_key(profile: str) -> str:
     again. The model only reads scan pages in the phase "Bildauswertung" (stage 2), which takes the pages
     still pending with whatever model is set – another model is no reason to repeat stage 1 (Tesseract)
     for every incomplete document or to put every finished project back into the queue."""
-    return _PROFILE_MODEL.sub(":vision", profile or "")
+    return _PROFILE_MODEL.sub(r":\1", profile or "")
 
 
 @dataclass
@@ -433,6 +445,12 @@ class Extracted:
     # pages the model is to read later (extract(..., defer_vision=True)): scan pages, held in ``pages`` with
     # their text layer or Tesseract's text for now; ``incomplete`` then speaks of the rest of the file only
     vision_pages: list[int] = field(default_factory=list)
+    # with the page model (see page_model): pages of ``vision_pages`` with a real text layer – their text stands,
+    # the model only gives their type; pages typed without the model – CAD plans (VISION_SKIP_CAD: no image, no
+    # text layer; not sent) and pages rendered blank
+    layer_pages: list[int] = field(default_factory=list)
+    cad_pages: list[int] = field(default_factory=list)
+    blank_pages: list[int] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -612,6 +630,8 @@ def _pdf_pages(data: bytes, llm, name: str, *, vision: bool | None = None, defer
                 layer_scans.append((i, page))
     if recheck and not layer_scans and not empty_pages:
         return Extracted([], status=UNCHANGED)
+    if page_model(llm):  # every page is listed for the page model, its text of this stage stands for now
+        return _for_page_model(pages, empty_pages, layer_scans, name, doc, ocr)
     if not empty_pages and not layer_scans:
         return Extracted(pages)
     if not vision:
@@ -670,14 +690,31 @@ def _without_vision(pages, empty_pages, layer_scans, name: str, doc: _DocState, 
     return Extracted([], status="skipped", incomplete=True, message=f"Scan ohne Textebene – {_VISION_OFF}")
 
 
+def _for_page_model(pages, empty_pages, layer_scans, name: str, doc: _DocState, ocr: bool) -> Extracted:
+    """Stage 1 with the page model: as :func:`_vision_later` for the scan pages, and every page with a real text
+    layer is listed as well (``layer_pages``) – it does not count against MAX_DOC_VISION_CALLS and never makes
+    the file incomplete."""
+    scans = {i for i, _page in layer_scans}
+    layer = sorted(p.number for p in pages if p.number not in scans)
+    result = _vision_later(pages, empty_pages, layer_scans, name, doc, ocr)
+    if result.status == "error":
+        return result
+    result.vision_pages = sorted(set(result.vision_pages) | set(layer))
+    result.layer_pages = layer
+    return result
+
+
 def _vision_later(pages, empty_pages, layer_scans, name: str, doc: _DocState, ocr: bool) -> Extracted:
     """Stage 1 of an indexing pass with vision: the file is stored at once with the text it has – text
     layers, and Tesseract's text for pages without one (if ``ocr``) – and its scan pages are listed for the
     model (Extracted.vision_pages, read by the phase "Bildauswertung"). No model call here."""
     scan = _read_scanned_pages(empty_pages, None, name, ocr=ocr, doc=doc) if empty_pages else None
     later = sorted({i for i, _page in layer_scans} | set(scan.with_images if scan else ()))
+    cad: list[int] = []
     if scan is not None and scan.rendered and vision_skip_cad():  # CAD plans keep Tesseract's text (VISION_SKIP_CAD)
-        later = [i for i in later if i not in set(scan.rendered)]
+        cad = sorted(set(scan.rendered))
+        later = [i for i in later if i not in set(cad)]
+    blank = sorted(scan.blank) if scan is not None else []
     pages = sorted(pages + (scan.pages if scan else []), key=lambda p: p.number or 0)
     notes = []
     incomplete = False
@@ -689,16 +726,18 @@ def _vision_later(pages, empty_pages, layer_scans, name: str, doc: _DocState, oc
         notes.append(f"{scan.too_complex + scan.undecodable} Seite(n) ohne Textebene nicht gelesen ({scan.reason()})")
         incomplete, retry = True, bool(scan.undecodable)
     message = "; ".join(notes) or None
+    typed = {"cad_pages": cad, "blank_pages": blank}  # used with the page model only
     if not later:
         if pages:
-            return Extracted(pages, message=message, incomplete=incomplete, retry=retry)
+            return Extracted(pages, message=message, incomplete=incomplete, retry=retry, **typed)
         if incomplete:
             return Extracted([], status="error" if retry else "skipped", message=f"Scan ohne Textebene – {message}",
-                             incomplete=True, retry=retry)
-        return Extracted([], status="empty", message="kein Text gefunden")
+                             incomplete=True, retry=retry, **typed)
+        return Extracted([], status="empty", message="kein Text gefunden", **typed)
     if pages:
-        return Extracted(pages, message=message, incomplete=incomplete, retry=retry, vision_pages=later)
-    return Extracted([], status="skipped", message=message, incomplete=incomplete, retry=retry, vision_pages=later)
+        return Extracted(pages, message=message, incomplete=incomplete, retry=retry, vision_pages=later, **typed)
+    return Extracted([], status="skipped", message=message, incomplete=incomplete, retry=retry, vision_pages=later,
+                     **typed)
 
 
 def _garbled(text: str) -> bool:
@@ -876,6 +915,7 @@ class _ScanResult:
     partial_truncated: int = 0
     with_images: list = field(default_factory=list)  # numbers of the pages that draw an image
     rendered: list = field(default_factory=list)  # … of those, the pages without an image PDFium drew (CAD plans)
+    blank: list = field(default_factory=list)  # numbers of the pages without text layer and image rendered blank
     vision_read: int = 0  # pages the model gave text for
 
     @property
@@ -2009,6 +2049,8 @@ def _read_scanned_pages(empty_pages, llm, name: str, *, ocr: bool = False, bases
                     result.doc_limit += 1
                 elif rendered.problem:
                     result.too_complex += 1
+                elif rendered.blank:
+                    result.blank.append(i)
                 continue  # blank, or not readable
         if rendered is None and drawn.truncated:
             log.warning("%s Seite %d: Seiteninhalt nicht vollständig durchsucht (%s)", name, i, _page_bounds())
@@ -2211,10 +2253,12 @@ def cad_pages(data: bytes, numbers: list[int], name: str) -> list[int]:
         return out
 
 
-def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
+def page_images(data: bytes, numbers: list[int], name: str, *, skip_cad: bool | None = None) -> list[PageImages]:
     """Render the given pages of a PDF for the model (_images_of: as a viewer shows them), nothing else – in an
     indexing pass in the extraction worker, under its limits (the model is called by the app, see vision.py).
-    RENDER_SECONDS per page, MAX_DOC_PIXELS for the pages of one call."""
+    RENDER_SECONDS per page, MAX_DOC_PIXELS for the pages of one call. ``skip_cad``: whether a page that draws no
+    image is passed over as a CAD plan (default: VISION_SKIP_CAD) – False for the page model, which decides that
+    in stage 1 (pages with a real text layer draw no image either and are sent)."""
     with _pdf_limits():
         try:
             reader = _open_pdf(data)
@@ -2237,7 +2281,7 @@ def page_images(data: bytes, numbers: list[int], name: str) -> list[PageImages]:
             shortage = _Shortage()
             token = _SHORTAGE.set(shortage)
             try:
-                page = _images_of(reader.pages[n - 1], n, name, doc)
+                page = _images_of(reader.pages[n - 1], n, name, doc, skip_cad)
             except MemoryError as exc:
                 _out_of_memory(exc)
                 page = PageImages(n, problem=f"Bilder zu groß zum Lesen ({_memory_bound()})")
@@ -2289,11 +2333,11 @@ def _pdfium_page_images(data: bytes, numbers: list[int], name: str, why: str) ->
     return out
 
 
-def _images_of(page, number: int, name: str, doc: _DocState) -> PageImages:
+def _images_of(page, number: int, name: str, doc: _DocState, skip_cad: bool | None = None) -> PageImages:
     """The page as the model gets it: rendered as a viewer shows it (_view), never put together from its embedded
     images – those miss what the page draws besides them (text, lines, stencil masks, annotations, form fields)
     and its /Rotate. A page that draws no image is a CAD plan: with VISION_SKIP_CAD it is not sent."""
-    if vision_skip_cad():  # a CAD plan listed before VISION_SKIP_CAD was set: not drawn, not sent
+    if vision_skip_cad() if skip_cad is None else skip_cad:  # a CAD plan listed before VISION_SKIP_CAD was set
         try:
             drawn = _page_images(page, name, number, doc) if _can_draw_images(page, doc) else _Drawing()
         except MemoryError:
@@ -3194,12 +3238,13 @@ def extract(path: Path | str, data: bytes | None = None, *, llm=None, defer_visi
     that ran out of memory names the limit (Extracted.limit): a higher limit reads the file again."""
     shortage = _Shortage()
     token = _SHORTAGE.set(shortage)
+    paged = bool(page_model(llm))  # the page model reads in the phase "Bildauswertung" only: always later
     if vision is None:
-        vision = llm is not None and getattr(llm, "vision", False)
+        vision = paged or (llm is not None and getattr(llm, "vision", False))
     ocr = ocr_available() if ocr is None else ocr
     try:
-        result = _extract(Path(path), data, llm, defer=defer_vision and vision, ocr=ocr, recheck=recheck,
-                          vision=vision)
+        result = _extract(Path(path), data, llm, defer=(defer_vision or paged) and vision, ocr=ocr,
+                          recheck=recheck and not paged, vision=vision)
     finally:
         _SHORTAGE.reset(token)
     if shortage.met and MEMORY_LIMIT_MB and result.incomplete:
