@@ -174,7 +174,7 @@ def _run(settings: Settings, ai: AIServices | None, phase, vision: bool = True, 
             stats["vision"] = {"note": "läuft im Hintergrund"}
         else:  # last: the model reads the scan pages within its time budget; the next pass goes on
             phase("Bildauswertung")
-            stats["vision"] = run_vision(conn, llm, settings, progress=phase)
+            stats["vision"] = run_vision(conn, llm, settings, progress=phase, page_model=getattr(ai, "vision", None))
             if embeddings and ai is not None and (stats["vision"].get("pages") or stats["vision"].get("documents")):
                 stats["vision_embeddings"] = embed_pending(conn, ai.embed)  # the sections written anew
         if doc_types:  # without the app: the documents indexed before types existed (deterministic, fast)

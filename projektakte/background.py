@@ -42,7 +42,9 @@ class BackgroundIndexer:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         llm = getattr(ai, "llm", None)
-        self.vision = vision.VisionWorker(settings, llm) if vision.VisionWorker.wanted(llm) else None
+        page_model = getattr(ai, "vision", None)  # VISION_URL: reads the pages instead of the LLM
+        self.vision = (vision.VisionWorker(settings, llm, page_model=page_model)
+                       if vision.VisionWorker.wanted(llm, page_model) else None)
         embed = getattr(ai, "embed", None)
         self.embedder = embed_worker.EmbedWorker(settings, embed) if embed_worker.EmbedWorker.wanted(embed) else None
         # document types: backfill of older documents and the model's opinion on unclear ones (dokumentarten.py)

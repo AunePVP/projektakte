@@ -16,6 +16,14 @@ In an indexing pass a file is read in two stages (see extract.py, ``defer_vision
    image *and* the page's text (OCR layer or Tesseract), its answer replaces that text; the document's
    sections are written again (only that document's), and their vectors are made by the next embedding run.
 
+With the page model (VISION_URL, ai/seitenmodell.py; ``page_model`` here) the phase works differently in what it
+asks and keeps: every page of a PDF and every image file waits, also pages with a real text layer. The model gets
+the page image alone and gives a type (Text, Plan, Foto, Leer, Unsicher), kept for good in ``page_types`` with its
+raw text. Only a scan page of the type Text gets the model's text (made from the raw text, seitentext.py); Plan,
+Foto and Unsicher keep the text of the first stage, Leer has none; a page with a real text layer keeps its text
+whatever the type. The service limits repetition loops itself: no loop check, no second attempt, and the LLM gets
+no image.
+
 A page result is stored only if the file is still the one the page was taken from (``sha256``, checked in
 the same write transaction): if the documents pass read a changed file meanwhile, its new pages wait for
 the model and the old answer is dropped.
@@ -38,17 +46,19 @@ from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import db, documents, zeiten
+from . import db, documents, seitentypen, zeiten
 from . import extract as extract_mod
 from . import extract_worker, reihenfolge
 from .ai.http import seconds_text
 from .ai.llm import IncompleteAnswer
+from .ai.seitenmodell import PageReading, PageRejected
 from .ai.repetition import find_loop
 from .chunking import chunk_pages
 from .documents import (LIMIT_MARK, _read_inside, _sqlite_time, _utcnow, document_date, pending_message, printable,
                         real_folder, retry_delay, sha256, store_page_texts, stored_profile, write_chunks)
 from .extract import CAD_SKIPPED, IMAGE_EXT, UNCHANGED, Page, extraction_profile, vision_prompt, vision_skip_cad
 from .pause import PAUSE
+from .seitentext import page_text, parse_blocks
 
 log = logging.getLogger("projektakte.vision")
 
@@ -61,6 +71,11 @@ NO_TEXT = "kein Text"  # note of a page the model read without finding text (its
 # so far stands – or, without one, what the model wrote before its loop
 DROPPED = "Modell-Antwort verworfen"
 _LOOP_CHECK_BATCH = 200
+BLANK = "Seite leer"  # extract.page_images: the page was rendered blank
+# notes of pages read by the page model
+CUT_OFF = "Antwort des Seitenmodells abgeschnitten"
+LOOP_CUT = "Schleife des Modells – Text gekürzt"
+REJECTED = "vom Seitenmodell abgelehnt"
 # A step of the dispatcher (preparing the next page, storing an answer, a side check) that takes this long while a
 # place at the model is free is logged with what took the time: meanwhile no page is sent to the model.
 STALL_SECONDS = 5.0
@@ -98,6 +113,7 @@ class _Task:
     partial: str | None = None  # images of the page left out, and why (see extract.PageImages)
     retry: bool = False
     limit: str | None = None
+    layer: bool = False  # the page model: the page has a real text layer, its text stands
 
 
 @dataclass
@@ -107,6 +123,7 @@ class _Doc:
     data: bytes
     due: deque  # (page number, text so far) of the pages still to prepare, in page order
     open: int = 0  # its tasks queued or with the model
+    layer: frozenset = frozenset()  # the page model: its pages with a real text layer
 
 
 class VisionPass:
@@ -121,8 +138,10 @@ class VisionPass:
     def __init__(self, conn, llm, *, seconds: float = 1800.0, concurrency: int = 3, projects_dir=None,
                  progress=None, clock=time.monotonic, prepare=None, extract=None, order=None,
                  worker=extract_worker._PASS, stop: threading.Event | None = None, refresh: float = 0.0,
-                 live: "VisionLive | None" = None, continuous: bool = False):
+                 live: "VisionLive | None" = None, continuous: bool = False, page_model=None):
         self.conn, self.llm = conn, llm
+        # the page model (ai.seitenmodell.SeitenmodellClient) that reads the pages instead of ``llm``; None: the LLM
+        self.page_model = page_model
         # the background worker: at the end of the time budget a new round begins at once while the pages at the
         # model are still answered (no idle places); otherwise the run ends there and waits for them
         self.continuous = continuous
@@ -142,6 +161,8 @@ class VisionPass:
         self.stats = {"pages": 0, "failed": 0, "not_readable": 0, "documents": 0, "checked": 0, "found": 0,
                       "discarded": 0, "dropped": 0, "loops_found": 0, "stalls": 0, "stall_seconds": 0.0,
                       "drain_seconds": 0.0, "occupancy": None, "cad_skipped": 0, "stopped": False}
+        if page_model is not None:
+            self.stats["types"] = {}  # pages read in this run per type
         self._parts: list[tuple[str, float]] = []  # slow parts of the step being timed (see _timed)
         # places taken over time (see _occupancy): the whole run and the current window
         self._occ = {"area": 0.0, "time": 0.0, "w_area": 0.0, "w_time": 0.0, "w_start": None, "last_t": None,
@@ -155,14 +176,18 @@ class VisionPass:
         self._touched: set[int] = set()  # documents with a new page result not yet written
         self._recheck: deque = deque()
         self._recheck_seen: set[int] = set()
-        self._recheck_done = False
-        self._loops_done = False
+        # the page model: no loop check (the service limits loops itself) and no re-check of older PDFs (every
+        # PDF read before it is read again anyway)
+        self._recheck_done = page_model is not None
+        self._loops_done = page_model is not None
         self._end = 0.0
 
     # -- the run -------------------------------------------------------------------------------------
     def run(self) -> dict:
         self._loop_check()  # no model needed: a batch at every start, more while the model works
         counts = pending_counts(self.conn)
+        if self.page_model is not None:
+            counts["recheck"] = 0
         if not counts["pages"] and not counts["recheck"]:
             if self.live is not None:
                 self.live.pending(0, 0)
@@ -351,6 +376,9 @@ class VisionPass:
         """In a thread of the pool: the model reads the page (each image of it, with the page's text).
         Returns the text, the seconds and a note if an answer was dropped (see DROPPED)."""
         started = time.monotonic()
+        if self.page_model is not None:  # one image, no prompt, no known text; the reading itself is returned
+            mime, data = task.images[0]
+            return self.page_model.read_page(data, mime), time.monotonic() - started, None
         answers = []
         dropped: IncompleteAnswer | None = None
         prompt = vision_prompt(task.known)
@@ -405,8 +433,8 @@ class VisionPass:
             if self.order is not None and self.order.skipped(row["project"], row["mail_id"]):
                 continue  # its folder was switched off meanwhile
             due = deque(self.conn.execute(
-                "SELECT page, text FROM page_texts WHERE doc_id = ? AND (state = 'pending' OR (state = 'failed' AND "
-                "(retry_after IS NULL OR retry_after <= ?))) ORDER BY page", (doc_id, now)).fetchall())
+                "SELECT page, text, layer FROM page_texts WHERE doc_id = ? AND (state = 'pending' OR (state = 'failed' "
+                "AND (retry_after IS NULL OR retry_after <= ?))) ORDER BY page", (doc_id, now)).fetchall())
             if not due:
                 if not self.conn.execute(f"SELECT 1 FROM page_texts WHERE doc_id = ? AND state IN {WAITING} LIMIT 1",
                                          (doc_id,)).fetchone():
@@ -419,7 +447,8 @@ class VisionPass:
                 data = self._read(dict(row))
             if data is None:
                 continue
-            doc = _Doc(dict(row), data, deque((r["page"], r["text"]) for r in due))
+            doc = _Doc(dict(row), data, deque((r["page"], r["text"]) for r in due),
+                       layer=frozenset(r["page"] for r in due if r["layer"]))
             self._sha[doc_id] = row["sha256"]
             number = row["project"]
             folder = self.order.project_of(number) if self.order is not None else ""
@@ -467,15 +496,21 @@ class VisionPass:
         batch = [doc.due.popleft() for _ in range(min(BATCH_PAGES, len(doc.due)))]
         known = dict(batch)
         with self._part(f"{len(batch)} Seite(n) vorbereitet: {name}"):
+            # the page model: CAD plans were passed over in stage 1 – here a page without an image is one with a
+            # real text layer, and is sent
             prepared = extract_worker.page_images(row["filename"], doc.data, [n for n, _t in batch], self.prepare,
-                                                  worker=self.worker)
+                                                  worker=self.worker,
+                                                  skip_cad=False if self.page_model is not None else None)
         for page in prepared:
-            if page.problem == CAD_SKIPPED:  # VISION_SKIP_CAD: done without the model, its text so far stands
+            if self.page_model is not None and page.problem == BLANK:  # typed without the model
+                self._store_blank(row["id"], page.number, row["sha256"])
+            elif page.problem == CAD_SKIPPED:  # VISION_SKIP_CAD: done without the model, its text so far stands
                 self.stats["cad_skipped"] += 1
                 self._store(row["id"], page.number, text="", note=CAD_SKIPPED, sha=row["sha256"])
             elif page.images:
                 self._queue(doc, _Task(row["id"], page.number, name, known.get(page.number, ""), row["sha256"],
-                                       page.images, page.partial, page.retry, page.limit))
+                                       page.images, page.partial, page.retry, page.limit,
+                                       layer=page.number in doc.layer))
             else:
                 log.warning("Bildauswertung: %s Seite %d nicht auswertbar (%s)", name, page.number, page.problem)
                 self._store(row["id"], page.number, problem=page.problem or "kein Bild", retry=page.retry,
@@ -489,21 +524,27 @@ class VisionPass:
     def _finish(self, task: _Task, future: Future) -> None:
         try:
             text, seconds, dropped = future.result()
+        except PageRejected as exc:  # the service cannot take this image: asking again would end the same
+            log.warning("Bildauswertung: %s Seite %d %s (%s)", task.name, task.page, REJECTED, exc)
+            self._store(task.doc_id, task.page, problem=REJECTED, sha=task.sha)
         except Exception as exc:  # noqa: BLE001 – the model failed (timeout, server down): later again
             log.warning("Bildauswertung: %s Seite %d fehlgeschlagen (%s)", task.name, task.page, exc)
             self._store(task.doc_id, task.page, error=str(exc), sha=task.sha)
         else:
-            if dropped:
+            if isinstance(text, PageReading):
+                self._store_reading(task, text, seconds)
+            elif dropped:
                 self.stats["dropped"] += 1
                 log.warning("Bildauswertung: %s Seite %d – %s", task.name, task.page, dropped)
             else:
                 log.info("Bildauswertung: %s Seite %d gelesen (%.0f s)%s", task.name, task.page, seconds,
                          "" if text else " – kein Text")
-            partial = "; ".join(n for n in (task.partial, dropped) if n) or None
-            # a dropped answer is not asked again by itself (the model would loop again): retry only as the
-            # page's images left out say
-            self._store(task.doc_id, task.page, text=text, partial=partial, retry=task.retry and bool(task.partial),
-                        limit=task.limit, sha=task.sha, seconds=seconds)
+            if not isinstance(text, PageReading):
+                partial = "; ".join(n for n in (task.partial, dropped) if n) or None
+                # a dropped answer is not asked again by itself (the model would loop again): retry only as the
+                # page's images left out say
+                self._store(task.doc_id, task.page, text=text, partial=partial,
+                            retry=task.retry and bool(task.partial), limit=task.limit, sha=task.sha, seconds=seconds)
         doc = self._docs.get(task.doc_id)
         if doc is not None:
             doc.open -= 1
@@ -512,6 +553,67 @@ class VisionPass:
                 self._write(task.doc_id)
         if self.progress:
             self.progress(f"Bildauswertung – {self.stats['pages']} Seite(n) gelesen")
+
+    def _discarded(self, doc_id: int, page: int) -> None:
+        self.conn.rollback()
+        self.stats["discarded"] += 1
+        log.info("Bildauswertung: Dokument %d wurde inzwischen neu gelesen – Ergebnis von Seite %d verworfen",
+                 doc_id, page)
+
+    def _store_reading(self, task: _Task, reading: PageReading, seconds: float) -> None:
+        """Record what the page model said of one page: its type and raw text for good (page_types), and the
+        page's text for the document – the model's on a scan page of the type Text, none on an empty scan page,
+        else the text of the first stage (see the module docstring). Committed at once, only if the file is still
+        the one the page was taken from."""
+        self._begin()
+        if not self._same_file(task.doc_id, task.sha):
+            self._discarded(task.doc_id, task.page)
+            return
+        seitentypen.store(self.conn, task.doc_id, task.page, typ=reading.typ, kopf=reading.kopf,
+                          sicherheit=reading.sicherheit, schleife=reading.schleife, finish=reading.finish,
+                          layer=task.layer, raw=reading.raw or None)
+        written = page_text(parse_blocks(reading.raw)) if reading.typ == "Text" and not task.layer else ""
+        cut = reading.typ == "Text" and reading.finish == "length" and not task.layer
+        note = None
+        if reading.typ == "Unsicher":
+            note = seitentypen.label("Unsicher", kopf=reading.kopf)
+        elif reading.schleife:
+            note = LOOP_CUT
+        elif reading.typ == "Text" and not task.layer and not written:
+            note = NO_TEXT
+        partial = "; ".join(n for n in (task.partial, CUT_OFF if cut else None) if n) or None
+        if written or (reading.typ == "Leer" and not task.layer):  # the page's text changes
+            self.conn.execute("UPDATE page_texts SET text = ? WHERE doc_id = ? AND page = ?",
+                              (written, task.doc_id, task.page))
+        self.conn.execute(
+            "UPDATE page_texts SET state = 'done', note = ?, partial = ?, retry = 0, size_limit = ? "
+            "WHERE doc_id = ? AND page = ?",
+            (partial or note, int(partial is not None), task.limit, task.doc_id, task.page))
+        self.conn.commit()
+        self.stats["pages"] += 1
+        self.stats["types"][reading.typ] = self.stats["types"].get(reading.typ, 0) + 1
+        zeiten.add(self.conn, zeiten.PAGE_KEY, seconds)
+        self.conn.commit()
+        if self.live is not None:
+            self.live.page_done(seconds)
+            self.live.typed(reading.typ)
+        self._touched.add(task.doc_id)
+        log.info("Bildauswertung: %s Seite %d – %s%s (%.1f s)", task.name, task.page, reading.typ,
+                 f", {partial or note}" if partial or note else "", seconds)
+
+    def _store_blank(self, doc_id: int, page: int, sha: str | None) -> None:
+        """A page rendered blank (the page model): "Leer" without the model, the page has no text."""
+        self._begin()
+        if not self._same_file(doc_id, sha):
+            self._discarded(doc_id, page)
+            return
+        seitentypen.store(self.conn, doc_id, page, typ="Leer", source=seitentypen.RENDER)
+        self.conn.execute("UPDATE page_texts SET state = 'done', text = '', note = ?, partial = 0, retry = 0 "
+                          "WHERE doc_id = ? AND page = ?", (BLANK, doc_id, page))
+        self.conn.commit()
+        if self.live is not None:
+            self.live.page_done(None)
+        self._touched.add(doc_id)
 
     def _store(self, doc_id: int, page: int, *, text: str | None = None, error: str | None = None,
                problem: str | None = None, retry: bool = False, partial: str | None = None,
@@ -522,10 +624,7 @@ class VisionPass:
         a changed file meanwhile, its pages wait anew and this answer is dropped."""
         self._begin()
         if not self._same_file(doc_id, sha):
-            self.conn.rollback()
-            self.stats["discarded"] += 1
-            log.info("Bildauswertung: Dokument %d wurde inzwischen neu gelesen – Ergebnis von Seite %d verworfen",
-                     doc_id, page)
+            self._discarded(doc_id, page)
             return
         if error is not None or (problem is not None and retry):
             row = self.conn.execute("SELECT attempts FROM page_texts WHERE doc_id = ? AND page = ?",
@@ -587,18 +686,34 @@ class VisionPass:
         rows = self.conn.execute("SELECT * FROM page_texts WHERE doc_id = ? ORDER BY page", (doc_id,)).fetchall()
         if not rows:
             return
-        pages = [Page(r["page"], r["text"]) for r in rows if r["text"].strip()]
+        paged = self.page_model is not None
+        if paged:
+            # the page model: the pages' texts from what it said (headers and footers that come back are kept
+            # once, over the whole document); a page with a real text layer only waits for its type – it never
+            # makes the document incomplete, whether it waits, failed or was refused
+            types = seitentypen.known(self.conn, doc_id)
+            texts = seitentypen.final_texts({r["page"]: r["text"] for r in rows}, types)
+            pages = [Page(r["page"], texts[r["page"]]) for r in rows if texts[r["page"]].strip()]
+            counted = [r for r in rows if not r["layer"]]
+            read = any(not t["layer"] and t["typ"] == "Text" and (t["raw"] or "").strip() for t in types.values())
+        else:
+            pages = [Page(r["page"], r["text"]) for r in rows if r["text"].strip()]
+            counted = rows
+            read = any(r["state"] == "done" and r["note"] not in (NO_TEXT, CAD_SKIPPED) for r in rows)
         waiting = sum(r["state"] in WAITING for r in rows)
-        skipped = [r for r in rows if r["state"] == "skipped"]
-        partial = [r for r in rows if r["state"] == "done" and r["partial"]]
-        read = any(r["state"] == "done" and r["note"] not in (NO_TEXT, CAD_SKIPPED) for r in rows)
+        skipped = [r for r in counted if r["state"] == "skipped"]
+        partial = [r for r in counted if r["state"] == "done" and r["partial"]]
         chunks = chunk_pages(pages)
         self.conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
         write_chunks(self.conn, doc_id, chunks, filename=doc["filename"], project=doc["project"],
                      project_name=doc["project_name"], mail_id=doc["mail_id"])
         note = doc["vision_note"]
         profile, attempts, retry_after = doc["extract_profile"], doc["attempts"], doc["retry_after"]
-        if waiting:
+        if waiting and paged:
+            scans = any(r["state"] in WAITING for r in counted)
+            message = pending_message(note, waiting, types_only=not scans)
+            incomplete = int(scans or bool(doc["vision_incomplete"]))
+        elif waiting:
             message, incomplete = pending_message(note, waiting), 1
         else:
             notes = [note] if note else []
@@ -877,10 +992,11 @@ def _order(conn, settings) -> reihenfolge.VisionOrder:
                                    getattr(settings, "index_folder_order", ()))
 
 
-def run_vision(conn, llm, settings, *, progress=None) -> dict:
+def run_vision(conn, llm, settings, *, progress=None, page_model=None) -> dict:
     """The phase "Bildauswertung" at the end of an indexing pass without the app's background worker (see
-    the module docstring); nothing without vision, nothing while the background worker reads pages."""
-    if llm is None or not getattr(llm, "vision", False):
+    the module docstring); nothing without vision, nothing while the background worker reads pages.
+    ``page_model``: the page model that reads the pages instead of ``llm`` (VISION_URL)."""
+    if page_model is None and (llm is None or not getattr(llm, "vision", False)):
         counts = pending_counts(conn)
         return {"note": "ausgeschaltet (LLM_VISION=0)", "pending_pages": counts["pages"],
                 "pending_documents": counts["documents"]}
@@ -890,7 +1006,7 @@ def run_vision(conn, llm, settings, *, progress=None) -> dict:
         return VisionPass(conn, llm, seconds=getattr(settings, "vision_pass_seconds", 1800.0),
                           concurrency=getattr(settings, "vision_concurrency", 3),
                           projects_dir=getattr(settings, "projects_dir", None), progress=progress,
-                          order=_order(conn, settings)).run()
+                          order=_order(conn, settings), page_model=page_model).run()
     finally:
         _PASS_LOCK.release()
 
@@ -915,6 +1031,7 @@ class VisionLive:
             self.pending_pages: int | None = None  # waiting, without those of folders switched off
             self.off_pages = 0  # waiting in folders switched off (not read)
             self.since: float | None = None
+            self.types: dict[str, int] = {}  # the page model: pages read since the app started, per type
 
     def enable(self, concurrency: int) -> None:
         with self._lock:
@@ -948,9 +1065,14 @@ class VisionLive:
             if self.pending_pages:
                 self.pending_pages -= 1
 
+    def typed(self, typ: str) -> None:
+        with self._lock:
+            self.types[typ] = self.types.get(typ, 0) + 1
+
     def snapshot(self) -> dict:
         with self._lock:
             return {"enabled": self.enabled, "concurrency": self.concurrency, "busy": self.busy,
+                    "types": dict(self.types),
                     "project": dict(self._project) if self._project else None, "pages": self.pages,
                     "in_flight": self.in_flight, "document": dict(self.document) if self.document else None,
                     "pending_pages": self.pending_pages, "off_pages": self.off_pages, "since": self.since}
@@ -975,8 +1097,9 @@ class VisionWorker:
     REFRESH_SECONDS = 60.0  # during a run, the documents waiting are read again this often
     ERROR_SECONDS = 60.0  # after an unexpected error
 
-    def __init__(self, settings, llm, *, live: VisionLive | None = None):
+    def __init__(self, settings, llm, *, live: VisionLive | None = None, page_model=None):
         self.settings, self.llm = settings, llm
+        self.page_model = page_model  # VISION_URL: the page model reads the pages instead of the LLM
         self.live = live or LIVE
         self.concurrency = max(1, int(getattr(settings, "vision_concurrency", 3)))
         self._stop = threading.Event()
@@ -987,8 +1110,8 @@ class VisionWorker:
         self.last_error: str | None = None
 
     @staticmethod
-    def wanted(llm) -> bool:
-        return llm is not None and bool(getattr(llm, "vision", False))
+    def wanted(llm, page_model=None) -> bool:
+        return page_model is not None or (llm is not None and bool(getattr(llm, "vision", False)))
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -999,7 +1122,9 @@ class VisionWorker:
         self.live.enable(self.concurrency)
         self._thread = threading.Thread(target=self._loop, name="bildauswertung", daemon=True)
         self._thread.start()
-        if vision_skip_cad():
+        # not with the page model: there a waiting page without an image may be one with a real text layer (CAD
+        # plans are passed over in stage 1), and everything read before is read again anyway
+        if vision_skip_cad() and self.page_model is None:
             self.sweep = CadSweep(self.settings, self.llm, stop=self._stop)
             self.sweep.start()
 
@@ -1067,6 +1192,7 @@ class VisionWorker:
             return VisionPass(conn, self.llm, seconds=getattr(self.settings, "vision_pass_seconds", 1800.0),
                               concurrency=self.concurrency, projects_dir=getattr(self.settings, "projects_dir", None),
                               order=_order(conn, self.settings), worker=self._worker, stop=self._stop,
-                              refresh=self.REFRESH_SECONDS, live=self.live, continuous=True).run()
+                              refresh=self.REFRESH_SECONDS, live=self.live, continuous=True,
+                              page_model=self.page_model).run()
         finally:
             _PASS_LOCK.release()
