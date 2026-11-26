@@ -1,6 +1,6 @@
 # Entwurf: Bildauswertung über das eigene Seitenmodell (Nemotron Parse + Typ-Kopf)
 
-Stand: 24. November 2026. Status: vom Nutzer freigegeben (26. November 2026), CAD-Frage: Variante c.
+Stand: 24. November 2026. Status: vom Nutzer freigegeben (26. November 2026), CAD-Frage: Variante a.
 
 ## 1. Absicht
 
@@ -166,11 +166,12 @@ gleich: Textebene bzw. Tesseract sofort durchsuchbar.
   falsch, nicht `_garbled`) – die vorhandene Unterscheidung.
 - Ausgelassen wie heute: `SKIP_READ_FOLDERS` (wird gar nicht gelesen), `VISION_SKIP_FOLDERS` (Fotos nicht ans
   Modell), in der Statusseite abgeschaltete Ordner.
-- `VISION_SKIP_CAD=1` gilt weiter, neu gefasst (**vom Nutzer entschieden, Variante c**): CAD-Seite = zeichnet kein
-  Bild **und** ist größer als A4 (Seitenfläche über 110 % von 595 × 842 pt) – mit oder ohne Textebene. Sie wird nicht
-  gezeichnet und geht nicht ans Modell (Zeichnen kostete 12–30 s je Seite), bekommt `typ = Plan`, `source = cad` und
-  behält ihren Text aus Stufe 1. Seiten ohne Bild bis A4 (am Rechner erzeugte Textseiten, Briefe mit Text als Kurven)
-  gehen ans Modell. Bekannte Folge: A3-Tabellen und A3-Formulare ohne Bild gelten als Plan (Text bleibt erhalten).
+- CAD-Pläne (**vom Nutzer entschieden, Variante a**): Jede Seite mit echter Textebene geht ans Modell, auch große
+  Pläne – das Modell erkennt sie als Plan und schreibt nichts ab. `VISION_SKIP_CAD=1` behält seine heutige Bedeutung
+  und greift nur noch für Seiten **ohne** echte Textebene, die kein Bild zeichnen: Sie gehen nicht ans Modell,
+  bekommen `typ = Plan`, `source = cad` und behalten ihren Text aus Stufe 1. Mit `VISION_SKIP_CAD=0` gehen auch
+  diese ans Modell. Bekanntes Risiko: Das Zeichnen von CAD-Seiten im Leseprozess dauerte im November 12–30 s je
+  Seite (unabhängig von der Pixelgrenze); stockt der Nachschub, zeigt es das Log („Nachschub stockte“).
 - `MAX_DOC_VISION_CALLS` (500 Seiten je Dokument) gilt weiter für Scan-Seiten. Seiten mit echter Textebene zählen
   nicht dagegen und machen ein Dokument nie unvollständig; die Grenze `MAX_DOC_PIXELS` je Aufruf des Leseprozesses
   bleibt. *(Aufruf des Entwurfs.)*

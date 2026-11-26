@@ -165,7 +165,6 @@ Entscheidungen zur Umsetzung).
     `profile_key` lässt auch diesen Modellnamen weg.
   - `Extracted.layer_pages: list[int]` (Seiten in `vision_pages` mit echter Textebene) und
     `Extracted.cad_pages: list[int]` (ohne Modell als Plan eingeordnet).
-  - `extract.is_cad_size(width_pt: float, height_pt: float) -> bool` → Fläche > `1.1 * 595 * 842`.
   - `page_texts.layer` gefüllt; `store_page_texts(..., layer: set[int] = frozenset())`.
   - `documents.pending_message(note, pages, *, types_only: bool = False)` → mit `types_only`
     `"Seitentyp ausstehend: N Seite(n)"`.
@@ -176,8 +175,8 @@ Entscheidungen zur Umsetzung).
     `layer_pages == [1, 2, 3]`, `status == "ok"`, Text der Seiten vorhanden.
   - `test_scan_page_is_not_a_layer_page`: Scan-PDF aus den Demo-Daten → Seite in `vision_pages`, nicht in `layer_pages`.
   - `test_without_page_model_unchanged`: dieselbe Text-PDF mit `llm=None` → `vision_pages == []`.
-  - `test_cad_page_larger_than_a4_not_sent` (mit `VISION_SKIP_CAD=1`): A3-Seite ohne Bild → in `cad_pages`, nicht in
-    `vision_pages`; A4-Seite ohne Bild → in `vision_pages`.
+  - `test_cad_rule_only_without_text_layer` (mit `VISION_SKIP_CAD=1`): Seite ohne Bild und ohne Textebene → in
+    `cad_pages`, nicht in `vision_pages`; Seite ohne Bild mit echter Textebene (auch A1) → in `vision_pages`.
   - `test_profile_marks_page_model`: `extraction_profile(...) .startswith("v9:seitenmodell:nemotron-kmw")`.
   - `test_document_with_only_layer_pages_is_complete`: nach `write_document` → `incomplete == 0`,
     `vision_pending == 3`, `message == "Seitentyp ausstehend: 3 Seite(n)"`, `page_texts.layer == 1` für alle Seiten.
@@ -190,9 +189,9 @@ Entscheidungen zur Umsetzung).
 - [ ] **Step 3: Implementieren.**
   - `_pdf_pages`: mit `page_model(llm)` immer der zurückgestellte Weg (auch ohne `defer`); `vision_pages` = alle
     Seiten außer CAD-Seiten; `layer_pages` = Seiten in `pages`, die nicht in `layer_scans` sind.
-    `MAX_DOC_VISION_CALLS` zählt nur Nicht-Ebenen-Seiten. CAD-Prüfung (Variante c): `vision_skip_cad()` und Seite
-    zeichnet kein Bild (vorhandene Prüfung aus `cad_pages`/`_images_of`) und `is_cad_size(mediabox)`; gilt auch in
-    `_images_of` (dort heute ohne Größenprüfung) – ohne Seitenmodell bleibt `_images_of` wie bisher.
+    `MAX_DOC_VISION_CALLS` zählt nur Nicht-Ebenen-Seiten. CAD (Variante a): die vorhandene Regel (`vision_skip_cad()`,
+    Seite ohne Textebene zeichnet kein Bild) bleibt und füllt `cad_pages`; in `_images_of` darf sie mit Seitenmodell
+    Ebenen-Seiten nicht treffen (`page_images` bekommt dafür die Ebenen-Seiten genannt).
   - `_image` (Bilddateien): mit Seitenmodell immer zurückgestellt, Seite 1, nie Ebenen-Seite.
   - `write_document`: `known` mit Seitenmodell aus `seitentypen.known` statt aus `page_texts`; `incomplete` und
     Meldung nur wegen Seiten ohne Ebene; `seitentypen.clear` bei anderem sha256 oder Profil; CAD-Zeilen schreiben.
@@ -294,7 +293,7 @@ Entscheidungen zur Umsetzung).
 - [ ] **Step 1:** Inhalte laut Spec 6.11. Zusätzlich festhalten:
   - DECISIONS, neuer Abschnitt „Eigenes Seitenmodell für die Bildauswertung“: Variante B mit Begründung (exakter Text
     der Textebene; Lesefehler am Beispiel doppelter spitzer Klammern, ohne echte Namen), Rohtext **vorerst** dauerhaft
-    gespeichert und später verzichtbar, CAD Variante c mit bekannter Folge (A3-Tabellen), Kopf-/Fußzeilenregel und
+    gespeichert und später verzichtbar, CAD Variante a (alle Seiten mit Textebene ans Modell, `VISION_SKIP_CAD` nur für Seiten ohne Textebene; Risiko Zeichendauer), Kopf-/Fußzeilenregel und
     ihre Grenze (nur Scan-Seiten), kein Fake-Dienst als Ausnahme zu Zusammenfassung Punkt 1, Dokumentstatus bei
     Ebenen-Seiten. „Was auf eine Seite gehört“: nur Text wird abgeschrieben, Plan/Foto behalten Stufe 1, Typ `Unsicher`.
   - ROADMAP: neuer Abschnitt mit offenen Punkten: Seiten mit Schleife an ein anderes Modell; Tabellen/Formeln
