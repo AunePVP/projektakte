@@ -666,6 +666,7 @@ class _Reporting:
     def __init__(self, llm, conn, parent: int):
         self._llm, self._conn, self._parent = llm, conn, parent
         self.vision, self.model = llm.vision, llm.model
+        self.page_model = getattr(llm, "page_model", "")
         self.error: str | None = None
 
     def describe_image(self, image: bytes, mime: str, prompt: str):

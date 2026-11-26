@@ -94,6 +94,7 @@ class LLMClient:
         extra_body: dict | None = None,
         retry_body: dict | None = None,
         vision_timeout: float | None = None,
+        page_model: str = "",
     ):
         self.url = url.rstrip("/")
         self.model = model
@@ -107,6 +108,9 @@ class LLMClient:
         # one page image (describe_image): its own limit – with 20+ pages at the model at once a long page takes
         # minutes, far beyond the timeout a question may wait (LLM_TIMEOUT); None: that one
         self.vision_timeout = vision_timeout
+        # name of the page model that reads the page images instead of this model (ai/seitenmodell.py; then
+        # ``vision`` is off here): the extraction lists every page of a PDF for it (extract.page_model)
+        self.page_model = page_model
         self._lock = threading.Lock()
         self.last_error: str | None = None
         self.last_error_at: float | None = None
@@ -117,13 +121,15 @@ class LLMClient:
         process builds the same client from it with :meth:`from_config`."""
         return {"url": self.url, "model": self.model, "timeout": self.timeout, "max_tokens": self.max_tokens,
                 "vision": self.vision, "api_key": self._api_key, "extra_body": dict(self.extra_body),
-                "retry_body": dict(self.retry_body), "vision_timeout": self.vision_timeout}
+                "retry_body": dict(self.retry_body), "vision_timeout": self.vision_timeout,
+                "page_model": self.page_model}
 
     @classmethod
     def from_config(cls, config: dict) -> "LLMClient":
         return cls(config["url"], config["model"], timeout=config["timeout"], max_tokens=config["max_tokens"],
                    vision=config["vision"], api_key=config["api_key"], extra_body=config["extra_body"],
-                   retry_body=config.get("retry_body"), vision_timeout=config.get("vision_timeout"))
+                   retry_body=config.get("retry_body"), vision_timeout=config.get("vision_timeout"),
+                   page_model=config.get("page_model", ""))
 
     def _note_error(self, msg: str) -> None:
         with self._lock:

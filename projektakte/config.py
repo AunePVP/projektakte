@@ -377,6 +377,10 @@ class Settings:
     config_warnings: tuple[str, ...] = ()
     # optional API keys for the AI services (secrets)
     llm_api_key: str = field(default="", repr=False)
+    # the page model (ai/seitenmodell.py): reads the page images instead of the LLM; empty: none
+    vision_url: str = ""
+    vision_model: str = "nemotron-kmw"
+    vision_api_key: str = field(default="", repr=False)
     embed_api_key: str = field(default="", repr=False)
     rerank_api_key: str = field(default="", repr=False)
     # reading PDF, Word, OpenDocument and mail files in a worker process with operating-system limits (extract_worker):
@@ -438,6 +442,33 @@ DEFAULT_QUERY_INSTRUCTION = (
 ASK_DEADLINE_MIN = 10.0
 
 
+# resolution of the page images the page model was trained with (ocr_testseiten --dpi 175)
+PAGE_MODEL_DPI = 175
+
+
+def _vision_url(env: Mapping[str, str], warnings: list[str]) -> str:
+    """VISION_URL: base URL of the page model (…/v1); empty: the Bildauswertung works as before. Ignored with
+    AI_MODE=fake – there is no fake of the page model, demo and tests read with the fake LLM."""
+    url = (env.get("VISION_URL") or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if (env.get("AI_MODE") or "").strip().lower() == "fake":
+        warnings.append("VISION_URL wird mit AI_MODE=fake nicht benutzt – die Bildauswertung läuft über die Fake-KI")
+        return ""
+    dpi = (env.get("VISION_DPI") or "").strip()
+    if dpi and dpi != str(PAGE_MODEL_DPI):
+        warnings.append(f"VISION_DPI={dpi}: das Seitenmodell (VISION_URL) wurde mit {PAGE_MODEL_DPI} dpi trainiert – "
+                        "andere Auflösungen verschlechtern Einordnung und Lesen")
+    return url
+
+
+def apply_vision_env(settings) -> None:
+    """With the page model the page images are rendered at PAGE_MODEL_DPI unless VISION_DPI is set: the
+    extraction (also its worker process) reads VISION_DPI from the environment (extract.vision_dpi)."""
+    if getattr(settings, "vision_url", "") and not (os.environ.get("VISION_DPI") or "").strip():
+        os.environ["VISION_DPI"] = str(PAGE_MODEL_DPI)
+
+
 def _ask_deadline(raw: float) -> float:
     if raw <= 0:
         return 0.0
@@ -469,6 +500,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         "extract_cpu_seconds": _timeout(e, "EXTRACT_CPU_SECONDS", 120.0, warnings),
         "extract_wall_seconds": _timeout(e, "EXTRACT_WALL_SECONDS", 3600.0, warnings),
     }
+    vision_url = _vision_url(e, warnings)
     pattern = _project_number_pattern(e, warnings)
     folder_depth = _project_folder_depth(e, pattern == AUTO, warnings)
     return Settings(
@@ -549,6 +581,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         vector_search=vector_search,
         forwarded_allow_ips=e.get("FORWARDED_ALLOW_IPS", ""),
         llm_api_key=e.get("LLM_API_KEY", ""),
+        vision_url=vision_url,
+        vision_model=(e.get("VISION_MODEL") or "").strip() or "nemotron-kmw",
+        vision_api_key=e.get("VISION_API_KEY", ""),
         embed_api_key=e.get("EMBED_API_KEY", ""),
         rerank_api_key=e.get("RERANK_API_KEY", ""),
         **extract,

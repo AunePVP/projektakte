@@ -11,10 +11,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 
-from ..config import Settings
+from ..config import Settings, apply_vision_env
 from .embeddings import EmbeddingClient
 from .llm import LLMClient
 from .rerank import RerankClient
+from .seitenmodell import SeitenmodellClient
 
 log = logging.getLogger("projektakte.ai")
 _fake_lock = threading.Lock()
@@ -45,15 +46,23 @@ class AIServices:
     embed: EmbeddingClient
     rerank: RerankClient
     health_timeout: float = 3.0
+    # the page model reading the page images (VISION_URL); None: the LLM does, if LLM_VISION=1
+    vision: SeitenmodellClient | None = None
 
     @classmethod
     def from_settings(cls, s: Settings) -> "AIServices":
+        vision_url = getattr(s, "vision_url", "")
+        page_model = getattr(s, "vision_model", "") if vision_url else ""
+        apply_vision_env(s)
         return cls(
+            # with the page model the LLM never gets an image, whatever LLM_VISION says
             llm=LLMClient(s.llm_url, s.llm_model, timeout=s.llm_timeout,
-                          max_tokens=s.llm_max_tokens, vision=s.llm_vision,
+                          max_tokens=s.llm_max_tokens, vision=s.llm_vision and not page_model,
                           api_key=s.llm_api_key, extra_body=s.llm_extra_body,
                           retry_body=getattr(s, "vision_retry_body", None),
-                          vision_timeout=getattr(s, "vision_timeout", None)),
+                          vision_timeout=getattr(s, "vision_timeout", None), page_model=page_model),
+            vision=(SeitenmodellClient(vision_url, page_model, timeout=getattr(s, "vision_timeout", 600.0),
+                                       api_key=getattr(s, "vision_api_key", "")) if vision_url else None),
             embed=EmbeddingClient(s.embed_url, s.embed_model, fmt=s.embed_format,
                                   timeout=s.embed_timeout, batch_size=s.embed_batch,
                                   query_instruction=s.embed_query_instruction,
@@ -66,17 +75,15 @@ class AIServices:
     def check(self) -> dict:
         """Probe all three services in parallel with a short timeout (for /health/deps)."""
         t = self.health_timeout
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            futures = {
-                "llm": pool.submit(self.llm.probe, t),
-                "embeddings": pool.submit(self.embed.probe, t),
-                "reranker": pool.submit(self.rerank.probe, t),
-            }
+        clients = [("llm", self.llm), ("embeddings", self.embed), ("reranker", self.rerank)]
+        if self.vision is not None:
+            clients.append(("bildauswertung", self.vision))
+        with ThreadPoolExecutor(max_workers=len(clients)) as pool:
+            futures = {name: pool.submit(client.probe, t) for name, client in clients}
             services = {name: f.result() for name, f in futures.items()}
         # what happened during normal operation (e.g. reranker fallback in search)
         now = time.time()
-        for name, client in (("llm", self.llm), ("embeddings", self.embed),
-                             ("reranker", self.rerank)):
+        for name, client in clients:
             services[name]["last_error"] = client.last_error
             services[name]["last_error_at"] = client.last_error_at
             busy = busy_note(services[name], getattr(client, "last_ok_at", None), now, t)
@@ -87,6 +94,8 @@ class AIServices:
             services["reranker"]["fallback"] = "Suche ohne Reranker (Reihenfolge der hybriden Suche)"
         if not services["embeddings"]["ok"]:
             services["embeddings"]["fallback"] = "nur Volltextsuche; Vektoren werden nachgeholt"
+        if self.vision is not None and not services["bildauswertung"]["ok"]:
+            services["bildauswertung"]["fallback"] = "Seiten behalten ihren Text (Textebene/Texterkennung) und warten"
         if not services["llm"]["ok"]:
             services["llm"]["fallback"] = "Fragen: 'KI-Dienst nicht erreichbar', Suche geht weiter"
         ok = all(s["ok"] for s in services.values())
