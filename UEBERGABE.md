@@ -346,24 +346,28 @@ belegt|Nachschub stockte|neue Runde|CAD-Aufräumen"`. Begründungen: DECISIONS �
 Bildauswertung“, „Auflösung der Seitenbilder für das Bildmodell“, „Erst messen, wo die Bildauswertung stockt“,
 „CAD-Pläne ohne Bildmodell“, „Nur die Embeddings pausieren“, „Ausgelastet statt nicht erreichbar“.
 
-**Eigenes Seitenmodell (26. November 2026) – gebaut, mit dem echten Dienst noch nicht gelaufen.** Mit `VISION_URL`
-liest der Dienst auf der Spark (Nemotron Parse mit Typ-Kopf, Repository `nemotron-tune`, Port 8767, Modell
-`nemotron-kmw`) die Seiten statt Qwen; die Messungen oben gelten für das alte Modell. Kurz:
-- Alle Seiten aller PDF- und Bilddateien gehen ans Modell und bekommen einen Typ (Text, Plan, Foto, Leer, Unsicher;
-  Tabelle `page_types` mit Rohtext, Migration 20). Modelltext nur für Scans vom Typ Text; Seiten mit echter Textebene
-  behalten ihren Text. Kopf-/Fußzeilen je Dokument einmal. Suche mit Filter „Seitentyp“.
-- Code: `ai/seitenmodell.py` (Client), `seitentext.py` (Rohtext → Text, Kopfzeilenregel), `seitentypen.py` (Tabelle),
-  `extract._for_page_model` (Stufe 1), `vision.VisionPass._store_reading`/`_write_document` (Ergebnis je Seite).
-- Einstellungen beim Nutzer: `VISION_URL=http://<spark-ip>:8767/v1`, `VISION_CONCURRENCY=8`, `VISION_DPI` nicht
-  setzen (dann 175), `VISION_TIMEOUT=600` lassen. `LLM_VISION`, `VISION_RETRY_BODY` und `repetition_detection` in
-  `LLM_EXTRA_BODY` spielen für Seiten keine Rolle mehr.
-- **Vom Nutzer im Büronetz zu tun:** (1) `PROJEKTAKTE_INTEGRATION=1 VISION_URL=http://<spark-ip>:8767/v1 sh
-  scripts/test.sh -m integration tests/test_seitenmodell_real.py -n 0`; (2) `/health/deps` → Dienst „bildauswertung“
-  `ok`; (3) erster Lauf: alle PDF- und Bilddateien werden neu gelesen (Stufe 1 samt Tesseract, dann das Modell) –
-  Seiten/Std. und „Nachschub stockte“ im Log ansehen (CAD-Seiten mit Textebene werden jetzt gezeichnet).
-- Entscheidungen und Grenzen: DECISIONS „Eigenes Seitenmodell für die Bildauswertung“; offene Punkte: ROADMAP 18
-  (Schleifen-Seiten an ein anderes Modell, Tabellen umformen, Rohtext später verwerfen). Entwurf und Plan:
-  `docs/superpowers/specs/2026-11-24-seitenmodell-design.md`, `docs/superpowers/plans/2026-11-26-seitenmodell.md`.
+**Eigenes Seitenmodell und neuer PDF-Leser (26./26. November 2026) – im Betrieb beim Nutzer, erster Lauf läuft.**
+Mit `VISION_URL` liest der Dienst auf der Spark (Nemotron Parse mit Typ-Kopf, Repository `nemotron-tune`, Port 8767,
+Modell `nemotron-kmw`) die Seiten statt Qwen; die Messungen oben gelten für das alte Modell. Der Test gegen den echten
+Dienst (`tests/test_seitenmodell_real.py`) lief beim Nutzer durch (5 bestanden). Kurz:
+- **Lesen**: PDFs nur mit PDFium (`pdfseiten.py`: Text, Zeilen mit Lage, Scan-Erkennung, Seitenbild) – kein Tesseract,
+  kein pypdf in diesem Weg. Alle Seiten aller PDF- und Bilddateien gehen ans Modell und bekommen einen Typ (Text,
+  Plan, Foto, Leer, Unsicher; Tabelle `page_types` mit Rohtext, Migrationen 20/21).
+- **Text je Seite** (`seitentypen.compose`): Textebene vorhanden → exakte Wörter des PDFs in den Blöcken des Modells
+  (`seitentext.compose_layer`), bei Deckung unter 50 % der Text des Modells. Scan → Text des Modells nur bei Typ Text.
+  Kopf-/Fußzeilen je Dokument einmal. Alles nach der Antwort des Modells ist ohne Modell wiederholbar.
+- **Code**: `ai/seitenmodell.py` (Client), `pdfseiten.py`, `seitentext.py`, `seitentypen.py`, `extract._pdf_lean`
+  (Stufe 1), `vision.VisionPass._store_reading`/`_write_document`, `bericht.py`, `web.py` (`doc_state`, `/seiten`).
+- **Einstellungen beim Nutzer**: `VISION_URL=http://<spark-ip>:8767/v1`, `VISION_CONCURRENCY=8`, `VISION_DPI` nicht
+  setzen (175), `VISION_TIMEOUT=600`, `TESSERACT=0` (bewusst aus).
+- **Nach einem Update** werden die PDFs einmal neu gelesen und zusammengesetzt (Profilmarke `:seitenmodell2:`); schon
+  gelesene Seiten fragt das Modell nicht noch einmal.
+- **Prüfen ohne Durchklicken**: `docker compose exec app python -m projektakte.bericht` (nur Zahlen, darf in einen Chat)
+  – Meldungen fehlgeschlagener Dokumente/Seiten, Typen, Textquellen, Deckung. Seiten zum Ansehen: `/seiten`.
+- **Offen** (ROADMAP 19): alten Lese-Weg entfernen (Tesseract, pypdf-Auslese, Bildlesen über das große Modell – wird
+  mit `VISION_URL` nicht mehr ausgeführt), Dienst um „Abschrift erzwingen“ ergänzen, Antwortqualität messen
+  (Schritt 17), Schwelle der Deckung am Bericht prüfen.
+- Entscheidungen: DECISIONS „Eigenes Seitenmodell für die Bildauswertung“ und „PDFs lesen: neu aufgebaut, schlank“.
 
 ## 7c. Reihenfolge beim Einlesen
 
@@ -403,7 +407,7 @@ nichts wird gefiltert. Tippfehler (`tippfehler.py`): Wörter ohne Treffer werden
 korrigiert („meinten Sie …?“). Zu prüfen im Büro: Trefferquote der Regeln auf echten Titelseiten (Dokumentseite zeigt
 „aus dem Inhalt: „…““), welche Arten das Modell vorschlägt (`SELECT doc_type, doc_type_method, COUNT(*) FROM documents
 GROUP BY 1, 2`), wie lange das Nachtragen und die Modellfragen bei der echten Ablage dauern, ob die Korrekturen passen.
-Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in der Suche“. Letzte DB-Migration: 20.
+Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in der Suche“. Letzte DB-Migration: 21.
 
 ## 8. Offene Punkte, nach Wichtigkeit
 
@@ -491,7 +495,7 @@ Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in d
 | `deploy/projektakte.env.example` | Vorlage der Einstellungen |
 | `DECISIONS.md` | Entscheidungen mit Begründung |
 | `CHANGELOG.md` | Änderungen je Version |
-| `ROADMAP.md` | Schritte, offen: 17 und die Punkte unter 18 (Seitenmodell) |
+| `ROADMAP.md` | Schritte, offen: 17, Punkte unter 18 (Seitenmodell) und 19 (schlank machen, messen) |
 | `docs/ki-dienste.md` | Anbindung und Formate der KI-Dienste |
 | `docs/plmail-*.md` | plMail-Anbindung und Prompt für die plMail-Seite |
 | `docs/letzter-testlauf.txt` | Ausgabe eines Testlaufs |

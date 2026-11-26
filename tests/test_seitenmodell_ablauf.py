@@ -519,3 +519,19 @@ def test_read_again_composes_without_the_model(tmp_path):
     _stage1(conn, root, Big())
     doc = _docs(conn)["Konzept.pdf"]
     assert doc["vision_pending"] == 0 and _text(conn, "Konzept.pdf") == first
+
+
+def test_read_again_takes_the_new_readers_word_on_text_layers(tmp_path):
+    """Types stored by an earlier reader say "scan" for a page the reader now knows to have a real text layer (or
+    the other way round): what the reader says now counts, and the page's text follows."""
+    data = report(3)
+    conn, root = _setup(tmp_path, {"Konzept.pdf": data})
+    _stage1(conn, root, Big())
+    run(conn, root, Stub(*[reading(raw=as_the_model_saw(data, n)) for n in (1, 2, 3)]))
+    conn.execute("UPDATE page_types SET layer = 0")  # as stored by a reader that took the pages for scans
+    conn.execute("UPDATE documents SET extract_profile = 'v8:seitenmodell:nemotron-kmw'")
+    conn.commit()
+    _stage1(conn, root, Big())
+    rows = types(conn, "Konzept.pdf")
+    assert all(r["layer"] == 1 and r["quelle"] == "ebene" for r in rows.values())
+    assert "T30" in _text(conn, "Konzept.pdf") and "T3O" not in _text(conn, "Konzept.pdf")

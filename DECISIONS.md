@@ -1420,7 +1420,8 @@ Fragen bleiben beim großen Modell (`LLM_URL`). Ohne `VISION_URL` ändert sich n
   Prompt, Schleifenerkennung und zweiten Versuch mit einem Dienst vermischt, der nichts davon braucht; ein ganz neuer
   Ablauf hätte rund 1.000 Zeilen verdoppelt. Mit `VISION_URL` bekommt das große Modell nie ein Bild, auch nicht mit
   `LLM_VISION=1`.
-- *Alle Seiten gehen ans Modell, der Text nur bei Scans* (Entscheidung des Nutzers, „Variante B“): Jede Seite jeder
+- *Alle Seiten gehen ans Modell, der Text nur bei Scans* (Entscheidung des Nutzers, „Variante B“; **erweitert am
+  26.11.**, siehe „PDFs lesen: neu aufgebaut“ – die Wörter bleiben die der Textebene, die Gliederung kommt vom Modell): Jede Seite jeder
   PDF- und Bilddatei bekommt ihren Typ. Hat eine Seite eine echte Textebene, bleibt deren Text im Index – er ist
   exakt, gelesener Text nur fast: An einer sauberen Beispielseite verdoppelte das Modell spitze Klammern in
   Mailadressen. Bei Aktenzeichen und Maßen wäre das ein falsches Zitat mit Quellenangabe. Der Modelltext ersetzt den
@@ -1481,3 +1482,67 @@ Fragen bleiben beim großen Modell (`LLM_URL`). Ohne `VISION_URL` ändert sich n
   Büronetz, vom Nutzer gestartet.
 - *Suche*: Der Seitentyp ist ein Filter (Suchseite: ein Typ; API: mehrere, `ohne` = nicht eingeordnet) und ein
   Etikett am Treffer – nicht Teil der Quellenangabe, die unverändert an das Sprachmodell geht. Fragen filtern nicht.
+
+## PDFs lesen: neu aufgebaut, schlank (26. November 2026)
+
+Anlass: Am ersten Lauf mit dem Seitenmodell zeigte sich an einer Baugenehmigung, dass der Text digitaler PDFs
+zerrissene Wörter hatte („Dachflächenwass er“, „Bösc hungen“), Absätze mitten im Satz endeten und Briefkopf-Spalten
+zeilenweise ineinanderliefen. Der Nutzer verlangte, das Projekt von Grund auf zu prüfen, schlanker zu machen und nichts
+halb fertig zu lassen. Entschieden: kein Neubau des ganzen Projekts (Anmeldung, Mails, Zuordnung, Suche, Fragen und
+Oberfläche sind nicht die Ursache), aber das **Lesen der PDFs wird neu und schlank aufgebaut**. Das Folgende ersetzt in
+„Eigenes Seitenmodell für die Bildauswertung“ die Punkte zu Variante B (nur der Text der Textebene), zur Grenze der
+Kopf- und Fußzeilenregel, zu CAD-Plänen und zu „Alles neu lesen“.
+
+- *Ursache der zerrissenen Wörter, nachgestellt*: Viele Programme schreiben eine Zeile im Blocksatz in mehreren
+  Läufen. pypdf setzt an jeder Laufgrenze ein Leerzeichen, auch mitten im Wort. PDFium (die PDF-Technik aus Chrome)
+  liest dieselben Zeilen richtig. Damit war „die Textebene ist exakt“ (Begründung von Variante B) so nicht haltbar:
+  exakt ist die Textebene, nicht ihre Auslese mit pypdf.
+- *Eine Technik für Text und Bild* (`pdfseiten.py`): Mit dem Seitenmodell liest und zeichnet nur noch PDFium – Text,
+  Zeilen mit ihrer Lage, Scan-Erkennung, Seitenbild. Was gelesen wird, ist, was das Seitenbild zeigt, und die Lage
+  einer Zeile ist ihre Lage auf diesem Bild (geprüft gegen das gezeichnete Bild, auch bei `/Rotate` und CropBox).
+  Kein Tesseract, kein Dekodieren eingebetteter Bilder, kein pypdf in diesem Weg; beschädigte Dateien öffnet PDFium wie
+  ein Betrachter. Scan = Seitenbilder über mindestens der halben Seite mit zusammen mindestens 1 MP (wie bisher);
+  dessen Text ist eine OCR-Ebene, nicht der eigene Text der Seite.
+- *Exakte Wörter in der Gliederung des Modells* (`seitentext.compose_layer`): Das Modell sieht die Seite und liefert
+  Blöcke mit Lage und Art (Absatz, Überschrift, Listenpunkt, Tabelle, Kopf-/Fußzeile, Spalten in Lesereihenfolge). Bei
+  Seiten mit echter Textebene werden deren Zeilen nach ihrer Lage in diese Blöcke gelegt: Wörter und Zahlen aus dem PDF,
+  Gliederung vom Modell. So sind Absätze ganze Absätze, Spalten bleiben getrennt, Überschriften werden Kontext der
+  Abschnitte, und wiederkehrende Kopf- und Fußzeilen entfallen jetzt **auch bei digitalen PDFs**. Abgewogen gegen
+  „Modelltext für alle Seiten“ (Variante A: Lesefehler bei Zahlen und Aktenzeichen) und „nur Textebene“ (Variante B:
+  keine Gliederung).
+- *Nichts geht verloren, nichts doppelt*: Eine Zeile, die in keinem Block liegt, bleibt als Zeile stehen (hinter dem
+  Block davor). Ein Block ohne Zeilen behält den Text des Modells, wenn die Textebene ihn nicht hat (Stempel,
+  eingescannter Einschub, Text als Kurven); hat die Textebene ihn woanders, entfällt der Block.
+- *Deckung als Selbstkontrolle* (`page_types.deckung`, `quelle`; Migration 21): Für jede Textseite mit Textebene liegen
+  zwei unabhängige Lesungen vor – Textebene und Modell. Gespeichert wird, welcher Anteil der vom Modell gelesenen Wörter
+  in der Textebene steht. Unter 50 % ist die Textebene nicht, was die Seite zeigt (Schrift ohne brauchbare
+  Zeichentabelle, verborgener Text, Seite überwiegend Bild): Dann gilt der Text des Modells, die Seite steht unter
+  „Seiten zum Ansehen“. Eine Modellantwort mit gekürzter Schleife oder abgeschnitten ersetzt die Textebene nie. Die
+  Schwelle 50 % ist gesetzt, nicht gemessen: `python -m projektakte.bericht` zeigt die Verteilung der Deckung im echten
+  Bestand, daran wird sie überprüft.
+- *Nur das Modell oder ein Mensch leert eine Seite*; ein Mensch kann jede vom Modell gesehene Seite von Hand zuordnen
+  (`source = mensch`). Die Schätzung und der Rohtext des Modells bleiben – die Zuordnungen von Hand sind zugleich
+  Trainingsdaten für den Typ-Kopf.
+- *Alles nach der Antwort des Modells ist wiederholbar*: Typ und Rohtext bleiben je Datei-Inhalt gespeichert. Ändert
+  sich der Leser oder eine Regel (Profilmarke `:seitenmodell2:`), wird die Datei neu gelesen (ohne Tesseract schnell)
+  und neu zusammengesetzt, ohne das Modell noch einmal zu fragen. Der laufende erste Lauf ist deshalb nicht verloren.
+- *Alle Seiten gehen ans Modell*, auch leere und solche ohne Bild: Ob eine Seite leer ist, zeigt erst das Zeichnen.
+  `VISION_SKIP_CAD` spielt mit dem Seitenmodell keine Rolle mehr. Grenzen: 5.000 Seiten je Datei, 20 s Zeichnen je
+  Seite (danach bleibt die Seite ohne Typ und behält ihren Text).
+- *Ohne Tesseract haben Scan-Seiten vom Typ Plan, Foto und Unsicher keinen Suchtext* (außer einer mitgelieferten
+  OCR-Ebene). Vom Nutzer so gewollt. Für „Unsicher“ fehlt dem Dienst eine Möglichkeit, die Abschrift zu erzwingen
+  (Roadmap).
+- *Anzeige sagt, was ist*: Ein Dokument, dessen Seiten warten, heißt „wartet auf Bildauswertung“ bzw. „wird gelesen –
+  n von m Seiten noch nicht gelesen“, nicht „übersprungen“ oder „indexiert“.
+- *Schlanker*: Der Seitenexport für Trainingsbilder (`ocr_testseiten`) ist entfernt (bei Bedarf aus der
+  Versionsgeschichte). **Noch nicht entfernt, als nächster Schritt geplant**: der alte Lese-Weg ohne Seitenmodell
+  (pypdf-Auslese, Tesseract, Zusammensetzen eingebetteter Bilder, Bildlesen über das große Modell mit
+  Schleifenerkennung, CAD-Aufräumen, Nachprüfung älterer PDFs) – rund 2.500 Zeilen in `extract.py`, `vision.py`,
+  `ai/llm.py`, `ai/repetition.py` samt Tests. Mit `VISION_URL` wird davon nichts mehr ausgeführt. Er fällt in einem
+  eigenen Schritt, nachdem der neue Leser einmal über den echten Bestand gelaufen ist (dann mit Zahlen aus dem
+  Bericht statt blind).
+- *Abschnitte*: Die Einteilung selbst (Absätze bis 900 Zeichen, nie über eine Seitengrenze, Überschrift beginnt einen
+  Abschnitt) bleibt, bekommt aber jetzt echte Absätze und Überschriften als Eingabe. Größe und Überlappung sind mit der
+  Fake-KI eingestellt und werden erst geändert, wenn sie mit echten Fragen gemessen sind (Schritt 17) – ohne Messung
+  wäre das Raten.
+

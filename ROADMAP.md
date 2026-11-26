@@ -76,9 +76,22 @@ der echten KI-Dienste prüfen und in docs/ki-dienste.md eintragen, Schwellwerte 
   - [ ] **Tabellen und Formeln des Rohtexts umformen** (heute unverändert): wie, entscheidet der Nutzer; Vorlage
     `postprocess_document()` in `nemotron_parse.py` des Modells `nvidia/NVIDIA-Nemotron-Parse`.
   - [ ] **Rohtext nicht mehr dauerhaft speichern** (`page_types.raw`), sobald die Umwandlung feststeht.
-  - [ ] Befehl „Dokumente ohne Modell neu zusammensetzen“ (nach einer Änderung von Umwandlung oder Kopfzeilenregel).
-  - [ ] Modelltext auch für Seiten mit echter Textebene (Variante A) – nur, wenn sich die Lesequalität als exakt
-    genug erweist; Kopf- und Fußzeilen würden dann auch dort entfernt.
+  - [x] Dokumente ohne Modell neu zusammensetzen: geschieht beim Neu-Lesen (Profilmarke `:seitenmodell2:`), die
+    Antworten des Modells bleiben je Datei-Inhalt gespeichert.
+  - [x] Seiten mit echter Textebene: exakte Wörter in den Blöcken des Modells, Kopf-/Fußzeilen auch dort entfernt.
+- [ ] **19. Schlank machen und messen** (26.11.2026, siehe DECISIONS „PDFs lesen: neu aufgebaut“):
+  - [ ] Nach dem ersten vollen Lauf `python -m projektakte.bericht` ansehen: Meldungen fehlgeschlagener Seiten,
+    Verteilung der Deckung (Schwelle 50 % prüfen), Anteil der Abschnitte mit Überschrift.
+  - [ ] **Alten Lese-Weg entfernen** (ohne Seitenmodell): pypdf-Auslese, Tesseract (auch aus dem Image), Zusammensetzen
+    eingebetteter Bilder, Bildlesen über das große Modell samt Schleifenerkennung und `VISION_RETRY_BODY`,
+    CAD-Aufräumen, Nachprüfung älterer PDFs, `LLM_VISION`; die Demo liest Bilder dann nicht mehr.
+  - [ ] **Dienst: Abschrift erzwingen** für Seiten, die das Modell „Unsicher“ nennt oder ein Mensch als Text
+    zuordnet (heute liefert der Dienst dafür keinen Text; Vorschlag: Feld im Request, das den Typ vorgibt).
+  - [ ] **Antwortqualität mit den echten Diensten messen** (Schritt 17) und dabei Abschnittsgröße und Überlappung
+    mit echten Fragen vergleichen – erst dann ändern.
+  - [ ] Dokumentart (Baugenehmigung, Brandschutzkonzept …) aus dem Seitenmodell (eigener Kopf) statt vom großen
+    Modell – Idee des Nutzers, später.
+  - [ ] Zuordnungen von Hand als Trainingsdaten für den Typ-Kopf ausgeben.
 
 ## Phase B – Ideen (nur mit benanntem Nutzen)
 

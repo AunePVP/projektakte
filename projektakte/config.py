@@ -442,7 +442,7 @@ DEFAULT_QUERY_INSTRUCTION = (
 ASK_DEADLINE_MIN = 10.0
 
 
-# resolution of the page images the page model was trained with (ocr_testseiten --dpi 175)
+# resolution of the page images the page model was trained with
 PAGE_MODEL_DPI = 175
 
 

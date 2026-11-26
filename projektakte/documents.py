@@ -232,6 +232,10 @@ def write_document(conn: sqlite3.Connection, doc: PreparedDocument, *, path: str
     if r.vision_pages:
         # pages the model already read for this content and profile stay read (the file was read again)
         if paged and same:  # the page model: the types are kept for good, the pages' texts are made from them
+            # whether a page has a real text layer is what the reader says now (an earlier reader may have
+            # seen it differently); the model's answer stays
+            conn.executemany("UPDATE page_types SET layer = ? WHERE doc_id = ? AND page = ? AND layer != ?",
+                             [(int(n in layer), row[0], n, int(n in layer)) for n in r.vision_pages])
             rows = {n: t for n, t in seitentypen.known(conn, row[0]).items() if n in set(r.vision_pages)}
             texts, sources = seitentypen.compose({p.number: p.text for p in r.pages}, rows, r.segments)
             seitentypen.note_sources(conn, row[0], sources)

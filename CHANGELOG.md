@@ -5,6 +5,20 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **PDFs lesen, neu aufgebaut** (mit `VISION_URL`): Text, Zeilenlage, Scan-Erkennung und Seitenbild nur noch mit
+  PDFium (`pdfseiten.py`) – keine zerrissenen Wörter mehr („Dachflächenwass er“), kein Tesseract, kein Dekodieren
+  eingebetteter Bilder. Seiten mit echter Textebene: exakte Wörter aus dem PDF in den Blöcken des Modells (Absätze,
+  Überschriften, Spalten, Kopf- und Fußzeilen – wiederkehrende entfallen jetzt auch bei digitalen PDFs). Je Seite
+  gespeichert: woher der Text stammt und wie gut Textebene und Modell übereinstimmen (Deckung, Migration 21); unter
+  50 % gilt der Text des Modells. Früher gelesene PDFs werden einmal neu gelesen und zusammengesetzt, ohne das Modell
+  erneut zu fragen. Alle Seiten gehen ans Modell (`VISION_SKIP_CAD` entfällt dort).
+- **Anzeige**: Lesestand je Dokument statt „übersprungen“/„indexiert“ („wird gelesen – 172 von 184 Seiten noch nicht
+  gelesen“); Seitentyp je Abschnitt; „Seiten zum Ansehen“ (Modell unsicher, Schleife, Textebene passt nicht zur Seite)
+  mit Zuordnung von Hand, Übersicht `/seiten`; ein Bauvorhaben mit genau einem Unterprojekt und ohne eigene Dateien
+  öffnet gleich das Unterprojekt.
+- **Bericht in Zahlen**: `python -m projektakte.bericht` (nur Zählungen, zum Weitergeben).
+- **Entfernt**: Seitenexport `python -m projektakte.ocr_testseiten`.
+
 - **Eigenes Seitenmodell für die Bildauswertung** (`VISION_URL`, `VISION_MODEL`, `VISION_API_KEY`): Der Dienst auf
   der Spark (Nemotron Parse mit Typ-Kopf) liest die Seiten statt des großen Modells; Fragen bleiben bei `LLM_URL`.
   Jede Seite jeder PDF- und Bilddatei bekommt einen Seitentyp (Text, Plan, Foto, Leer, Unsicher; Tabelle `page_types`,

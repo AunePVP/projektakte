@@ -525,37 +525,38 @@ Schnitt belegt waren („in den letzten 10 Min. im Schnitt 19,4 von 22 Plätzen 
 warten und das Zeitbudget der Runde läuft.
 
 **Eigenes Seitenmodell (`VISION_URL`):** Mit `VISION_URL` liest der eigene Dienst auf der Spark (Nemotron Parse mit
-Typ-Kopf) die Seiten statt des großen Modells; Fragen bleiben bei `LLM_URL`. Dann gilt:
+Typ-Kopf) die Seiten statt des großen Modells; Fragen bleiben bei `LLM_URL`. So wird dann gelesen:
+- **PDFs liest und zeichnet nur PDFium** (die PDF-Technik aus Chrome, `pdfseiten.py`): Text, Zeilen mit ihrer Lage und
+  Seitenbild aus einer Hand. Kein Tesseract, kein Dekodieren eingebetteter Bilder. Wörter im Blocksatz werden nicht
+  mehr zerrissen.
 - *Jede* Seite jeder PDF- und Bilddatei geht ans Modell und bekommt einen Seitentyp: Text, Plan, Foto, Leer oder
-  Unsicher. Ausgenommen sind `SKIP_READ_FOLDERS`, Fotos in `VISION_SKIP_FOLDERS`, abgeschaltete Ordner und – mit
-  `VISION_SKIP_CAD=1` – Seiten ohne Textebene, die kein Bild zeichnen (sie gelten ohne Modell als Plan).
-- Der Text des Modells ersetzt den Seitentext nur bei **Scans** vom Typ Text. Plan, Foto und Unsicher behalten den
-  Text aus Stufe 1, Leer hat keinen. Seiten mit **echter Textebene** behalten immer ihren (exakten) Text und bekommen
-  nur den Typ; ein Dokument, bei dem nur solche Seiten warten, gilt als vollständig („Seitentyp ausstehend“).
-- Kopf- und Fußzeilen, die auf den gelesenen Seiten eines Dokuments wiederkehren, stehen nur einmal im Index.
-- Schleifen fängt der Dienst selbst ab: Die Seite ist als „Schleife“ markiert, ihr Text gekürzt; kein zweiter Versuch
-  (`VISION_RETRY_BODY` spielt keine Rolle). Das große Modell bekommt kein Bild mehr, `LLM_VISION` entscheidet nichts.
-- Die Seitenbilder werden mit 175 dpi gezeichnet (wie im Training), wenn `VISION_DPI` nicht gesetzt ist. Der Dienst
-  rechnet 8 Text-Seiten gleichzeitig: `VISION_CONCURRENCY=8`; `VISION_TIMEOUT` großzügig lassen (Warteschlange).
-- Beim ersten Lauf mit `VISION_URL` werden alle PDF- und Bilddateien einmal neu gelesen (Stufe 1 samt Tesseract, dann
-  das Modell). Typ und Rohtext je Seite bleiben dauerhaft gespeichert (Tabelle `page_types`).
-- Anzeige: Suchseite mit Auswahl „Seitentyp“, Etikett am Treffer („Plan“, „Typ unsicher (vermutlich Plan)“,
-  „Schleife“), Dokumentseite „Seitentypen: 12 Text, 3 Plan …“, Statusseite mit dem Dienst „Bildauswertung
-  (Seitenmodell)“ und den gelesenen Seiten je Typ.
-- Prüfen im Büronetz (es gibt keinen Fake dieses Dienstes):
-  `PROJEKTAKTE_INTEGRATION=1 VISION_URL=http://<spark>:8767/v1 sh scripts/test.sh -m integration tests/test_seitenmodell_real.py -n 0`
-
-**OCR-Modelle vergleichen:** `python -m projektakte.ocr_testseiten --anzahl 50 --ziel /data/ocr-test` (im Container:
-`docker compose exec app python -m projektakte.ocr_testseiten …`) legt wartende Scan-Seiten genau so als Bild ab, wie
-das Modell sie bekommt, mit dem Tesseract-Text daneben (`--datei TEIL --seiten 49,56` für bestimmte Seiten), ohne
-Seiten aus Ordnern `CAD` und `Bilder` sowie aus `SKIP_READ_FOLDERS`/`VISION_SKIP_FOLDERS` (`--ohne-ordner ""`: alle). Ändert
-nichts in der Datenbank. `--training` exportiert Trainingsseiten aus allen Arten von Dokumenten (wartende Scans,
-CAD-Pläne, digitale PDF-Seiten, Fotos), `--ohne-seiten …/seiten.json` lässt den Prüfsatz aus. Vergleichen, Entwürfe,
-Korrektur und Training liegen in den Repositorys `aunepvp/tune` und `nemotron-tune` (das eigene Seitenmodell).
-Für das Seitenmodell: `--dpi 175`, für einen Klassifizierer `--alle --je-dokument 3 --max-aufloesung 1664x2048`.
-`--erneuern --ziel …` schreibt die PDF-Seitenbilder eines früheren Exports neu, wie das Modell sie jetzt bekommt – unter
-denselben Nummern und Namen; Texte, Korrekturen und Fotos bleiben unverändert.
-Die Seiten sind echte Projektdaten – nur im Büronetz.
+  Unsicher. Ausgenommen sind `SKIP_READ_FOLDERS`, Fotos in `VISION_SKIP_FOLDERS` und abgeschaltete Ordner.
+- **Seiten mit echter Textebene**: Die Wörter kommen exakt aus dem PDF, die Gliederung vom Modell – Absätze,
+  Überschriften, Listenpunkte, Spalten in Lesereihenfolge, Kopf- und Fußzeilen. Zeilen außerhalb aller Blöcke bleiben
+  stehen; was nur das Bild zeigt (Stempel, eingescannte Einschübe), kommt vom Modell dazu.
+- **Selbstkontrolle**: Je Textseite mit Textebene wird gespeichert, wie viel von dem, was das Modell gelesen hat, in
+  der Textebene steht (Deckung). Unter 50 % zeigt die Seite etwas anderes als ihre Textebene (kaputte Schrift,
+  verborgener Text): Dann gilt der Text des Modells, und die Seite steht unter „Seiten zum Ansehen“.
+- **Scans**: Typ Text → Text des Modells. Plan, Foto, Unsicher → nur eine mitgelieferte OCR-Ebene, sonst kein Text.
+  Leer → kein Text.
+- Kopf- und Fußzeilen, die auf den Seiten eines Dokuments wiederkehren, stehen nur einmal im Index – bei Scans und bei
+  digitalen PDFs.
+- Schleifen fängt der Dienst selbst ab: Die Seite ist als „Schleife“ markiert, ihr Text gekürzt; kein zweiter Versuch.
+  Das große Modell bekommt kein Bild mehr; `LLM_VISION`, `VISION_RETRY_BODY`, `VISION_SKIP_CAD` und `TESSERACT` spielen
+  für PDFs keine Rolle.
+- Seitenbilder mit 175 dpi (wie im Training), wenn `VISION_DPI` nicht gesetzt ist. Der Dienst rechnet 8 Text-Seiten
+  gleichzeitig: `VISION_CONCURRENCY=8`; `VISION_TIMEOUT` großzügig lassen (Warteschlange).
+- **Wiederholbar ohne Modell**: Typ und Rohtext je Seite bleiben gespeichert (Tabelle `page_types`). Ändert sich der
+  Leser oder eine Regel, werden die Dateien neu gelesen und neu zusammengesetzt, ohne das Modell zu fragen.
+- **Anzeige**: Ein Dokument, dessen Seiten warten, sagt das („wartet auf Bildauswertung“, „wird gelesen – 172 von 184
+  Seiten noch nicht gelesen“). Dokumentseite: Typ je Seite am Abschnitt, „Seitentypen: 12 Text, 3 Plan …“, „Seiten zum
+  Ansehen“ mit Zuordnung von Hand. Übersicht aller Seiten zum Ansehen: `/seiten` (Link auf der Statusseite). Suchseite
+  mit Auswahl „Seitentyp“.
+- **Bericht in Zahlen** (nur Zählungen, keine Dateinamen und Inhalte – darf in einen Chat kopiert werden):
+  `docker compose exec app python -m projektakte.bericht` zeigt, was wie gelesen wurde, die häufigsten Meldungen
+  fehlgeschlagener Dokumente und Seiten, Typen, Textquellen und die Deckung zwischen Textebene und Modell.
+- Prüfen des Dienstes im Büronetz (es gibt keinen Fake dieses Dienstes):
+  `PROJEKTAKTE_INTEGRATION=1 VISION_URL=http://<spark-ip>:8767/v1 sh scripts/test.sh -m integration tests/test_seitenmodell_real.py -n 0`
 
 **Wiederholungsschleifen:** Kleine Bildmodelle wiederholen beim Abschreiben von Formularen, Tabellen und Plänen
 manchmal dieselbe Zeile, bis die Token-Grenze erreicht ist. Jede Seitenantwort wird deshalb gestreamt und mitgelesen
