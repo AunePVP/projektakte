@@ -18,7 +18,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
 
 ## 2. Wo der Code liegt
 
-- Repository `aunepvp/projektakte`, Branch **`claude/epic-tesla-5b8tm7`** (alles gepusht, kein Pull
+- Repository `aunepvp/projektakte`, Branch **`claude/lucid-cerf-h2058c`** (alles gepusht, kein Pull
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
@@ -501,7 +501,7 @@ Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in d
 In Claude Code liest die Sitzung `CLAUDE.md` automatisch, die auf diese Datei verweist. Für einen
 anderen Chat diesen Text vorweg schicken:
 
-> Wir arbeiten am Repository aunepvp/projektakte, Branch claude/epic-tesla-5b8tm7. Lies zuerst
+> Wir arbeiten am Repository aunepvp/projektakte, Branch claude/lucid-cerf-h2058c. Lies zuerst
 > UEBERGABE.md, dann README.md und DECISIONS.md. Halte dich an die Arbeitsregeln in UEBERGABE.md,
 > Abschnitt 10. Als Nächstes möchte ich: …
 
