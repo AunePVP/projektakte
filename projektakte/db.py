@@ -277,6 +277,30 @@ MIGRATIONS: list[str] = [
        OR id IN (SELECT doc_id FROM page_texts WHERE state = 'done'
                  AND COALESCE(note, '') != 'CAD-Plan – nicht an das Bildmodell (VISION_SKIP_CAD)'));
     """,
+    # 20 – the page model (ai/seitenmodell.py, VISION_URL) sorts every page of a PDF or image file into a type:
+    #      ``page_types`` keeps it for good, one row per page seen – the type (Text, Plan, Foto, Leer, Unsicher), the
+    #      type head's guess and confidence, whether the service cut a repetition loop short, how the page was typed
+    #      (``source``: modell | cad – no image and no text layer, not sent | render – rendered blank), whether the
+    #      page has a real text layer whose text stands (``layer``), and the model's raw text (``raw``, text pages:
+    #      the document's text is made from it, so the conversion can change without reading a page again).
+    #      ``page_texts.layer`` carries the same while the pages of a document wait.
+    """
+    CREATE TABLE page_types (
+        doc_id     INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        page       INTEGER NOT NULL,
+        typ        TEXT NOT NULL,
+        kopf       TEXT,
+        sicherheit REAL,
+        schleife   INTEGER NOT NULL DEFAULT 0,
+        finish     TEXT,
+        source     TEXT NOT NULL DEFAULT 'modell',
+        layer      INTEGER NOT NULL DEFAULT 0,
+        raw        TEXT,
+        PRIMARY KEY (doc_id, page)
+    );
+    CREATE INDEX page_types_typ ON page_types(typ, doc_id, page);
+    ALTER TABLE page_texts ADD COLUMN layer INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 # projects.kind
