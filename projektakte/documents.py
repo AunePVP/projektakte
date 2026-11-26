@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import logging
 import os
 import re
@@ -231,7 +232,8 @@ def write_document(conn: sqlite3.Connection, doc: PreparedDocument, *, path: str
         # pages the model already read for this content and profile stay read (the file was read again)
         if paged and same:  # the page model: the types are kept for good, the pages' texts are made from them
             rows = {n: t for n, t in seitentypen.known(conn, row[0]).items() if n in set(r.vision_pages)}
-            texts = seitentypen.final_texts({p.number: p.text for p in r.pages}, rows)
+            texts, sources = seitentypen.compose({p.number: p.text for p in r.pages}, rows, r.segments)
+            seitentypen.note_sources(conn, row[0], sources)
             known = {n: texts.get(n, "") for n in rows}
         elif same and row[3] == doc.profile:
             known = {n: t for n, t in conn.execute(
@@ -265,13 +267,8 @@ def write_document(conn: sqlite3.Connection, doc: PreparedDocument, *, path: str
             "doc_date, pages, status, message, method, extract_profile, incomplete, attempts, retry_after, "
             "vision_pending, vision_note, vision_incomplete, path, indexed_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))", (*values, path)).lastrowid
-    if paged:  # typed without the model: CAD plans (not sent) and pages rendered blank
-        for n in r.cad_pages:
-            seitentypen.store(conn, doc_id, n, typ="Plan", source=seitentypen.CAD)
-        for n in r.blank_pages:
-            seitentypen.store(conn, doc_id, n, typ="Leer", source=seitentypen.RENDER)
     if pending:
-        store_page_texts(conn, doc_id, r.pages, pending, known, layer)
+        store_page_texts(conn, doc_id, r.pages, pending, known, layer, r.segments)
         VISION_WAITING.set()
     write_chunks(conn, doc_id, chunks, filename=doc.filename, project=project, project_name=project_name,
                  mail_id=mail_id)
@@ -293,18 +290,22 @@ def _merged_pages(pages: list[Page], known: dict[int, str]) -> list[Page]:
 
 
 def store_page_texts(conn: sqlite3.Connection, doc_id: int, pages: list[Page], pending: list[int],
-                     done: dict[int, str] | None = None, layer: set[int] | frozenset = frozenset()) -> None:
+                     done: dict[int, str] | None = None, layer: set[int] | frozenset = frozenset(),
+                     segments: dict | None = None) -> None:
     """The texts of all pages of a document whose scan pages wait for the model (``pending``), so that the
     phase "Bildauswertung" can put the document together again with the model's texts; ``done`` are pages
-    already read by it. ``layer`` (the page model): pages with a real text layer – their text stands, the model
-    only gives their type."""
+    already read by it. ``layer`` (the page model): pages with a real text layer – their words stand, the model
+    gives type and structure; ``segments``: the lines of those pages with their place (page → list)."""
     done = done or {}
     texts = {p.number: p.text for p in pages if p.number is not None}
     rows = [(doc_id, n, text, "text") for n, text in texts.items() if n not in pending and n not in done]
     rows += [(doc_id, n, texts.get(n, ""), "pending") for n in pending]
     rows += [(doc_id, n, text, "done") for n, text in done.items()]
-    conn.executemany("INSERT OR REPLACE INTO page_texts(doc_id, page, text, state, layer) VALUES(?,?,?,?,?)",
-                     [(*row, int(row[1] in layer)) for row in rows])
+    lines = segments or {}
+    conn.executemany(
+        "INSERT OR REPLACE INTO page_texts(doc_id, page, text, state, layer, segments) VALUES(?,?,?,?,?,?)",
+        [(*row, int(row[1] in layer), json.dumps(lines[row[1]], ensure_ascii=False) if lines.get(row[1]) else None)
+         for row in rows])
 
 
 def write_chunks(conn: sqlite3.Connection, doc_id: int, chunks: list[Chunk], *, filename: str,

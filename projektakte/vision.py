@@ -37,6 +37,7 @@ image.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -694,7 +695,9 @@ class VisionPass:
             # once, over the whole document); a page with a real text layer only waits for its type – it never
             # makes the document incomplete, whether it waits, failed or was refused
             types = seitentypen.known(self.conn, doc_id)
-            texts = seitentypen.final_texts({r["page"]: r["text"] for r in rows}, types)
+            lines = {r["page"]: json.loads(r["segments"]) for r in rows if r["segments"]}
+            texts, sources = seitentypen.compose({r["page"]: r["text"] for r in rows}, types, lines)
+            seitentypen.note_sources(self.conn, doc_id, sources)
             pages = [Page(r["page"], texts[r["page"]]) for r in rows if texts[r["page"]].strip()]
             counted = [r for r in rows if not r["layer"]]
             read = any(not t["layer"] and t["typ"] == "Text" and (t["raw"] or "").strip() for t in types.values())

@@ -69,7 +69,7 @@ _STOP_SECONDS = 3.0  # a worker asked to stop that has not ended by then is kill
 _SLICE_SECONDS = 0.5  # waiting for the worker is done in slices: a close() from another thread is noticed
 _MAX_LOG_RECORDS = 200  # log records forwarded per file: a crafted file must not flood the app's log
 _STOP = b'{"stop": true}'
-_PAGE_LISTS = ("layer_pages", "cad_pages", "blank_pages")  # Extracted: pages listed or typed for the page model
+_PAGE_LISTS = ("layer_pages",)  # Extracted: pages listed for the page model
 _FLAGS = ("defer_vision", "recheck", "ocr")  # flags of extract.extract a request may carry
 
 
@@ -453,6 +453,7 @@ def _extracted(data: dict) -> Extracted:
                      message=data["message"], method=data["method"], incomplete=bool(data["incomplete"]),
                      retry=bool(data["retry"]), limit=str(data["limit"]) if data.get("limit") else None,
                      vision_pages=[int(n) for n in data.get("vision_pages") or ()],
+                     segments={int(n): lines for n, lines in (data.get("segments") or {}).items()},
                      **{key: [int(n) for n in data.get(key) or ()] for key in _PAGE_LISTS})
 
 
@@ -508,6 +509,7 @@ def _serve(conn, limits: Limits, parent: int) -> None:  # pragma: no cover - run
                                 "message": result.message, "method": result.method,
                                 "incomplete": result.incomplete, "retry": result.retry,
                                 "limit": result.limit, "vision_pages": result.vision_pages,
+                                "segments": {str(n): lines for n, lines in result.segments.items()},
                                 **{key: getattr(result, key) for key in _PAGE_LISTS}}})
         if recycle:
             return

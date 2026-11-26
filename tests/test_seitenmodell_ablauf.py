@@ -15,11 +15,18 @@ from projektakte.ai.seitenmodell import PageReading, PageRejected
 from projektakte.demo.writers import pdf_bytes
 from projektakte.vision import VisionLive, VisionPass, VisionWorker, run_vision
 
-from .test_bildauswertung_stufen import _docs, _setup, _stage1, _text, plain_scan, png, tesseract  # noqa: F401
-from .test_seitenmodell_stufe1 import P1, P2, P3, Big, three_pages
-from .test_vektorseiten import outlined_and_blank
+from .pdfbau import Pdf, line, scan_pdf
+from .seitenhilfe import OCR as STAGE1  # the OCR layer of the test scans: their text until the model read them
+from .seitenhilfe import docs as _docs
+from .seitenhilfe import setup_index as _setup
+from .seitenhilfe import stage1 as _stage1
+from .seitenhilfe import text_of as _text
+from .test_seitenmodell_stufe1 import P1, P2, P3, Big, png, three_pages
 
-STAGE1 = "Seite gescannt Rauchabzug Treppenraum erkannt"  # what the faked Tesseract reads on every scan page
+
+def plain_scan(pages: int = 1) -> bytes:
+    """Scanned pages with an OCR layer (STAGE1 on every page)."""
+    return scan_pdf(pages, layer=STAGE1)
 
 
 def block(text: str, klasse: str = "Text", y: float = 0.25) -> str:
@@ -58,7 +65,7 @@ def types(conn, name: str) -> dict:
 
 
 # -- scan pages -------------------------------------------------------------------------------------------------
-def test_scan_text_replaces_stage1_text(tmp_path, tesseract):
+def test_scan_text_replaces_stage1_text(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
     assert STAGE1 in _text(conn, "Scan.pdf")
@@ -78,7 +85,7 @@ def test_scan_text_replaces_stage1_text(tmp_path, tesseract):
     assert stats["pages"] == 1 and stats["types"] == {"Text": 1}
 
 
-def test_scan_leer_has_no_text(tmp_path, tesseract):
+def test_scan_leer_has_no_text(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
     run(conn, root, Stub(reading("Leer")))
@@ -88,7 +95,7 @@ def test_scan_leer_has_no_text(tmp_path, tesseract):
     assert types(conn, "Scan.pdf")[1]["typ"] == "Leer"
 
 
-def test_plan_and_foto_keep_stage1_text(tmp_path, tesseract):
+def test_plan_and_foto_keep_stage1_text(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan(2)})
     _stage1(conn, root, Big())
     run(conn, root, Stub(reading("Plan"), reading("Foto")))
@@ -98,7 +105,7 @@ def test_plan_and_foto_keep_stage1_text(tmp_path, tesseract):
     assert (doc["incomplete"], doc["vision_pending"], doc["method"]) == (0, 0, "text")
 
 
-def test_unsicher_keeps_text_and_kopf(tmp_path, tesseract):
+def test_unsicher_keeps_text_and_kopf(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
     run(conn, root, Stub(reading("Unsicher", kopf="Plan", sicherheit=0.41)))
@@ -107,14 +114,14 @@ def test_unsicher_keeps_text_and_kopf(tmp_path, tesseract):
     assert (row["typ"], row["kopf"], row["sicherheit"]) == ("Unsicher", "Plan", 0.41)
 
 
-def test_text_page_without_text_keeps_stage1_text(tmp_path, tesseract):
+def test_text_page_without_text_keeps_stage1_text(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
     run(conn, root, Stub(reading("Text", raw="")))
     assert STAGE1 in _text(conn, "Scan.pdf")
 
 
-def test_loop_page_marked_no_second_call(tmp_path, tesseract):
+def test_loop_page_marked_no_second_call(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
     raw = block("Zeile A\nZeile A\n[Schleife des Modells: 37× wiederholt, Rest entfernt]")
@@ -126,7 +133,7 @@ def test_loop_page_marked_no_second_call(tmp_path, tesseract):
     assert _docs(conn)["Scan.pdf"]["incomplete"] == 0  # not an error
 
 
-def test_finish_length_marks_partial(tmp_path, tesseract):
+def test_finish_length_marks_partial(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
     stub = Stub(reading(raw=block("Der Anfang der Seite.") + "\n\n<x_0.1><y_0.5>abgeschnittener Sat", finish="length"))
@@ -138,7 +145,7 @@ def test_finish_length_marks_partial(tmp_path, tesseract):
     assert len(stub.calls) == 1
 
 
-def test_repeated_header_once_in_document(tmp_path, tesseract):
+def test_repeated_header_once_in_document(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan(4)})
     _stage1(conn, root, Big())
     answers = [reading(raw="\n\n".join([block("Musterbüro GmbH · Beispielstadt", "Page-header", 0.0),
@@ -151,14 +158,14 @@ def test_repeated_header_once_in_document(tmp_path, tesseract):
     assert "Page-footer" in types(conn, "Scan.pdf")[3]["raw"]  # the raw text stays whole
 
 
-def test_image_file_is_typed(tmp_path, tesseract):
-    conn, root = _setup(tmp_path, {"Skizze.png": png()})
+def test_image_file_is_typed(tmp_path):
+    conn, root = _setup(tmp_path, {"Skizze.png": png(), "Notiz.png": png()})
     _stage1(conn, root, Big())
-    stub = Stub(reading("Foto"))
+    stub = Stub(reading("Foto"), reading(raw=block("Handskizze Treppenraum T2.")))
     run(conn, root, stub)
-    assert types(conn, "Skizze.png")[1]["typ"] == "Foto"
+    found = sorted((types(conn, name)[1]["typ"], _text(conn, name)) for name in ("Skizze.png", "Notiz.png"))
+    assert found == [("Foto", ""), ("Text", "Handskizze Treppenraum T2.")]
     assert stub.calls[0][0] == "image/png"
-    assert STAGE1 in _text(conn, "Skizze.png")
 
 
 # -- pages with a real text layer ------------------------------------------------------------------------------
@@ -167,7 +174,7 @@ def test_layer_page_keeps_layer_text(tmp_path):
     _stage1(conn, root, Big())
     before = _text(conn, "Konzept.pdf")
     raw = block("Brandschutzkonzcpt für die Grundschulc")  # the model misreads: the text layer is exact
-    run(conn, root, Stub(reading(raw=raw), reading("Plan"), reading(raw=block("Etwas anderes."))))
+    run(conn, root, Stub(reading(raw=raw), reading("Plan"), reading(raw=block(P3.replace("Fenster", "Fcnster")))))
     assert _text(conn, "Konzept.pdf") == before
     assert "Brandschutzkonzcpt" not in before and P2 in before
     rows = types(conn, "Konzept.pdf")
@@ -209,7 +216,7 @@ def test_failed_layer_page_waits_but_the_document_is_complete(tmp_path):
 
 
 # -- failures ---------------------------------------------------------------------------------------------------
-def test_rejected_scan_page_is_final(tmp_path, tesseract):
+def test_rejected_scan_page_is_final(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
     stub = Stub(PageRejected("HTTP 400: kaputtes Bild"))
@@ -222,7 +229,7 @@ def test_rejected_scan_page_is_final(tmp_path, tesseract):
     assert len(stub.calls) == 1  # not asked again
 
 
-def test_service_error_retries_later(tmp_path, tesseract):
+def test_service_error_retries_later(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
     run(conn, root, Stub(AIServiceError("HTTP 500 von …: GPU-Fehler")))
@@ -233,7 +240,7 @@ def test_service_error_retries_later(tmp_path, tesseract):
     assert STAGE1 in _text(conn, "Scan.pdf")
 
 
-def test_changed_file_drops_answer(tmp_path, tesseract):
+def test_changed_file_drops_answer(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
 
@@ -249,17 +256,12 @@ def test_changed_file_drops_answer(tmp_path, tesseract):
     assert "Alter Inhalt" not in _text(conn, "Scan.pdf")
 
 
-def test_blank_render_is_leer(tmp_path, tesseract, monkeypatch):
-    monkeypatch.delenv("VISION_SKIP_CAD", raising=False)
-    conn, root = _setup(tmp_path, {"Auszug.pdf": outlined_and_blank()})
+def test_blank_render_is_leer(tmp_path):
+    """A page without anything on it is found blank when it is rendered: "Leer" without asking the model."""
+    conn, root = _setup(tmp_path, {"Auszug.pdf": Pdf().page(line(60, 700, "Stellplätze und Garagen im Hof.")).page().build()})
     _stage1(conn, root, Big())
-    doc = _docs(conn)["Auszug.pdf"]
-    # as if stage 1 had not seen that page 2 is blank: it waits for the model and is found blank when rendered
-    conn.execute("DELETE FROM page_types WHERE doc_id = ? AND page = 2", (doc["id"],))
-    conn.execute("INSERT OR REPLACE INTO page_texts(doc_id, page, text, state) VALUES(?, 2, '', 'pending')", (doc["id"],))
-    conn.execute("UPDATE documents SET vision_pending = 2 WHERE id = ?", (doc["id"],))
-    conn.commit()
-    stub = Stub(reading(raw=block("Stellplätze und Garagen.")))
+    assert _docs(conn)["Auszug.pdf"]["vision_pending"] == 2
+    stub = Stub(reading(raw=block("Stellplätze und Garagen im Hof.")))
     run(conn, root, stub)
     rows = types(conn, "Auszug.pdf")
     assert (rows[1]["typ"], rows[1]["source"]) == ("Text", "modell")
@@ -277,7 +279,7 @@ def test_page_without_image_and_with_text_layer_is_sent_despite_skip_cad(tmp_pat
 
 
 # -- around it --------------------------------------------------------------------------------------------------
-def test_big_model_gets_no_image_and_no_loop_check(tmp_path, tesseract):
+def test_big_model_gets_no_image_and_no_loop_check(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan(), "Konzept.pdf": three_pages()})
     _stage1(conn, root, Big())
     conn.execute("UPDATE documents SET loop_check = 1")
@@ -287,7 +289,7 @@ def test_big_model_gets_no_image_and_no_loop_check(tmp_path, tesseract):
     assert conn.execute("SELECT COUNT(*) FROM documents WHERE loop_check = 1").fetchone()[0] == 2
 
 
-def test_page_texts_dropped_page_types_stay(tmp_path, tesseract):
+def test_page_texts_dropped_page_types_stay(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan(2)})
     _stage1(conn, root, Big())
     run(conn, root, Stub(reading(raw=block("Eins.")), reading(raw=block("Zwei."))))
@@ -295,7 +297,7 @@ def test_page_texts_dropped_page_types_stay(tmp_path, tesseract):
     assert conn.execute("SELECT COUNT(*) FROM page_types").fetchone()[0] == 2
 
 
-def test_read_again_takes_the_texts_from_the_types(tmp_path, tesseract):
+def test_read_again_takes_the_texts_from_the_types(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan(2)})
     _stage1(conn, root, Big())
     run(conn, root, Stub(reading(raw=block("Rauchabzug im Treppenraum geprüft.")), reading("Leer")))
@@ -307,7 +309,7 @@ def test_read_again_takes_the_texts_from_the_types(tmp_path, tesseract):
     assert _text(conn, "Scan.pdf") == "Rauchabzug im Treppenraum geprüft."
 
 
-def test_live_status_counts_the_types(tmp_path, tesseract):
+def test_live_status_counts_the_types(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan(3)})
     _stage1(conn, root, Big())
     live = VisionLive()
@@ -315,7 +317,7 @@ def test_live_status_counts_the_types(tmp_path, tesseract):
     assert live.snapshot()["types"] == {"Text": 1, "Plan": 2}
 
 
-def test_run_vision_and_worker_want_the_page_model(tmp_path, tesseract):
+def test_run_vision_and_worker_want_the_page_model(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
     settings = type("S", (), {"projects_dir": root, "vision_concurrency": 1, "vision_pass_seconds": 60.0})()
@@ -329,13 +331,7 @@ def test_run_vision_and_worker_want_the_page_model(tmp_path, tesseract):
 # -- found by the review of the whole branch --------------------------------------------------------------------
 def invisible_text_pdf() -> bytes:
     """A page with a real text layer that a viewer shows blank (text render mode 3: neither filled nor stroked)."""
-    from .test_extract_r5 import Doc
-
-    doc = Doc()
-    font = doc.add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    cid = doc.stream(b"", b"BT 3 Tr /F1 12 Tf 50 780 Td (Rauchabzug im Treppenraum laut Pruefbericht vorhanden) Tj ET")
-    doc.pages.append((cid, b"<< /Font << /F1 %d 0 R >> >>" % font))
-    return doc.build()
+    return Pdf().page(line(50, 780, "Rauchabzug im Treppenraum laut Pruefbericht vorhanden", mode=3)).build()
 
 
 def test_layer_page_rendered_blank_keeps_its_text(tmp_path):
@@ -352,9 +348,8 @@ def test_layer_page_rendered_blank_keeps_its_text(tmp_path):
     assert (row["typ"], row["source"], row["layer"]) == ("Leer", "render", 1)
 
 
-def test_scan_page_rendered_blank_keeps_its_stage1_text(tmp_path, tesseract, monkeypatch):
+def test_scan_page_rendered_blank_keeps_its_stage1_text(tmp_path):
     """Only the model's "Leer" empties a scan page – a page the app could not draw keeps what stage 1 read."""
-    from projektakte import extract as extract_mod
     from projektakte.extract import PageImages
 
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
@@ -379,7 +374,7 @@ def test_sections_stay_when_no_text_changed(tmp_path):
     assert _docs(conn)["Konzept.pdf"]["vision_pending"] == 0
 
 
-def test_sections_are_written_anew_when_a_scan_page_got_text(tmp_path, tesseract):
+def test_sections_are_written_anew_when_a_scan_page_got_text(tmp_path):
     conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
     _stage1(conn, root, Big())
     conn.execute("UPDATE chunks SET embedding = x'00112233'")
@@ -400,7 +395,7 @@ def test_types_go_when_the_file_changes_without_the_page_model(tmp_path):
 
 
 # -- status page: the page model's own numbers ------------------------------------------------------------------
-def test_page_model_has_its_own_page_times(tmp_path, tesseract):
+def test_page_model_has_its_own_page_times(tmp_path):
     """The pages Qwen read and its 50 s a page must not count for the page model (status page: pages read,
     rough time left)."""
     from projektakte import zeiten
@@ -436,3 +431,91 @@ def test_status_shows_no_recheck_with_the_page_model(tmp_path):
                      "extract_profile) VALUES('/p/a.pdf', 'a.pdf', 'a.pdf', '.pdf', 'x', 'ok', 0, 'text', 'v7:text')")
     assert counts({})["vision_recheck"] == 1
     assert counts({"VISION_URL": "http://127.0.0.1:9/v1"})["vision_recheck"] == 0
+
+
+# -- pages with a real text layer: the layer's words in the model's blocks --------------------------------------
+HEAD = "Musterbüro GmbH · Beispielstadt · Telefon 01234 5678"
+
+
+def report(pages: int = 4) -> bytes:
+    """A digital report: letterhead and page number on every page, a heading, a paragraph of two lines."""
+    pdf = Pdf()
+    for n in range(1, pages + 1):
+        pdf.page(line(60, 800, HEAD, size=8),
+                 line(60, 740, f"Abschnitt {n} Rettungswege", size=14, bold=True),
+                 line(60, 700, f"{n}. Der zweite Rettungsweg aus dem Geschoss {n} führt über die Außen-"),
+                 line(60, 686, "treppe an der Nordseite; die Tür hat die Feuerwiderstandsklasse T30."),
+                 line(60, 40, f"Seite {n} von {pages}", size=8))
+    return pdf.build()
+
+
+def as_the_model_saw(data: bytes, number: int, *, misread: bool = True) -> str:
+    """The raw text the page model would give for a page of :func:`report`: one block per part of the page, drawn
+    around the lines the reader found, the paragraph's two lines as one block – and "T30" misread as "T3O"."""
+    from projektakte import pdfseiten
+
+    lines = pdfseiten.read(data).pages[number - 1].segments
+
+    def around(*segs) -> tuple:
+        return (round(min(s.x0 for s in segs) - 0.01, 4), round(min(s.y0 for s in segs) - 0.004, 4),
+                round(max(s.x1 for s in segs) + 0.01, 4), round(max(s.y1 for s in segs) + 0.004, 4))
+
+    def mblock(text, klasse, box) -> str:
+        return f"<x_{box[0]}><y_{box[1]}>{text}<x_{box[2]}><y_{box[3]}><class_{klasse}>"
+
+    head, title, first, second, foot = lines
+    body = f"{first.text[:-1]}{second.text}"
+    return "\n\n".join([mblock(head.text, "Page-header", around(head)),
+                        mblock("## " + title.text, "Section-header", around(title)),
+                        mblock(body.replace("T30", "T3O") if misread else body, "List-item", around(first, second)),
+                        mblock(foot.text, "Page-footer", around(foot))])
+
+
+def test_digital_pdf_gets_structure_from_the_model_and_words_from_the_layer(tmp_path):
+    data = report()
+    conn, root = _setup(tmp_path, {"Konzept.pdf": data})
+    _stage1(conn, root, Big())
+    run(conn, root, Stub(*[reading(raw=as_the_model_saw(data, n)) for n in (1, 2, 3, 4)]))
+    text = _text(conn, "Konzept.pdf")
+    # the layer's exact words (T30, not the model's T3O), the two lines one paragraph, the divided word whole
+    assert "über die Außentreppe an der Nordseite; die Tür hat die Feuerwiderstandsklasse T30." in text
+    assert "T3O" not in text
+    # letterhead and page number of every page once
+    assert text.count("Musterbüro GmbH") == 1 and text.count("von 4") == 1
+    # the model's headings are the sections' headings
+    headings = [r[0] for r in conn.execute("SELECT DISTINCT heading FROM chunks ORDER BY ord")]
+    assert headings == [None] + [f"Abschnitt {n} Rettungswege" for n in (1, 2, 3, 4)]  # None: the letterhead
+    rows = types(conn, "Konzept.pdf")
+    assert all(r["quelle"] == "ebene" and r["deckung"] >= 0.8 and r["layer"] == 1 for r in rows.values())
+    doc = _docs(conn)["Konzept.pdf"]
+    assert (doc["status"], doc["incomplete"], doc["vision_pending"], doc["method"]) == ("ok", 0, 0, "text")
+
+
+def test_text_layer_that_is_not_what_the_page_shows_gives_way_to_the_model(tmp_path):
+    """Hidden text under a page that shows something else: the model read the page, the layer has other words."""
+    data = Pdf().page(line(60, 700, "Verborgener Text einer alten Fassung ohne jeden Bezug zum Inhalt.", mode=3),
+                      line(60, 600, "X")).build()
+    conn, root = _setup(tmp_path, {"Bescheid.pdf": data})
+    _stage1(conn, root, Big())
+    seen = block("Die Baugenehmigung wird mit folgenden Auflagen zum Brandschutz und zur Rauchableitung erteilt.")
+    run(conn, root, Stub(reading(raw=seen)))
+    assert "Auflagen zum Brandschutz" in _text(conn, "Bescheid.pdf")
+    assert "Verborgener Text" not in _text(conn, "Bescheid.pdf")
+    row = types(conn, "Bescheid.pdf")[1]
+    assert row["quelle"] == "modell" and row["deckung"] < 0.5
+
+
+def test_read_again_composes_without_the_model(tmp_path):
+    """Everything after the model's answer can be made anew from what is stored: a later version of the reader or
+    of these rules reads the file again, the model is not asked."""
+    data = report()
+    conn, root = _setup(tmp_path, {"Konzept.pdf": data})
+    _stage1(conn, root, Big())
+    run(conn, root, Stub(*[reading(raw=as_the_model_saw(data, n)) for n in (1, 2, 3, 4)]))
+    first = _text(conn, "Konzept.pdf")
+    conn.execute("UPDATE documents SET extract_profile = 'v8:seitenmodell:nemotron-kmw'")  # read by the old reader
+    conn.execute("DELETE FROM chunks")
+    conn.commit()
+    _stage1(conn, root, Big())
+    doc = _docs(conn)["Konzept.pdf"]
+    assert doc["vision_pending"] == 0 and _text(conn, "Konzept.pdf") == first

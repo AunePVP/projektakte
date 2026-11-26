@@ -18,10 +18,11 @@ def conn(tmp_path):
 
 
 def test_migration_20_adds_the_table_and_the_layer_column(conn):
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 20
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 21
     columns = [r[1] for r in conn.execute("PRAGMA table_info(page_types)")]
-    assert columns == ["doc_id", "page", "typ", "kopf", "sicherheit", "schleife", "finish", "source", "layer", "raw"]
-    assert "layer" in [r[1] for r in conn.execute("PRAGMA table_info(page_texts)")]
+    assert columns == ["doc_id", "page", "typ", "kopf", "sicherheit", "schleife", "finish", "source", "layer", "raw",
+                       "deckung", "quelle"]
+    assert {"layer", "segments"} <= {r[1] for r in conn.execute("PRAGMA table_info(page_texts)")}
 
 
 def test_store_replaces_the_page(conn):

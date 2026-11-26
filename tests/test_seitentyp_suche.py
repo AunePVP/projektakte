@@ -11,13 +11,15 @@ from projektakte.config import load_settings
 from projektakte.main import create_app
 from projektakte.search import fts_search, hybrid_search, load_hits, page_type_filter, typed_ids
 
-from .test_bildauswertung_stufen import _docs, _setup, _stage1, plain_scan, tesseract  # noqa: F401
-from .test_seitenmodell_ablauf import Stub, block, reading, run
+from .seitenhilfe import docs as _docs
+from .seitenhilfe import setup_index as _setup
+from .seitenhilfe import stage1 as _stage1
+from .test_seitenmodell_ablauf import Stub, block, plain_scan, reading, run
 from .test_seitenmodell_stufe1 import Big
 
 
 @pytest.fixture()
-def index(tmp_path, tesseract):
+def index(tmp_path):
     """Scan.pdf: page 1 Text (the model's text), 2 Plan, 3 Unsicher (probably a plan); Wartung.pdf: a text page
     with a loop cut short; Notiz.txt without page types. Every section speaks of the Rauchabzug. (The search
     shows at most three sections of a document; the newer file is read first.)"""

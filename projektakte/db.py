@@ -301,6 +301,17 @@ MIGRATIONS: list[str] = [
     CREATE INDEX page_types_typ ON page_types(typ, doc_id, page);
     ALTER TABLE page_texts ADD COLUMN layer INTEGER NOT NULL DEFAULT 0;
     """,
+    # 21 – pages with a real text layer: their exact words in the model's blocks (seitentext.compose_layer).
+    #      ``page_texts.segments`` holds the lines of such a page with their place on the rendered page (JSON, while
+    #      the document waits). ``page_types.quelle`` says where a page's text is from – ebene (text layer), modell,
+    #      stufe1 (the OCR layer of a scan the model did not write out), mensch (typed by a person) – and
+    #      ``deckung`` how much of what the model read the text layer has (0–1): a low value marks a text layer that
+    #      is not what the page shows.
+    """
+    ALTER TABLE page_texts ADD COLUMN segments TEXT;
+    ALTER TABLE page_types ADD COLUMN deckung REAL;
+    ALTER TABLE page_types ADD COLUMN quelle TEXT;
+    """,
 ]
 
 # projects.kind
