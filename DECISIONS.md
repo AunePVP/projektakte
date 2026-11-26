@@ -1339,6 +1339,12 @@ ohne Ergebnis: rund 36.000 von 79.200 Platz-Sekunden, und die Seiten kamen nach 
 
 ## Was auf eine Seite gehört (Vorgabe für den Seitenleser)
 
+**Geändert am 26.11.2026 (siehe „Eigenes Seitenmodell für die Bildauswertung“):** Mit dem eigenen Seitenmodell wird
+nur noch *Text* abgeschrieben. Pläne und Fotos schreibt das Modell nicht mehr ab (auch nicht Schriftfeld und Legende
+bzw. sichtbaren Text) – sie behalten den Text aus Stufe 1 (Textebene oder Tesseract). Neu ist der Typ `Unsicher`.
+Der folgende Text beschreibt, wie die Vorgabe entstand; die Punkte „Je Seitentyp“ und „Typ in der ersten Zeile“ gelten
+in der neuen Fassung.
+
 Tests mit Qwen, GLM-OCR, PaddleOCR-VL und TeleOCR zeigten: Eine Anweisung „lies die Seite“ für alle Seitenarten führt bei
 kleinen Modellen zu Erfundenem (Räume auf Plänen, Stempel), Schleifen (Fragenlisten auf Produktfotos) und Rauschen
 (Maße, Flurstücke, Bildbeschreibungen). Festgelegt mit dem Nutzer nach der Frage „was schriebe ein Mensch, der alles von
@@ -1356,6 +1362,7 @@ Hand indexiert?“:
   `scripts/ocr_vorgabe.py` des Repositorys `aunepvp/tune`, das das Feintuning übernimmt (Werkzeuge, Ablauf,
   `CLAUDE.md`). Ein eigenes Repository, weil Training andere Technik (PyTorch, Trainingswerkzeuge, ARM-Container) und
   einen anderen Rhythmus hat; in Projektakte bleiben der Export der Seiten und der spätere Einbau.
+  (Nachtrag: Das Modell entsteht im Repository `nemotron-tune`; der Einbau steht unten.)
 
 ## Das Modell sieht die Seite, nicht ihre Bilder
 
@@ -1399,3 +1406,69 @@ der Scans) und für das Erkennen von Scan-Seiten; seine Grenzen gegen präparier
   Löschen und Umhängen geschehen sofort. Eine Mail, die beim Übernehmen scheitert, bleibt liegen und wird beim
   nächsten Lauf erneut versucht; plMail stellt mit eigener Warteschlange zu.
 - Der App-Passwort-Bereich für JMAP (`docs/plmail-prompt-nur-zugeordnet.md`) wird damit nicht gebraucht.
+
+
+## Eigenes Seitenmodell für die Bildauswertung (`VISION_URL`)
+
+Die Bildauswertung liest über den eigenen Dienst auf der Spark (Nemotron Parse mit Typ-Kopf, Repository
+`nemotron-tune`, `eigenbau/server.py`) statt über das allgemeine Modell. Der Dienst ordnet jede Seite ein
+(`Text`, `Plan`, `Foto`, `Leer`, `Unsicher`) und schreibt nur Text-Seiten ab – rund 0,3–0,6 s je Seite statt rund 50 s.
+Fragen bleiben beim großen Modell (`LLM_URL`). Ohne `VISION_URL` ändert sich nichts.
+
+- *Eigener Client* (`ai/seitenmodell.py`) neben dem `LLMClient`, der vorhandene Ablauf (`vision.VisionPass`:
+  Warteschlange, Reihenfolge, Prüfung auf geänderte Dateien, Statusseite) bleibt. Den `LLMClient` zu erweitern hätte
+  Prompt, Schleifenerkennung und zweiten Versuch mit einem Dienst vermischt, der nichts davon braucht; ein ganz neuer
+  Ablauf hätte rund 1.000 Zeilen verdoppelt. Mit `VISION_URL` bekommt das große Modell nie ein Bild, auch nicht mit
+  `LLM_VISION=1`.
+- *Alle Seiten gehen ans Modell, der Text nur bei Scans* (Entscheidung des Nutzers, „Variante B“): Jede Seite jeder
+  PDF- und Bilddatei bekommt ihren Typ. Hat eine Seite eine echte Textebene, bleibt deren Text im Index – er ist
+  exakt, gelesener Text nur fast: An einer sauberen Beispielseite verdoppelte das Modell spitze Klammern in
+  Mailadressen. Bei Aktenzeichen und Maßen wäre das ein falsches Zitat mit Quellenangabe. Der Modelltext ersetzt den
+  Seitentext nur bei Scans (ohne Textebene oder mit OCR-Ebene unter einem Scanbild). Eine Seite mit echter Textebene
+  behält ihren Text auch, wenn das Modell sie `Leer` nennt. Word, ODT, Textdateien und Mails haben keine Seitenbilder
+  und bleiben wie bisher („nicht eingeordnet“).
+- *Je Typ bei Scan-Seiten*: `Text` → der umgewandelte Rohtext; `Plan`, `Foto` → Text aus Stufe 1; `Leer` → kein Text;
+  `Unsicher` → Text aus Stufe 1, die Seite ist als „Typ unsicher (vermutlich …)“ markiert.
+- *Rohtext vorerst dauerhaft gespeichert* (Tabelle `page_types`, Migration 20, Spalte `raw`): Die Texte der Seiten
+  werden beim Zusammensetzen des Dokuments aus dem Rohtext gebildet (`seitentext.py`). So lassen sich Umwandlung
+  (Tabellen, Formeln) und die Kopfzeilenregel später ändern, ohne eine Seite neu zu lesen. Kostet geschätzt 1–2 GB.
+  **Vorläufig**: Steht die Umwandlung, kann der Rohtext entfallen (Roadmap).
+- *Umwandlung vorerst schlicht*: Blöcke in der gelieferten Reihenfolge, Koordinaten- und Klassen-Marken entfernt,
+  Markdown des Modells (`# Überschrift`, `**fett**`) bleibt, `\<` wird zu `<`, Tabellen unverändert. Text außerhalb
+  von Blöcken (abgeschnittene Antwort) geht nicht verloren.
+- *Kopf- und Fußzeilen*: Das Modell sieht eine Seite und schreibt Briefkopf und Fußzeile jedes Mal. Ein Block der
+  Klasse `Page-header`/`Page-footer`, der auf mindestens 3 Seiten und mindestens der Hälfte der gelesenen Seiten eines
+  Dokuments gleich vorkommt (Ziffern zählen nicht: Seitenzahl, Druckdatum), bleibt nur beim ersten Vorkommen. Grenze:
+  Die Regel greift nur bei Seiten, deren Text vom Modell stammt – am Rechner erzeugte PDFs behalten ihre Kopfzeilen
+  wie bisher (Folge von Variante B).
+- *Schleifen fängt der Dienst*: `kmw.schleife` ist kein Fehler – Text übernehmen (ohne den Vermerk „[Schleife des
+  Modells: …]“), Seite als „Schleife“ markieren, kein zweiter Versuch, keine eigene Schleifenerkennung (`find_loop`),
+  kein `VISION_RETRY_BODY`. Eine abgeschnittene Antwort (`finish = length`) wird übernommen und das Dokument als
+  unvollständig vermerkt, ohne neuen Versuch.
+- *Fehler*: 400 (Bild abgelehnt) ist endgültig – die Seite bleibt ohne Typ, behält ihren Text. 504, 500 und
+  Netzfehler werden mit wachsender Wartezeit erneut versucht. Eine Antwort ohne bekannten Typ ist ein Fehler, es wird
+  kein Typ geraten.
+- *Dokumentstatus*: Warten nur noch Seiten mit echter Textebene auf ihren Typ, ist das Dokument vollständig
+  („Seitentyp ausstehend: N Seite(n)“, kein Mangel). Auch eine solche Seite, die scheitert oder abgelehnt wird, macht
+  das Dokument nicht unvollständig – sein Text ist da.
+- *CAD-Pläne* (Entscheidung des Nutzers, „Variante a“): Jede Seite mit echter Textebene geht ans Modell, auch große
+  Pläne – das Modell erkennt sie und schreibt nichts ab. `VISION_SKIP_CAD=1` gilt nur noch für Seiten ohne Textebene,
+  die kein Bild zeichnen: nicht gesendet, Typ `Plan` (ohne Modell). Risiko: Das Zeichnen von CAD-Seiten dauerte im
+  November 12–30 s je Seite, unabhängig von der Pixelgrenze; stockt der Nachschub, zeigt es das Log („Nachschub
+  stockte“). Das einmalige CAD-Aufräumen (`CadSweep`) läuft mit dem Seitenmodell nicht: Es hielte wartende
+  Textseiten (zeichnen auch kein Bild) für Pläne.
+- *175 dpi*: Das Modell wurde mit Seitenbildern aus `ocr_testseiten --dpi 175` trainiert; andere Auflösungen
+  verschlechtern Einordnung und Lesen. Mit `VISION_URL` gilt 175, wenn `VISION_DPI` nicht gesetzt ist (ohne: weiter
+  150); ein anderer gesetzter Wert gibt eine Startwarnung. Die Aufbereitung ist dieselbe wie im Export (PDFium, wie
+  ein Betrachter, mit `/Rotate`, sonst nichts gedreht). Der Dienst verkleinert selbst auf höchstens 1664×2048.
+- *Alles neu lesen*: PDF- und Bilddateien, deren Profil die Marke `:seitenmodell:` nicht trägt, sind fällig – auch
+  vollständige, sonst hätten sie keinen Seitentyp. Die Version der Extraktion (`EXTRACT_VERSION`) steigt dafür nicht:
+  Das hätte auch ohne `VISION_URL` unvollständige Dateien neu gelesen. Bei gleichem Dateiinhalt bleiben die Typen
+  erhalten (ein späterer Lauf braucht das Modell dafür nicht noch einmal).
+- *Kein Fake-Dienst* (Entscheidung des Nutzers, Ausnahme zu Zusammenfassung Punkt 1): Für das Seitenmodell gibt es
+  keinen Fake-Server und nichts in `fake_ai`; mit `AI_MODE=fake` wird `VISION_URL` ignoriert. Getestet wird die reine
+  Logik (Umwandlung, Auswerten der Antwort, was die App mit einem Ergebnis tut – dort steht ein kleines Python-Objekt
+  mit festen Ergebnissen anstelle des Clients). Den Dienst selbst prüft `tests/test_seitenmodell_real.py`, nur im
+  Büronetz, vom Nutzer gestartet.
+- *Suche*: Der Seitentyp ist ein Filter (Suchseite: ein Typ; API: mehrere, `ohne` = nicht eingeordnet) und ein
+  Etikett am Treffer – nicht Teil der Quellenangabe, die unverändert an das Sprachmodell geht. Fragen filtern nicht.

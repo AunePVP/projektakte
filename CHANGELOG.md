@@ -5,6 +5,17 @@ Roadmap-Schritt.
 
 ## [Unveröffentlicht] – Projektordner vom Dateiserver
 
+- **Eigenes Seitenmodell für die Bildauswertung** (`VISION_URL`, `VISION_MODEL`, `VISION_API_KEY`): Der Dienst auf
+  der Spark (Nemotron Parse mit Typ-Kopf) liest die Seiten statt des großen Modells; Fragen bleiben bei `LLM_URL`.
+  Jede Seite jeder PDF- und Bilddatei bekommt einen Seitentyp (Text, Plan, Foto, Leer, Unsicher; Tabelle `page_types`,
+  Migration 20, mit dem Rohtext des Modells). Der Modelltext ersetzt den Seitentext nur bei Scans; Seiten mit echter
+  Textebene behalten ihren Text. Wiederkehrende Kopf- und Fußzeilen stehen je Dokument einmal im Index. Schleifen
+  fängt der Dienst ab (Seite markiert, kein zweiter Versuch). 175 dpi mit `VISION_URL`. Suche: Filter „Seitentyp“
+  (Suchseite, `GET /api/search?page_type=…`), Etikett am Treffer, Zahlen je Typ auf der Dokumentseite; Statusseite
+  und `/health/deps` mit dem Dienst „Bildauswertung“. Beim ersten Lauf werden alle PDF- und Bilddateien neu gelesen.
+  Ohne `VISION_URL` ändert sich nichts. Test gegen den echten Dienst: `tests/test_seitenmodell_real.py` (nur im
+  Büronetz). `docs/feintuning.md` entfällt.
+
 - **Seitenexport, genau dieselben Seiten neu:** `--erneuern` schreibt jetzt auch Bilddateien (Fotos) neu, findet das
   Dokument über seine id (neu in `seiten.json`, mit `pfad`) oder bei älteren Exporten über den Pfad – gibt es den
   Pfad mehrfach, entscheidet der Bildvergleich mit dem alten Seitenbild, sonst bleibt die Seite. Jedes neue Bild wird

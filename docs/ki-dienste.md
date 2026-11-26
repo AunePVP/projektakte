@@ -54,6 +54,22 @@ curl -s http://192.168.178.62:4343/rerank -H 'Content-Type: application/json' \
 Reranker nur auf die besten ~30 Kandidaten der hybriden Suche anwenden. Fällt er aus, mit der
 Reihenfolge der hybriden Suche weiterarbeiten (und das in `/health/deps` melden).
 
+## Seitenmodell für die Bildauswertung – `VISION_URL=http://192.168.178.62:8767/v1`
+
+Eigener Dienst auf der Spark (Nemotron Parse mit Typ-Kopf, Repository `nemotron-tune`, `eigenbau/server.py`), Modell
+`nemotron-kmw`. Client: `projektakte/ai/seitenmodell.py`.
+
+- `POST /v1/chat/completions` im OpenAI-Format mit **genau einem** Bild als `image_url` (`data:`-URL, base64). Der
+  Dienst hat einen festen Prompt; Projektakte schickt keinen Text mit.
+- Anfrage ohne Bild → `OK` (so prüft `/health/deps`). `GET /v1/models`, `GET /health` (Plätze, Warteschlange, Zähler).
+- Antwort: `content` beginnt mit `TYP: Text|Plan|Foto|Leer|Unsicher`; nur bei Text folgt der Rohtext – Blöcke
+  `<x_links><y_oben>Inhalt<x_rechts><y_unten><class_Art>`, Koordinaten 0–1, Inhalt bereits Markdown. Daneben
+  `"kmw": {"typ", "kopf", "sicherheit", "tokens", "finish", "ms", "bild", "schleife", "schleifen"}`.
+- Fehler: 400 (Bild abgelehnt – endgültig), 504 (Zeitlimit), 500 (GPU-Fehler; dann `/health` 503) – erneuter Versuch.
+- Bis 8 Text-Seiten gleichzeitig (`VISION_CONCURRENCY=8`), 175 dpi, Bilder über 1664×2048 verkleinert der Dienst.
+- Kein Fake: Mit `AI_MODE=fake` wird `VISION_URL` ignoriert. Prüfung gegen den echten Dienst:
+  `PROJEKTAKTE_INTEGRATION=1 VISION_URL=… sh scripts/test.sh -m integration tests/test_seitenmodell_real.py -n 0`
+
 ## Tests
 
 Keine Tests gegen die echten Dienste in der normalen Testsuite. Für jeden Dienst gibt es einen Fake

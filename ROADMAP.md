@@ -66,6 +66,20 @@ der echten KI-Dienste prüfen und in docs/ki-dienste.md eintragen, Schwellwerte 
 - [ ] **17. Mit den echten Diensten kalibrieren** – im Büronetz `evaluate --real` laufen lassen,
   Formate in docs/ki-dienste.md eintragen, Schwellwerte einstellen; danach Version 1.0.
 
+- [x] **18. Eigenes Seitenmodell für die Bildauswertung** – Nemotron Parse mit Typ-Kopf auf der Spark
+  (`VISION_URL`): Typ je Seite (Text, Plan, Foto, Leer, Unsicher), Modelltext nur für Scans, Filter in der Suche.
+  Offen, mit dem Nutzer zu entscheiden bzw. im Büronetz zu messen:
+  - [ ] Test gegen den echten Dienst laufen lassen (`tests/test_seitenmodell_real.py`) und einen ersten Lauf messen
+    (Seiten/Std., „Nachschub stockte“ bei CAD-Seiten).
+  - [ ] **Seiten mit Schleife an ein anderes Modell schicken** (`page_types.schleife = 1`): besprochen, noch nicht
+    gebaut – die Seiten sind markiert und behalten den gekürzten Text.
+  - [ ] **Tabellen und Formeln des Rohtexts umformen** (heute unverändert): wie, entscheidet der Nutzer; Vorlage
+    `postprocess_document()` in `nemotron_parse.py` des Modells `nvidia/NVIDIA-Nemotron-Parse`.
+  - [ ] **Rohtext nicht mehr dauerhaft speichern** (`page_types.raw`), sobald die Umwandlung feststeht.
+  - [ ] Befehl „Dokumente ohne Modell neu zusammensetzen“ (nach einer Änderung von Umwandlung oder Kopfzeilenregel).
+  - [ ] Modelltext auch für Seiten mit echter Textebene (Variante A) – nur, wenn sich die Lesequalität als exakt
+    genug erweist; Kopf- und Fußzeilen würden dann auch dort entfernt.
+
 ## Phase B – Ideen (nur mit benanntem Nutzen)
 
 - Auflagen und Fristen aus Baugenehmigungen extrahieren

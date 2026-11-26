@@ -1,6 +1,6 @@
 # Übergabe – Projektakte
 
-Stand: 15. November 2026, Version 0.5.0 plus „Unveröffentlicht“ (siehe CHANGELOG.md).
+Stand: 26. November 2026, Version 0.5.0 plus „Unveröffentlicht“ (siehe CHANGELOG.md).
 Diese Datei fasst alles zusammen, was man zum Weiterarbeiten braucht – in einem neuen Chat, mit
 einem anderen Werkzeug oder selbst. Ausführliches steht in den verlinkten Dateien.
 
@@ -18,7 +18,7 @@ Vision und Spezifikation: `VISION.md`, `ROADMAP.md`, `docs/ki-dienste.md`, `docs
 
 ## 2. Wo der Code liegt
 
-- Repository `aunepvp/projektakte`, Branch **`claude/lucid-cerf-h2058c`** (alles gepusht, kein Pull
+- Repository `aunepvp/projektakte`, Branch **`claude/epic-tesla-5b8tm7`** (alles gepusht, kein Pull
   Request angelegt).
 - Python 3.12, FastAPI, SQLite mit FTS5, Jinja2/HTMX, ein Docker-Container. Abhängigkeiten nur
   gepinnt in `requirements.txt` (+ `constraints.txt` für das Image).
@@ -346,6 +346,25 @@ belegt|Nachschub stockte|neue Runde|CAD-Aufräumen"`. Begründungen: DECISIONS �
 Bildauswertung“, „Auflösung der Seitenbilder für das Bildmodell“, „Erst messen, wo die Bildauswertung stockt“,
 „CAD-Pläne ohne Bildmodell“, „Nur die Embeddings pausieren“, „Ausgelastet statt nicht erreichbar“.
 
+**Eigenes Seitenmodell (26. November 2026) – gebaut, mit dem echten Dienst noch nicht gelaufen.** Mit `VISION_URL`
+liest der Dienst auf der Spark (Nemotron Parse mit Typ-Kopf, Repository `nemotron-tune`, Port 8767, Modell
+`nemotron-kmw`) die Seiten statt Qwen; die Messungen oben gelten für das alte Modell. Kurz:
+- Alle Seiten aller PDF- und Bilddateien gehen ans Modell und bekommen einen Typ (Text, Plan, Foto, Leer, Unsicher;
+  Tabelle `page_types` mit Rohtext, Migration 20). Modelltext nur für Scans vom Typ Text; Seiten mit echter Textebene
+  behalten ihren Text. Kopf-/Fußzeilen je Dokument einmal. Suche mit Filter „Seitentyp“.
+- Code: `ai/seitenmodell.py` (Client), `seitentext.py` (Rohtext → Text, Kopfzeilenregel), `seitentypen.py` (Tabelle),
+  `extract._for_page_model` (Stufe 1), `vision.VisionPass._store_reading`/`_write_document` (Ergebnis je Seite).
+- Einstellungen beim Nutzer: `VISION_URL=http://192.168.178.62:8767/v1`, `VISION_CONCURRENCY=8`, `VISION_DPI` nicht
+  setzen (dann 175), `VISION_TIMEOUT=600` lassen. `LLM_VISION`, `VISION_RETRY_BODY` und `repetition_detection` in
+  `LLM_EXTRA_BODY` spielen für Seiten keine Rolle mehr.
+- **Vom Nutzer im Büronetz zu tun:** (1) `PROJEKTAKTE_INTEGRATION=1 VISION_URL=http://192.168.178.62:8767/v1 sh
+  scripts/test.sh -m integration tests/test_seitenmodell_real.py -n 0`; (2) `/health/deps` → Dienst „bildauswertung“
+  `ok`; (3) erster Lauf: alle PDF- und Bilddateien werden neu gelesen (Stufe 1 samt Tesseract, dann das Modell) –
+  Seiten/Std. und „Nachschub stockte“ im Log ansehen (CAD-Seiten mit Textebene werden jetzt gezeichnet).
+- Entscheidungen und Grenzen: DECISIONS „Eigenes Seitenmodell für die Bildauswertung“; offene Punkte: ROADMAP 18
+  (Schleifen-Seiten an ein anderes Modell, Tabellen umformen, Rohtext später verwerfen). Entwurf und Plan:
+  `docs/superpowers/specs/2026-11-24-seitenmodell-design.md`, `docs/superpowers/plans/2026-11-26-seitenmodell.md`.
+
 ## 7c. Reihenfolge beim Einlesen
 
 Statusseite, Bereich unter „KI-Dienste“: Ordner-Reihenfolge (▲/▼, „aus“ = **wird nicht gelesen**, schon Gelesenes
@@ -384,7 +403,7 @@ nichts wird gefiltert. Tippfehler (`tippfehler.py`): Wörter ohne Treffer werden
 korrigiert („meinten Sie …?“). Zu prüfen im Büro: Trefferquote der Regeln auf echten Titelseiten (Dokumentseite zeigt
 „aus dem Inhalt: „…““), welche Arten das Modell vorschlägt (`SELECT doc_type, doc_type_method, COUNT(*) FROM documents
 GROUP BY 1, 2`), wie lange das Nachtragen und die Modellfragen bei der echten Ablage dauern, ob die Korrekturen passen.
-Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in der Suche“. Letzte DB-Migration: 14.
+Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in der Suche“. Letzte DB-Migration: 20.
 
 ## 8. Offene Punkte, nach Wichtigkeit
 
@@ -413,13 +432,9 @@ Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in d
    - Prüfen, welchen `finish_reason` vLLM nach `repetition_detection` meldet (häufige „Antwort abgeschnitten – neuer
      Versuch“ im Log hieße: unnötige zweite Versuche).
    - Ob der OCR-Text dem kleinen Modell hilft oder schadet (Vergleich Bild+Text / nur Bild) – nicht gemessen.
-   - **Feingetunter Seitenleser** – eigenes Repository `aunepvp/tune` (dort `CLAUDE.md`: Problem, Vorgabe je
-     Seitentyp, Testergebnisse, Werkzeuge, nächste Schritte); hier nur der Export und später der Einbau
-     (`docs/feintuning.md`). Die Indexierung ruht, bis das Modell steht.
-   - **Spezialisiertes OCR-Modell statt Qwen für die Bildauswertung** (Stempel werden nicht gebraucht): Kandidaten
-     GLM-OCR, TeleOCR, PaddleOCR-VL 1.6 (je ~1B, freie Lizenz). Der Nutzer testet sie auf einem PC (RTX 4080) mit
-     `projektakte.ocr_testseiten` und den Werkzeugen in `aunepvp/tune`; danach eigene Einstellungen für das Bildmodell
-     (`VISION_URL`/`VISION_MODEL`, schlanker OCR-Prompt) bauen – Fragen bleiben beim großen Modell.
+   - **Eigenes Seitenmodell eingebaut** (`VISION_URL`, Abschnitt 7b): noch mit dem echten Dienst zu prüfen und zu
+     messen; die Punkte oben (Belegung, `VISION_MAX_PIXELS`, `finish_reason`, OCR-Text als Hilfe) betreffen nur noch
+     den Betrieb ohne `VISION_URL`. Offen dazu: ROADMAP 18.
    - Die zwei zeitabhängigen Tests (Abschnitt 2) robust machen.
    - Wenn alles stabil läuft: Pull Request nach `main`.
 6. **Ideen, besprochen, nicht gebaut:**
@@ -476,7 +491,7 @@ Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in d
 | `deploy/projektakte.env.example` | Vorlage der Einstellungen |
 | `DECISIONS.md` | Entscheidungen mit Begründung |
 | `CHANGELOG.md` | Änderungen je Version |
-| `ROADMAP.md` | Schritte, offen: 17 |
+| `ROADMAP.md` | Schritte, offen: 17 und die Punkte unter 18 (Seitenmodell) |
 | `docs/ki-dienste.md` | Anbindung und Formate der KI-Dienste |
 | `docs/plmail-*.md` | plMail-Anbindung und Prompt für die plMail-Seite |
 | `docs/letzter-testlauf.txt` | Ausgabe eines Testlaufs |
@@ -486,7 +501,7 @@ Einzelheiten: README „Suche“, DECISIONS „Dokumentarten und Tippfehler in d
 In Claude Code liest die Sitzung `CLAUDE.md` automatisch, die auf diese Datei verweist. Für einen
 anderen Chat diesen Text vorweg schicken:
 
-> Wir arbeiten am Repository aunepvp/projektakte, Branch claude/lucid-cerf-h2058c. Lies zuerst
+> Wir arbeiten am Repository aunepvp/projektakte, Branch claude/epic-tesla-5b8tm7. Lies zuerst
 > UEBERGABE.md, dann README.md und DECISIONS.md. Halte dich an die Arbeitsregeln in UEBERGABE.md,
 > Abschnitt 10. Als Nächstes möchte ich: …
 

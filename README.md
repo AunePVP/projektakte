@@ -524,13 +524,35 @@ Weil kurze Lücken unter 5 s so nicht auffallen, steht alle 10 Minuten und am En
 Schnitt belegt waren („in den letzten 10 Min. im Schnitt 19,4 von 22 Plätzen belegt (88 %)“) – gezählt, solange Seiten
 warten und das Zeitbudget der Runde läuft.
 
+**Eigenes Seitenmodell (`VISION_URL`):** Mit `VISION_URL` liest der eigene Dienst auf der Spark (Nemotron Parse mit
+Typ-Kopf) die Seiten statt des großen Modells; Fragen bleiben bei `LLM_URL`. Dann gilt:
+- *Jede* Seite jeder PDF- und Bilddatei geht ans Modell und bekommt einen Seitentyp: Text, Plan, Foto, Leer oder
+  Unsicher. Ausgenommen sind `SKIP_READ_FOLDERS`, Fotos in `VISION_SKIP_FOLDERS`, abgeschaltete Ordner und – mit
+  `VISION_SKIP_CAD=1` – Seiten ohne Textebene, die kein Bild zeichnen (sie gelten ohne Modell als Plan).
+- Der Text des Modells ersetzt den Seitentext nur bei **Scans** vom Typ Text. Plan, Foto und Unsicher behalten den
+  Text aus Stufe 1, Leer hat keinen. Seiten mit **echter Textebene** behalten immer ihren (exakten) Text und bekommen
+  nur den Typ; ein Dokument, bei dem nur solche Seiten warten, gilt als vollständig („Seitentyp ausstehend“).
+- Kopf- und Fußzeilen, die auf den gelesenen Seiten eines Dokuments wiederkehren, stehen nur einmal im Index.
+- Schleifen fängt der Dienst selbst ab: Die Seite ist als „Schleife“ markiert, ihr Text gekürzt; kein zweiter Versuch
+  (`VISION_RETRY_BODY` spielt keine Rolle). Das große Modell bekommt kein Bild mehr, `LLM_VISION` entscheidet nichts.
+- Die Seitenbilder werden mit 175 dpi gezeichnet (wie im Training), wenn `VISION_DPI` nicht gesetzt ist. Der Dienst
+  rechnet 8 Text-Seiten gleichzeitig: `VISION_CONCURRENCY=8`; `VISION_TIMEOUT` großzügig lassen (Warteschlange).
+- Beim ersten Lauf mit `VISION_URL` werden alle PDF- und Bilddateien einmal neu gelesen (Stufe 1 samt Tesseract, dann
+  das Modell). Typ und Rohtext je Seite bleiben dauerhaft gespeichert (Tabelle `page_types`).
+- Anzeige: Suchseite mit Auswahl „Seitentyp“, Etikett am Treffer („Plan“, „Typ unsicher (vermutlich Plan)“,
+  „Schleife“), Dokumentseite „Seitentypen: 12 Text, 3 Plan …“, Statusseite mit dem Dienst „Bildauswertung
+  (Seitenmodell)“ und den gelesenen Seiten je Typ.
+- Prüfen im Büronetz (es gibt keinen Fake dieses Dienstes):
+  `PROJEKTAKTE_INTEGRATION=1 VISION_URL=http://<spark>:8767/v1 sh scripts/test.sh -m integration tests/test_seitenmodell_real.py -n 0`
+
 **OCR-Modelle vergleichen:** `python -m projektakte.ocr_testseiten --anzahl 50 --ziel /data/ocr-test` (im Container:
 `docker compose exec app python -m projektakte.ocr_testseiten …`) legt wartende Scan-Seiten genau so als Bild ab, wie
 das Modell sie bekommt, mit dem Tesseract-Text daneben (`--datei TEIL --seiten 49,56` für bestimmte Seiten), ohne
 Seiten aus Ordnern `CAD` und `Bilder` sowie aus `SKIP_READ_FOLDERS`/`VISION_SKIP_FOLDERS` (`--ohne-ordner ""`: alle). Ändert
 nichts in der Datenbank. `--training` exportiert Trainingsseiten aus allen Arten von Dokumenten (wartende Scans,
 CAD-Pläne, digitale PDF-Seiten, Fotos), `--ohne-seiten …/seiten.json` lässt den Prüfsatz aus. Vergleichen, Entwürfe,
-Korrektur und Training liegen im Repository **`aunepvp/tune`** (feingetunter Seitenleser, siehe `docs/feintuning.md`).
+Korrektur und Training liegen in den Repositorys `aunepvp/tune` und `nemotron-tune` (das eigene Seitenmodell).
+Für das Seitenmodell: `--dpi 175`, für einen Klassifizierer `--alle --je-dokument 3 --max-aufloesung 1664x2048`.
 `--erneuern --ziel …` schreibt die PDF-Seitenbilder eines früheren Exports neu, wie das Modell sie jetzt bekommt – unter
 denselben Nummern und Namen; Texte, Korrekturen und Fotos bleiben unverändert.
 Die Seiten sind echte Projektdaten – nur im Büronetz.
@@ -610,6 +632,11 @@ ist trotzdem der sauberste Start. `MAIL_ALLOW_EMPTY=1` erlaubt, dass ein absicht
 `MAIL_DIR` den Mail-Index leert (sonst nur eine Warnung).
 
 ### Suche
+
+Mit dem Seitenmodell (`VISION_URL`) lässt sich nach dem **Seitentyp** filtern: auf der Suchseite die Auswahl
+„Seitentyp“ (Text, Plan, Foto, Typ unsicher, nicht eingeordnet), in der API `page_type=` (mehrfach möglich: `Text`,
+`Plan`, `Foto`, `Leer`, `Unsicher`, `ohne`). „Nicht eingeordnet“ sind Abschnitte von Word-, ODT- und Textdateien,
+Mails und Seiten, die das Modell noch nicht gesehen hat. Fragen filtern nicht nach Seitentyp.
 
 Volltext (SQLite FTS5, BM25) und Vektorsuche liefern je bis zu 50 Kandidaten, die per Reciprocal
 Rank Fusion verschmolzen werden (höchstens 3 Abschnitte je Dokument/Mail). Die besten
@@ -770,8 +797,11 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_URL` | `http://192.168.178.62:8000/v1` | Sprachmodell (OpenAI-kompatibel) |
 | `LLM_MODEL` | `qwen3.8-flash-next` | Modellname |
 | `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Scans, Pläne; Phase „Bildauswertung“) |
+| `VISION_URL` | leer | Basis-URL des eigenen Seitenmodells (z. B. `http://192.168.178.62:8767/v1`): liest die Seitenbilder statt des großen Modells, Typ je Seite; leer = wie bisher. Mit `AI_MODE=fake` ignoriert |
+| `VISION_MODEL` | `nemotron-kmw` | Modellname des Seitenmodells |
+| `VISION_API_KEY` | leer | Bearer-Schlüssel, falls der Dienst mit `--api-key` läuft |
 | `VISION_CONCURRENCY` | `3` | Gleichzeitige Modellaufrufe der Bildauswertung (ab 1 = nacheinander); der KI-Server nimmt 4, einer bleibt für Fragen frei |
-| `VISION_DPI` | `150` | Auflösung der Seitenbilder für das Bildmodell, bezogen auf die echte Seitengröße (A4 ≈ 2,2 MP, A3 ≈ 4,4 MP); Tesseract bekommt weiter das volle Bild; `0` = aus (bis 16 MP) |
+| `VISION_DPI` | `150` (mit `VISION_URL`: `175`) | Auflösung der Seitenbilder für das Bildmodell, bezogen auf die echte Seitengröße (A4 ≈ 2,2 MP, A3 ≈ 4,4 MP); Tesseract bekommt weiter das volle Bild; `0` = aus (bis 16 MP) |
 | `VISION_SKIP_CAD` | `0` | `1`: CAD-Pläne als PDF (Seiten ohne Bild, Text als Kurven) gehen nicht an das Bildmodell; sie behalten den Text von Tesseract. Gescannte Seiten bleiben dabei |
 | `VISION_TIMEOUT` | `600` | Sekunden, die eine Seite der Bildauswertung beim Modell brauchen darf (Fragen behalten `LLM_TIMEOUT`); mit 20+ Seiten gleichzeitig dauert eine lange Seite Minuten |
 | `VISION_RETRY_BODY` | `{"temperature": 0.7, "top_p": 0.8, "top_k": 20}` | Felder (JSON) für den zweiten Versuch einer Seite nach einer Wiederholungsschleife; `{}` = wie der erste |
