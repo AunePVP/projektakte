@@ -54,7 +54,7 @@ curl -s http://192.168.178.62:4343/rerank -H 'Content-Type: application/json' \
 Reranker nur auf die besten ~30 Kandidaten der hybriden Suche anwenden. Fällt er aus, mit der
 Reihenfolge der hybriden Suche weiterarbeiten (und das in `/health/deps` melden).
 
-## Seitenmodell für die Bildauswertung – `VISION_URL=http://192.168.178.62:8767/v1`
+## Seitenmodell für die Bildauswertung – `VISION_URL=http://<spark-ip>:8767/v1`
 
 Eigener Dienst auf der Spark (Nemotron Parse mit Typ-Kopf, Repository `nemotron-tune`, `eigenbau/server.py`), Modell
 `nemotron-kmw`. Client: `projektakte/ai/seitenmodell.py`.

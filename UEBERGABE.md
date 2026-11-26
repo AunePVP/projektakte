@@ -354,10 +354,10 @@ liest der Dienst auf der Spark (Nemotron Parse mit Typ-Kopf, Repository `nemotro
   behalten ihren Text. Kopf-/Fußzeilen je Dokument einmal. Suche mit Filter „Seitentyp“.
 - Code: `ai/seitenmodell.py` (Client), `seitentext.py` (Rohtext → Text, Kopfzeilenregel), `seitentypen.py` (Tabelle),
   `extract._for_page_model` (Stufe 1), `vision.VisionPass._store_reading`/`_write_document` (Ergebnis je Seite).
-- Einstellungen beim Nutzer: `VISION_URL=http://192.168.178.62:8767/v1`, `VISION_CONCURRENCY=8`, `VISION_DPI` nicht
+- Einstellungen beim Nutzer: `VISION_URL=http://<spark-ip>:8767/v1`, `VISION_CONCURRENCY=8`, `VISION_DPI` nicht
   setzen (dann 175), `VISION_TIMEOUT=600` lassen. `LLM_VISION`, `VISION_RETRY_BODY` und `repetition_detection` in
   `LLM_EXTRA_BODY` spielen für Seiten keine Rolle mehr.
-- **Vom Nutzer im Büronetz zu tun:** (1) `PROJEKTAKTE_INTEGRATION=1 VISION_URL=http://192.168.178.62:8767/v1 sh
+- **Vom Nutzer im Büronetz zu tun:** (1) `PROJEKTAKTE_INTEGRATION=1 VISION_URL=http://<spark-ip>:8767/v1 sh
   scripts/test.sh -m integration tests/test_seitenmodell_real.py -n 0`; (2) `/health/deps` → Dienst „bildauswertung“
   `ok`; (3) erster Lauf: alle PDF- und Bilddateien werden neu gelesen (Stufe 1 samt Tesseract, dann das Modell) –
   Seiten/Std. und „Nachschub stockte“ im Log ansehen (CAD-Seiten mit Textebene werden jetzt gezeichnet).

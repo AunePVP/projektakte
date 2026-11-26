@@ -797,7 +797,7 @@ Alle Namen, Firmen und Orte sind erfunden; Mailadressen nutzen die reservierte D
 | `LLM_URL` | `http://192.168.178.62:8000/v1` | Sprachmodell (OpenAI-kompatibel) |
 | `LLM_MODEL` | `qwen3.8-flash-next` | Modellname |
 | `LLM_VISION` | `0` (Demo mit `AI_MODE=fake`: `1`) | `1` = Modell kann Bilder lesen (Scans, Pläne; Phase „Bildauswertung“) |
-| `VISION_URL` | leer | Basis-URL des eigenen Seitenmodells (z. B. `http://192.168.178.62:8767/v1`): liest die Seitenbilder statt des großen Modells, Typ je Seite; leer = wie bisher. Mit `AI_MODE=fake` ignoriert |
+| `VISION_URL` | leer | Basis-URL des eigenen Seitenmodells (z. B. `http://<spark-ip>:8767/v1`): liest die Seitenbilder statt des großen Modells, Typ je Seite; leer = wie bisher. Mit `AI_MODE=fake` ignoriert |
 | `VISION_MODEL` | `nemotron-kmw` | Modellname des Seitenmodells |
 | `VISION_API_KEY` | leer | Bearer-Schlüssel, falls der Dienst mit `--api-key` läuft |
 | `VISION_CONCURRENCY` | `3` | Gleichzeitige Modellaufrufe der Bildauswertung (ab 1 = nacheinander); der KI-Server nimmt 4, einer bleibt für Fragen frei |
