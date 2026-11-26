@@ -24,7 +24,8 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from markupsafe import Markup, escape
 
-from . import (__version__, betrachter, db, dokumentarten, embed_worker, inbox, reihenfolge, structure, tippfehler,
+from . import (__version__, betrachter, db, dokumentarten, embed_worker, inbox, reihenfolge, seitentypen, structure,
+               tippfehler,
                vision, zeiten, zeitleiste)
 from .ask import ask as answer_question, cited_numbers
 from .assign import INBOX_STATUSES, DecisionError, decide
@@ -842,10 +843,17 @@ def projects_named_in(conn, query: str, code_pattern: str | None = None) -> list
     return list(found.values())
 
 
+# the page-type filter of the search page: value → what the list shows
+PAGE_TYPE_OPTIONS = (("", "alle Seitentypen"), ("Text", "Text"), ("Plan", "Plan"), ("Foto", "Foto"),
+                     ("Unsicher", "Typ unsicher"), (seitentypen.NONE, "nicht eingeordnet"))
+
+
 @router.get("/suche", response_class=HTMLResponse)
-def search_page(request: Request, q: str = "", project: str = "", weak: str = ""):
+def search_page(request: Request, q: str = "", project: str = "", weak: str = "", seitentyp: str = ""):
     s = _settings(request)
     query = q.strip()[:MAX_QUERY]
+    # the page-type filter (page model): one type, or "ohne" for pages without one; anything else is no filter
+    page_type = seitentyp if seitentyp in (*seitentypen.TYPES, seitentypen.NONE) else ""
     res = view = None
     named: list[dict] = []
     with db.session(s.db_path) as conn:
@@ -854,18 +862,21 @@ def search_page(request: Request, q: str = "", project: str = "", weak: str = ""
         if query:
             res = hybrid_search(conn, request.app.state.ai, str(s.db_path), query, project=number or None,
                                 k=SEARCH_HITS, rerank_top_k=s.rerank_top_k, synonyms_file=s.synonyms_file,
-                                doc_types=TYPES_TOP)
+                                doc_types=TYPES_TOP, page_types=[page_type] if page_type else None)
             named = projects_named_in(conn, query, code_pattern_of(request))
         projects = as_tree(list_projects(conn))
     if res is not None:
         view = search_view(res, min_score=getattr(s, "search_min_rerank", 0.05), show_weak=weak == "1",
                            query=query, code_pattern=code_pattern_of(request))
     return render(request, "search.html", q=query, project=number, projects=projects, res=res, view=view,
+                  page_type=page_type, page_type_options=PAGE_TYPE_OPTIONS,
                   show_project=not number or (p or {}).get("kind") == BAUVORHABEN,
-                  named_projects=named, all_projects_url=search_url(query, None, weak="1" if weak == "1" else ""),
-                  weak_url=search_url(query, number, weak="1"), strong_url=search_url(query, number),
+                  named_projects=named,
+                  all_projects_url=search_url(query, None, weak="1" if weak == "1" else "", seitentyp=page_type),
+                  weak_url=search_url(query, number, weak="1", seitentyp=page_type),
+                  strong_url=search_url(query, number, seitentyp=page_type),
                   hq=" ".join([query, *(c.word for c in res.corrections)]) if res is not None else query,
-                  corrected_url=search_url(tippfehler.corrected_query(query, res.corrections), number)
+                  corrected_url=search_url(tippfehler.corrected_query(query, res.corrections), number, seitentyp=page_type)
                   if res is not None and res.corrections else "")
 
 
@@ -1201,6 +1212,7 @@ def document_page(request: Request, doc_id: int, seite: str = ""):
         if not d:
             raise HTTPException(404, "Dokument nicht gefunden")
         rows = _chunk_rows(conn, doc_id)
+        page_types = seitentypen.summary(seitentypen.counts(conn, doc_id))  # "" unless the page model saw it
         mail = None
         if d["mail_id"]:
             mail = conn.execute("SELECT id, subject, date FROM mails WHERE id = ?", (d["mail_id"],)).fetchone()
@@ -1208,7 +1220,8 @@ def document_page(request: Request, doc_id: int, seite: str = ""):
     v = viewer_view(s, d, page=_page_param(seite), mail=dict(mail) if mail else None)
     d["available"] = v["available"]
     chunks = [chunk_view(c) for c in without_overlap(rows)]
-    return render(request, "document.html", d=d, chunks=chunks, mail=dict(mail) if mail else None, v=v)
+    return render(request, "document.html", d=d, chunks=chunks, mail=dict(mail) if mail else None, v=v,
+                  page_types=page_types)
 
 
 def _chunk_rows(conn, doc_id: int) -> list[dict]:
@@ -1620,6 +1633,7 @@ def _vision_now(request: Request, conn) -> dict | None:
     return {"busy": bool(worker.alive and pending), "alive": worker.alive, "concurrency": live["concurrency"],
             "project": project, "pending": pending, "off_pages": live["off_pages"], "pages": live["pages"],
             "in_flight": live["in_flight"], "document": live["document"],
+            "types": seitentypen.summary(live.get("types") or {}),  # the page model: pages read per type
             "error": worker.last_error, **rate}
 
 

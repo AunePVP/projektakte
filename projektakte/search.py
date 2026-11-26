@@ -10,7 +10,7 @@ from datetime import date
 
 import re
 
-from . import db, dokumentarten, tippfehler
+from . import db, dokumentarten, seitentypen, tippfehler
 from .ai import AIServiceError
 
 from .textutil import (
@@ -97,6 +97,40 @@ def _in_projects(project: str | None, projects: Sequence[str] | None) -> tuple[s
     return f" AND c.project IN ({','.join('?' * len(scope))})", scope
 
 
+_PAGE_TYPE = "(SELECT t.typ FROM page_types t WHERE t.doc_id = c.doc_id AND t.page = c.page)"
+
+
+def page_type_filter(types: Sequence[str] | None) -> tuple[str, list]:
+    """The SQL condition (on the sections ``c``) for the page types wanted – the types of the page model and
+    seitentypen.NONE ("ohne": sections of pages without a type, e.g. Word files and mails); empty without any.
+    Raises ValueError for an unknown type."""
+    wanted = list(dict.fromkeys(types or ()))
+    if not wanted:
+        return "", []
+    unknown = [t for t in wanted if t not in seitentypen.TYPES and t != seitentypen.NONE]
+    if unknown:
+        raise ValueError(f"unbekannter Seitentyp: {', '.join(unknown)}")
+    named = [t for t in wanted if t != seitentypen.NONE]
+    parts = [f"{_PAGE_TYPE} IN ({','.join('?' * len(named))})"] if named else []
+    if seitentypen.NONE in wanted:
+        parts.append(f"{_PAGE_TYPE} IS NULL")
+    return f"({' OR '.join(parts)})", named
+
+
+def typed_ids(conn: sqlite3.Connection, ids: Sequence[int], types: Sequence[str] | None) -> set[int]:
+    """Those of the sections ``ids`` whose page has one of the page types wanted (all without a filter)."""
+    where, args = page_type_filter(types)
+    ids = [int(i) for i in ids]
+    if not where or not ids:
+        return set(ids)
+    out: set[int] = set()
+    for start in range(0, len(ids), 500):
+        part = ids[start:start + 500]
+        out |= {r[0] for r in conn.execute(
+            f"SELECT c.id FROM chunks c WHERE c.id IN ({','.join('?' * len(part))}) AND {where}", [*part, *args])}
+    return out
+
+
 def fts_search(conn: sqlite3.Connection, text: str, *, project: str | None = None, k: int = 50,
                where: str = "", args: tuple = (), max_terms: int = 24,
                keep_digits: bool = True, expand: bool = False,
@@ -124,7 +158,8 @@ def fts_search(conn: sqlite3.Connection, text: str, *, project: str | None = Non
 
 
 def identifier_search(conn: sqlite3.Connection, identifiers: list[str], *, project: str | None = None,
-                      k: int = 50, projects: Sequence[str] | None = None) -> list[tuple[int, float]]:
+                      k: int = 50, projects: Sequence[str] | None = None, where: str = "",
+                      args: Sequence = ()) -> list[tuple[int, float]]:
     """Chunks that contain a reference code literally ("BS-2024-0233", "63-0137/24"): an FTS phrase of
     its parts, so the separators may be written differently."""
     phrases = []
@@ -140,6 +175,9 @@ def identifier_search(conn: sqlite3.Connection, identifiers: list[str], *, proje
     cond, scope = _in_projects(project, projects)
     sql += cond
     params += scope
+    if where:
+        sql += f" AND {where}"
+        params += list(args)
     sql += " ORDER BY rank LIMIT ?"
     params.append(k)
     try:
@@ -191,6 +229,8 @@ class Hit:
     parent_name: str | None = None
     doc_type: str | None = None  # what the document is (dokumentarten.py), if known well enough
     type_match: str | None = None  # "art": of the type the query names, "verwandt": of a related type
+    page_type: str | None = None  # what the page model said the section's page is (seitentypen.TYPES), if it saw it
+    page_label: str | None = None  # what is shown beside the page: None for a plain text page (seitentypen.label)
 
     @property
     def local_date(self) -> date | None:
@@ -233,8 +273,9 @@ _HIT_SQL = """
 SELECT c.id, c.project, p.name AS project_name, c.doc_id, c.mail_id, c.page, c.heading, c.text, c.ord,
        d.filename, d.rel_path, d.doc_date, m.subject, m.date AS mail_date, m.sender_name, m.sender,
        p.kind AS project_kind, p.parent AS parent, pp.name AS parent_name,
-       d.doc_type, d.doc_type_confidence
+       d.doc_type, d.doc_type_confidence, t.typ AS page_type, t.kopf AS page_kopf, t.schleife AS page_loop
 FROM chunks c
+LEFT JOIN page_types t ON t.doc_id = c.doc_id AND t.page = c.page
 LEFT JOIN documents d ON d.id = c.doc_id
 LEFT JOIN mails m ON m.id = c.mail_id
 LEFT JOIN projects p ON p.number = c.project
@@ -260,7 +301,9 @@ def load_hits(conn: sqlite3.Connection, ids: list[int]) -> dict[int, Hit]:
             rel_path=r["rel_path"] if kind == "document" else None, page=r["page"], heading=r["heading"],
             date=date, sender=(r["sender_name"] or r["sender"]) if r["mail_id"] else None, text=r["text"],
             ord=r["ord"], project_kind=r["project_kind"], parent=r["parent"], parent_name=r["parent_name"],
-            doc_type=r["doc_type"] if (r["doc_type_confidence"] or 0) >= dokumentarten.MIN_RANKED else None)
+            doc_type=r["doc_type"] if (r["doc_type_confidence"] or 0) >= dokumentarten.MIN_RANKED else None,
+            page_type=r["page_type"],
+            page_label=seitentypen.label(r["page_type"], kopf=r["page_kopf"], schleife=bool(r["page_loop"])))
     return out
 
 
@@ -299,6 +342,7 @@ def _cut_by_budget(exc: Exception, used: float | None, own: float) -> bool:
 
 
 TYPE_CANDIDATES = 6  # sections of documents of the named type added to the reranker candidates (questions)
+PAGE_FILTER_FACTOR = 8  # vector candidates fetched with a page-type filter, as a multiple of CANDIDATES
 # how the document types a query names are used (hybrid_search ``doc_types``)
 TYPES_TOP = "top"  # search page: documents of the type first, newest first, then everything else
 TYPES_CANDIDATES = "candidates"  # questions: their best sections join the reranker candidates
@@ -308,7 +352,8 @@ TYPES_OFF = "off"
 def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, project: str | None = None,
                   k: int = 10, rerank_top_k: int = 30, use_reranker: bool = True,
                   synonyms_file: str | None = None, deadline: float | None = None,
-                  doc_types: str = TYPES_OFF, typos: bool = True) -> SearchResult:
+                  doc_types: str = TYPES_OFF, typos: bool = True,
+                  page_types: Sequence[str] | None = None) -> SearchResult:
     """Full text + vectors (RRF), then the reranker on the best candidates. Falls back gracefully:
     no embeddings → full text only; reranker down → order of the hybrid search.
 
@@ -323,10 +368,13 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
     "Brandschutzkozept") – TYPES_TOP ranks the documents of that type first (newest first; with further words
     those matching them first), then those of related types, then everything else; nothing is left out.
     TYPES_CANDIDATES only lets their best sections reach the reranker (questions).
+    ``page_types``: only sections of pages of these types (seitentypen.TYPES; "ohne": pages without a type) –
+    a filter, unlike the document types. ValueError for an unknown type.
 
     ``deadline`` (``time.monotonic()`` value): the AI calls get at most the remaining time; without
     time left the search falls back to full text / hybrid order instead of waiting."""
     result = SearchResult(query=query, project=project)
+    page_where, page_args = page_type_filter(page_types)
     # a site (Bauvorhaben) covers its orders, an order only itself (db.project_scope)
     scope = db.project_scope(conn, project) if project else None
     synonyms = load_synonyms(default_synonyms_file() if synonyms_file is None else synonyms_file)
@@ -339,9 +387,11 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
     if tq:
         result.doc_types = tq.names
     identifiers = find_identifiers(query)
-    literal = identifier_search(conn, identifiers, projects=scope, k=CANDIDATES) if identifiers else []
+    literal = (identifier_search(conn, identifiers, projects=scope, k=CANDIDATES, where=page_where, args=page_args)
+               if identifiers else [])
     codes_only = bool(identifiers) and not query_terms(strip_identifiers(query))
-    fts = fts_search(conn, fts_text, projects=scope, k=CANDIDATES, expand=True, synonyms=synonyms)
+    fts = fts_search(conn, fts_text, projects=scope, k=CANDIDATES, expand=True, synonyms=synonyms,
+                     where=page_where, args=tuple(page_args))
     vec: list[tuple[int, float]] = []
     embed_timeout = time_left(deadline, ai.embed.timeout) if ai is not None else None
     if ai is not None and embed_timeout == 0:
@@ -349,7 +399,12 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
     elif ai is not None:
         try:
             qvec = ai.embed.embed_query(semantic, timeout=embed_timeout)
-            vec = VECTOR_INDEX.search(conn, vector_key, qvec, projects=scope, k=CANDIDATES)
+            # with a page-type filter: more of the nearest sections, those of other pages dropped
+            vec = VECTOR_INDEX.search(conn, vector_key, qvec, projects=scope,
+                                      k=CANDIDATES * (PAGE_FILTER_FACTOR if page_where else 1))
+            if page_where:
+                allowed = typed_ids(conn, [cid for cid, _ in vec], page_types)
+                vec = [x for x in vec if x[0] in allowed][:CANDIDATES]
         except AIServiceError as exc:
             log.warning("Vektorsuche nicht verfügbar, nur Volltext: %s", exc)
             result.notes.append(BUDGET_VECTOR_NOTE if _cut_by_budget(exc, embed_timeout, ai.embed.timeout)
@@ -359,6 +414,9 @@ def hybrid_search(conn: sqlite3.Connection, ai, vector_key: str, query: str, *, 
         first = {cid for cid, _ in literal}
         fused = [x for x in fused if x[0] in first] + [x for x in fused if x[0] not in first]
     typed = type_ranking(conn, tq, scope, synonyms, limit=max(k, TYPE_CANDIDATES)) if tq else []
+    if typed and page_where:
+        allowed = typed_ids(conn, [t.chunk_id for t in typed], page_types)
+        typed = [t for t in typed if t.chunk_id in allowed]
     hits_by_id = load_hits(conn, [cid for cid, _ in fused[: max(rerank_top_k, k) * 2]])
     candidates: list[Hit] = []
     per_source: dict[tuple, int] = {}

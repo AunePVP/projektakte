@@ -25,6 +25,7 @@
     <div class="small muted detail">{{ v.pending|plural('Seite', 'Seiten') }} offen{% if v.per_hour %} · {{ v.per_hour|round|int|de_num }} Seiten/Std. · fertig grob {{ v.eta|etwa }}{% elif v.per_page %} · Ø {{ v.per_page|je }} je Anfrage{% endif %}{% if v.off_pages %} · {{ v.off_pages|plural('Seite', 'Seiten') }} in ausgeschalteten Ordnern{% endif %}</div>
     {% if v.document %}<div class="small muted detail">zuletzt {% if v.project %}<span class="rf-num">{{ v.project.number }}</span> {% endif %}{{ v.document.name }}, Seite {{ v.document.page }}</div>{% endif %}
     {% endif %}
+    {% if v.types %}<div class="small muted detail">seit dem Start gelesen: {{ v.types }}</div>{% endif %}
     {% if v.error %}<div class="small warn detail">Fehler: {{ v.error }}</div>{% endif %}
   </div>
   {% endif %}

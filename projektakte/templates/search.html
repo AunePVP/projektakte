@@ -6,6 +6,7 @@
 <form method="get" action="/suche" class="card ask-row" role="search">
   <input type="search" name="q" value="{{ q }}" placeholder="Suchbegriffe" aria-label="Suchbegriffe" maxlength="2000">
   <select name="project" aria-label="Projekt">{{ project_options(projects, project, 'alle Projekte') }}</select>
+  <select name="seitentyp" aria-label="Seitentyp">{% for value, text in page_type_options %}<option value="{{ value }}"{{ ' selected' if value == page_type }}>{{ text }}</option>{% endfor %}</select>
   <button>Suchen</button>
 </form>
 {% if res %}

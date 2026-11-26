@@ -10,6 +10,7 @@
   {% if doc_type_of(d) %}<dt>Dokumentart</dt><dd><span class="pill doc-type">{{ doc_type_of(d) }}</span>{% if doc_type_note(d) %} <span class="muted small">{{ doc_type_note(d) }}</span>{% endif %}</dd>{% endif %}
   <dt>Datum</dt><dd>{{ d.doc_date|de_date }}</dd>
   <dt>Größe</dt><dd>{{ d.size|filesize }}{% if d.pages %} · {{ d.pages|plural('Seite', 'Seiten') }}{% endif %}</dd>
+  {% if page_types %}<dt>Seitentypen</dt><dd>{{ page_types }}</dd>{% endif %}
   <dt>Status</dt><dd>{% if d.status == 'ok' %}indexiert{% if d.method == 'vision' %} (per Bildauswertung){% endif %}{% else %}<span class="pill warn">{{ DOC_STATUS.get(d.status, d.status) }}</span> {{ d.message or '' }}{% endif %}</dd>
 </dl>
 {% if d.available %}<p><a class="button secondary" href="{{ file_url(d.id, d.filename) }}">Originaldatei öffnen</a></p>

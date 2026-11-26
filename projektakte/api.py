@@ -5,10 +5,10 @@ import logging
 import sqlite3
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from . import db, inbox as inbox_queries, reihenfolge, structure, vision
+from . import db, inbox as inbox_queries, reihenfolge, seitentypen, structure, vision
 from .assign import INBOX_STATUSES, DecisionError, decide
 from .ask import ask as answer_question
 from .search import TYPES_TOP, hybrid_search
@@ -188,10 +188,17 @@ def assign(request: Request, mail_id: int, body: AssignRequest) -> dict:
 
 
 @router.get("/search")
-def search(request: Request, q: str, project: str | None = None, k: int = 10) -> dict:
+def search(request: Request, q: str, project: str | None = None, k: int = 10,
+           page_type: list[str] = Query(default=[])) -> dict:
+    """``page_type`` (may be given several times): only sections of pages of these types – Text, Plan, Foto,
+    Leer, Unsicher, or "ohne" for pages the page model did not see."""
     s = _settings(request)
     if not q.strip():
         raise HTTPException(400, "Suchbegriff fehlt")
+    unknown = [t for t in page_type if t not in seitentypen.TYPES and t != seitentypen.NONE]
+    if unknown:
+        raise HTTPException(422, f"unbekannter Seitentyp: {', '.join(unknown)} – möglich: "
+                                 f"{', '.join((*seitentypen.TYPES, seitentypen.NONE))}")
     with db.session(s.db_path) as conn:
         if project:
             p = get_project(conn, project)
@@ -200,7 +207,7 @@ def search(request: Request, q: str, project: str | None = None, k: int = 10) ->
             project = p["number"]
         res = hybrid_search(conn, request.app.state.ai, str(s.db_path), q, project=project,
                             k=max(1, min(k, 50)), rerank_top_k=s.rerank_top_k,
-                            synonyms_file=s.synonyms_file, doc_types=TYPES_TOP)
+                            synonyms_file=s.synonyms_file, doc_types=TYPES_TOP, page_types=page_type)
     return {"query": res.query, "project": res.project, "reranked": res.reranked, "notes": res.notes,
             "doc_types": res.doc_types,
             "corrections": [{"typed": c.typed, "word": c.word, "unknown": c.unknown} for c in res.corrections],
