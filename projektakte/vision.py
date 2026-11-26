@@ -592,7 +592,7 @@ class VisionPass:
         self.conn.commit()
         self.stats["pages"] += 1
         self.stats["types"][reading.typ] = self.stats["types"].get(reading.typ, 0) + 1
-        zeiten.add(self.conn, zeiten.PAGE_KEY, seconds)
+        zeiten.add(self.conn, zeiten.SEITENMODELL_KEY, seconds)
         self.conn.commit()
         if self.live is not None:
             self.live.page_done(seconds)

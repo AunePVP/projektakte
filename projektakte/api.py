@@ -261,8 +261,10 @@ def status(request: Request) -> dict:
         }
         # phase "Bildauswertung": scan pages waiting for the model, older PDFs still to be checked for them
         pending = vision.pending_counts(conn)
+        # (the re-check does not run with the page model: every PDF read before it is read again anyway)
+        paged = getattr(getattr(request.app.state, "ai", None), "vision", None) is not None
         counts.update(vision_pending_pages=pending["pages"], vision_pending_documents=pending["documents"],
-                      vision_recheck=pending["recheck"])
+                      vision_recheck=0 if paged else pending["recheck"])
         # which folders count as projects: effective PROJECT_NUMBER_PATTERN and PROJECT_FOLDER_DEPTH, with
         # "auto" also a proposal waiting for confirmation and the evidence for it
         layout = structure.current_layout(s, conn).to_dict()

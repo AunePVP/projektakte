@@ -7,13 +7,6 @@ from projektakte.ai.seitenmodell import TYPES, reading_from
 from projektakte.ai.services import AIServices
 from projektakte.config import load_settings
 
-@pytest.fixture(autouse=True)
-def _vision_dpi_restored(monkeypatch):
-    """AIServices.from_settings sets VISION_DPI for the page model: put back after each test."""
-    monkeypatch.setenv("VISION_DPI", "0")
-    monkeypatch.delenv("VISION_DPI")
-
-
 RAW = ("<x_0.0><y_0.0>Musterbüro GmbH · Beispielstadt<x_0.999><y_0.0164><class_Page-header>\n\n"
        "<x_0.0918><y_0.2516>Die Löschwassermenge beträgt 96 m³/h.<x_0.8906><y_0.2844><class_Text>")
 

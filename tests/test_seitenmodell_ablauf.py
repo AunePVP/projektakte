@@ -397,3 +397,42 @@ def test_types_go_when_the_file_changes_without_the_page_model(tmp_path):
     (root / "BS-2024-0001 Halle" / "Konzept.pdf").write_bytes(pdf_bytes([P1 + " Neue Fassung.", "\f", P2]))
     _stage1(conn, root, None)  # VISION_URL removed meanwhile
     assert types(conn, "Konzept.pdf") == {}
+
+
+# -- status page: the page model's own numbers ------------------------------------------------------------------
+def test_page_model_has_its_own_page_times(tmp_path, tesseract):
+    """The pages Qwen read and its 50 s a page must not count for the page model (status page: pages read,
+    rough time left)."""
+    from projektakte import zeiten
+
+    conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan(2)})
+    zeiten.add(conn, zeiten.PAGE_KEY, 50.0)
+    conn.commit()
+    _stage1(conn, root, Big())
+    run(conn, root, Stub(reading("Plan"), reading("Plan")))
+    assert zeiten.read(conn, zeiten.PAGE_KEY).samples == 1
+    assert zeiten.read(conn, zeiten.SEITENMODELL_KEY).samples == 2
+    assert zeiten.page_key(True) == zeiten.SEITENMODELL_KEY and zeiten.page_key(False) == zeiten.PAGE_KEY
+
+
+def test_status_shows_no_recheck_with_the_page_model(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from projektakte import db
+    from projektakte.config import load_settings
+    from projektakte.main import create_app
+
+    def counts(extra: dict) -> dict:
+        env = {"DATA_DIR": str(tmp_path / "data"), "APP_ENV": "test", "AUTH_DISABLED": "1",
+               "LLM_URL": "http://127.0.0.1:9/v1", "EMBED_URL": "http://127.0.0.1:9",
+               "RERANK_URL": "http://127.0.0.1:9/rerank"} | extra
+        with TestClient(create_app(load_settings(env), background=False)) as client:
+            return client.get("/api/status").json()["counts"]
+
+    s = load_settings({"DATA_DIR": str(tmp_path / "data")})
+    db.init_db(s.db_path)
+    with db.session(s.db_path) as conn:  # a complete PDF read by an older version: the old re-check wants it
+        conn.execute("INSERT INTO documents(path, rel_path, filename, ext, sha256, status, incomplete, method, "
+                     "extract_profile) VALUES('/p/a.pdf', 'a.pdf', 'a.pdf', '.pdf', 'x', 'ok', 0, 'text', 'v7:text')")
+    assert counts({})["vision_recheck"] == 1
+    assert counts({"VISION_URL": "http://127.0.0.1:9/v1"})["vision_recheck"] == 0

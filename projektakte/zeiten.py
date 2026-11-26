@@ -19,12 +19,20 @@ DECAY = 0.98  # weight of the older samples per new one (about the last 50 count
 PROJECT_KEY = "eta_project_seconds"  # seconds per project of the queue (documents pass, first complete read)
 FILE_KEY = "eta_file_seconds"  # seconds per file actually read (extracted and written; not unchanged ones)
 PAGE_KEY = "eta_vision_page_seconds"  # seconds the model takes per scan page (Bildauswertung)
+# … the page model (VISION_URL) – about a hundred times faster: its own average, the pages read by the LLM before
+# must not count for its speed nor for the number of pages it read
+SEITENMODELL_KEY = "eta_seitenmodell_page_seconds"
 EMBED_KEY = "eta_embed_section_seconds"  # seconds per section in the background embedding (all its batches at once)
 MIN_FILES = 20  # files of a project seen before its own rate gives an estimate
 MIN_PROJECTS = 5  # projects done before the queue gets a (rough) estimate …
 MIN_FILES_READ = 20  # … and files read
 MIN_PAGES = 10  # pages read by the model before the Bildauswertung gets an estimate
 MIN_SECTIONS = 100  # sections embedded before the embedding gets an estimate
+
+
+def page_key(page_model: bool) -> str:
+    """The average of the seconds per page of the model that reads the pages now."""
+    return SEITENMODELL_KEY if page_model else PAGE_KEY
 
 
 @dataclass(frozen=True)

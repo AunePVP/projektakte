@@ -1625,7 +1625,8 @@ def _vision_now(request: Request, conn) -> dict | None:
         return None
     live = vision.LIVE.snapshot()
     pending = live["pending_pages"]
-    rate = zeiten.vision_rate(zeiten.read(conn, zeiten.PAGE_KEY), live["concurrency"], pending or 0)
+    key = zeiten.page_key(getattr(worker, "page_model", None) is not None)
+    rate = zeiten.vision_rate(zeiten.read(conn, key), live["concurrency"], pending or 0)
     project = live["project"]
     if project:
         row = conn.execute("SELECT name FROM projects WHERE number = ?", (project["number"],)).fetchone()

@@ -2,6 +2,8 @@
 projektakte.fake_ai) on the loopback interface – no network, no real AI services."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from projektakte.config import load_settings
@@ -28,6 +30,11 @@ def _isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "1")
     for var in ("DEMO_MODE", "AI_MODE", "PROJECTS_DIR", "MAIL_DIR"):
         monkeypatch.delenv(var, raising=False)
+    # an app built with VISION_URL sets VISION_DPI for the page model (config.apply_vision_env): undone after
+    # every test, so it never leaks into the next one of the same worker process
+    monkeypatch.setenv("VISION_DPI", os.environ.get("VISION_DPI", ""))
+    if not os.environ["VISION_DPI"]:
+        monkeypatch.delenv("VISION_DPI")
 
 
 @pytest.fixture(autouse=True)

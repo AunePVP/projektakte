@@ -15,6 +15,8 @@ Roadmap-Schritt.
   und `/health/deps` mit dem Dienst „Bildauswertung“. Beim ersten Lauf werden alle PDF- und Bilddateien neu gelesen.
   Ohne `VISION_URL` ändert sich nichts. Test gegen den echten Dienst: `tests/test_seitenmodell_real.py` (nur im
   Büronetz). `docs/feintuning.md` entfällt.
+  Statusseite: Mit dem Seitenmodell zählen „Seiten vom Modell gelesen“ und die Restzeit nur dessen Seiten (eigenes
+  Mittel, nicht mehr mit den ~50 s je Seite des alten Modells), „ältere PDF-Dateien noch zu prüfen“ entfällt.
 
 - **Seitenexport, genau dieselben Seiten neu:** `--erneuern` schreibt jetzt auch Bilddateien (Fotos) neu, findet das
   Dokument über seine id (neu in `seiten.json`, mit `pfad`) oder bei älteren Exporten über den Pfad – gibt es den
