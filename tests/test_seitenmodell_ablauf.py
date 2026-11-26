@@ -324,3 +324,76 @@ def test_run_vision_and_worker_want_the_page_model(tmp_path, tesseract):
     assert stats["pages"] == 1
     assert VisionWorker.wanted(Big()) is False
     assert VisionWorker.wanted(Big(), Stub()) is True
+
+
+# -- found by the review of the whole branch --------------------------------------------------------------------
+def invisible_text_pdf() -> bytes:
+    """A page with a real text layer that a viewer shows blank (text render mode 3: neither filled nor stroked)."""
+    from .test_extract_r5 import Doc
+
+    doc = Doc()
+    font = doc.add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    cid = doc.stream(b"", b"BT 3 Tr /F1 12 Tf 50 780 Td (Rauchabzug im Treppenraum laut Pruefbericht vorhanden) Tj ET")
+    doc.pages.append((cid, b"<< /Font << /F1 %d 0 R >> >>" % font))
+    return doc.build()
+
+
+def test_layer_page_rendered_blank_keeps_its_text(tmp_path):
+    conn, root = _setup(tmp_path, {"Bericht.pdf": invisible_text_pdf()})
+    _stage1(conn, root, Big())
+    assert "Rauchabzug im Treppenraum" in _text(conn, "Bericht.pdf")
+    stub = Stub()
+    run(conn, root, stub)
+    assert stub.calls == []  # rendered blank: typed without the model
+    assert "Rauchabzug im Treppenraum" in _text(conn, "Bericht.pdf")
+    doc = _docs(conn)["Bericht.pdf"]
+    assert (doc["status"], doc["incomplete"], doc["vision_pending"]) == ("ok", 0, 0)
+    row = types(conn, "Bericht.pdf")[1]
+    assert (row["typ"], row["source"], row["layer"]) == ("Leer", "render", 1)
+
+
+def test_scan_page_rendered_blank_keeps_its_stage1_text(tmp_path, tesseract, monkeypatch):
+    """Only the model's "Leer" empties a scan page – a page the app could not draw keeps what stage 1 read."""
+    from projektakte import extract as extract_mod
+    from projektakte.extract import PageImages
+
+    conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
+    _stage1(conn, root, Big())
+    stub = Stub()
+    VisionPass(conn, Big(), projects_dir=root, page_model=stub, concurrency=1,
+               prepare=lambda data, pages, name, **kw: [PageImages(n, problem="Seite leer") for n in pages]).run()
+    assert stub.calls == [] and STAGE1 in _text(conn, "Scan.pdf")
+    assert types(conn, "Scan.pdf")[1]["source"] == "render"
+
+
+def test_sections_stay_when_no_text_changed(tmp_path):
+    """Typing the pages of a digital PDF must not write its sections anew: their vectors would be made again."""
+    conn, root = _setup(tmp_path, {"Konzept.pdf": three_pages()})
+    _stage1(conn, root, Big())
+    conn.execute("UPDATE chunks SET embedding = x'00112233'")  # as if the vectors were made already
+    conn.commit()
+    before = conn.execute("SELECT id, page, text, embedding FROM chunks ORDER BY id").fetchall()
+    run(conn, root, Stub(reading(), reading("Plan"), reading()))
+    after = conn.execute("SELECT id, page, text, embedding FROM chunks ORDER BY id").fetchall()
+    assert [tuple(r) for r in after] == [tuple(r) for r in before] and before
+    assert _docs(conn)["Konzept.pdf"]["vision_pending"] == 0
+
+
+def test_sections_are_written_anew_when_a_scan_page_got_text(tmp_path, tesseract):
+    conn, root = _setup(tmp_path, {"Scan.pdf": plain_scan()})
+    _stage1(conn, root, Big())
+    conn.execute("UPDATE chunks SET embedding = x'00112233'")
+    conn.commit()
+    run(conn, root, Stub(reading(raw=block("Neuer Text vom Modell."))))
+    assert [r[0] for r in conn.execute("SELECT embedding FROM chunks")] == [None]  # a vector for the new text
+    assert conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE chunks_fts MATCH 'Modell'").fetchone()[0] == 1
+
+
+def test_types_go_when_the_file_changes_without_the_page_model(tmp_path):
+    conn, root = _setup(tmp_path, {"Konzept.pdf": three_pages()})
+    _stage1(conn, root, Big())
+    run(conn, root, Stub(reading(), reading("Plan"), reading()))
+    assert len(types(conn, "Konzept.pdf")) == 3
+    (root / "BS-2024-0001 Halle" / "Konzept.pdf").write_bytes(pdf_bytes([P1 + " Neue Fassung.", "\f", P2]))
+    _stage1(conn, root, None)  # VISION_URL removed meanwhile
+    assert types(conn, "Konzept.pdf") == {}

@@ -225,8 +225,8 @@ def write_document(conn: sqlite3.Connection, doc: PreparedDocument, *, path: str
     paged = PAGE_MODEL_MARK in (doc.profile or "")  # the page model types the pages (extract.page_model)
     layer = set(r.layer_pages) if paged else set()
     same = bool(row) and row[1] == doc.sha256
-    if paged and row and not same:
-        seitentypen.clear(conn, row[0])  # another file: what the model said of the old one is gone
+    if row and not same:  # another file: what the page model said of the old one is gone (also without it now)
+        seitentypen.clear(conn, row[0])
     if r.vision_pages:
         # pages the model already read for this content and profile stay read (the file was read again)
         if paged and same:  # the page model: the types are kept for good, the pages' texts are made from them
@@ -869,6 +869,7 @@ def mark_unread_folders(conn: sqlite3.Connection, names: tuple[str, ...], profil
         marks = ",".join("?" * len(part))
         conn.execute(f"DELETE FROM chunks WHERE doc_id IN ({marks})", part)
         conn.execute(f"DELETE FROM page_texts WHERE doc_id IN ({marks})", part)
+        conn.execute(f"DELETE FROM page_types WHERE doc_id IN ({marks})", part)
         conn.execute(
             f"UPDATE documents SET status = 'skipped', message = ?, method = NULL, incomplete = 1, vision_pending = 0, "
             f"vision_note = NULL, vision_incomplete = 0, extract_profile = ?, attempts = 0, retry_after = NULL "

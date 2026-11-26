@@ -38,8 +38,9 @@ def final_texts(stage1: dict[int, str], rows: dict) -> dict[int, str]:
     """The text of every page of a document, from its text of the first stage (``stage1``: text layer or
     Tesseract) and what the page model said (``rows``: page → row of page_types). A page with a real text layer
     keeps its text whatever its type. A scan page: Text → the model's text made from the raw text (headers and
-    footers that come back kept once, seitentext.document_texts); Leer → no text; Plan, Foto, Unsicher and pages
-    without a type → the text of the first stage."""
+    footers that come back kept once, seitentext.document_texts); Leer, said by the model → no text; Plan, Foto,
+    Unsicher and pages without a type → the text of the first stage. A page the app found blank when it rendered
+    it (``source`` render) keeps what the first stage read: only the model's word empties a page."""
     from .seitentext import document_texts
 
     written = document_texts({n: r["raw"] for n, r in rows.items()
@@ -50,7 +51,7 @@ def final_texts(stage1: dict[int, str], rows: dict) -> dict[int, str]:
             continue
         if n in written and written[n].strip():
             out[n] = written[n]
-        elif r["typ"] == "Leer":
+        elif r["typ"] == "Leer" and r["source"] == MODEL:
             out[n] = ""
     return out
 

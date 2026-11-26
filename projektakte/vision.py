@@ -503,7 +503,7 @@ class VisionPass:
                                                   skip_cad=False if self.page_model is not None else None)
         for page in prepared:
             if self.page_model is not None and page.problem == BLANK:  # typed without the model
-                self._store_blank(row["id"], page.number, row["sha256"])
+                self._store_blank(row["id"], page.number, row["sha256"], page.number in doc.layer)
             elif page.problem == CAD_SKIPPED:  # VISION_SKIP_CAD: done without the model, its text so far stands
                 self.stats["cad_skipped"] += 1
                 self._store(row["id"], page.number, text="", note=CAD_SKIPPED, sha=row["sha256"])
@@ -601,14 +601,16 @@ class VisionPass:
         log.info("Bildauswertung: %s Seite %d – %s%s (%.1f s)", task.name, task.page, reading.typ,
                  f", {partial or note}" if partial or note else "", seconds)
 
-    def _store_blank(self, doc_id: int, page: int, sha: str | None) -> None:
-        """A page rendered blank (the page model): "Leer" without the model, the page has no text."""
+    def _store_blank(self, doc_id: int, page: int, sha: str | None, layer: bool = False) -> None:
+        """A page rendered blank (the page model): "Leer" without the model. Its text of the first stage stands –
+        a real text layer may be invisible (white or hidden text), and a scan the app could not draw is not known
+        to be empty; only the model's "Leer" empties a page."""
         self._begin()
         if not self._same_file(doc_id, sha):
             self._discarded(doc_id, page)
             return
-        seitentypen.store(self.conn, doc_id, page, typ="Leer", source=seitentypen.RENDER)
-        self.conn.execute("UPDATE page_texts SET state = 'done', text = '', note = ?, partial = 0, retry = 0 "
+        seitentypen.store(self.conn, doc_id, page, typ="Leer", source=seitentypen.RENDER, layer=layer)
+        self.conn.execute("UPDATE page_texts SET state = 'done', note = ?, partial = 0, retry = 0 "
                           "WHERE doc_id = ? AND page = ?", (BLANK, doc_id, page))
         self.conn.commit()
         if self.live is not None:
@@ -704,9 +706,14 @@ class VisionPass:
         skipped = [r for r in counted if r["state"] == "skipped"]
         partial = [r for r in counted if r["state"] == "done" and r["partial"]]
         chunks = chunk_pages(pages)
-        self.conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
-        write_chunks(self.conn, doc_id, chunks, filename=doc["filename"], project=doc["project"],
-                     project_name=doc["project_name"], mail_id=doc["mail_id"])
+        # the page model types every page of every PDF: where no page's text changed (pages with a real text
+        # layer, plans, photos) the sections stand as they are – written anew they would lose their vectors
+        same = paged and [(c.ord, c.page, c.heading, c.text) for c in chunks] == [tuple(r) for r in self.conn.execute(
+            "SELECT ord, page, heading, text FROM chunks WHERE doc_id = ? ORDER BY ord", (doc_id,))]
+        if not same:
+            self.conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+            write_chunks(self.conn, doc_id, chunks, filename=doc["filename"], project=doc["project"],
+                         project_name=doc["project_name"], mail_id=doc["mail_id"])
         note = doc["vision_note"]
         profile, attempts, retry_after = doc["extract_profile"], doc["attempts"], doc["retry_after"]
         if waiting and paged:

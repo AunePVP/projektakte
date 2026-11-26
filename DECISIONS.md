@@ -1448,6 +1448,15 @@ Fragen bleiben beim großen Modell (`LLM_URL`). Ohne `VISION_URL` ändert sich n
 - *Fehler*: 400 (Bild abgelehnt) ist endgültig – die Seite bleibt ohne Typ, behält ihren Text. 504, 500 und
   Netzfehler werden mit wachsender Wartezeit erneut versucht. Eine Antwort ohne bekannten Typ ist ein Fehler, es wird
   kein Typ geraten.
+- *Nur das Modell leert eine Seite*: Zeichnet die App eine Seite leer (PDFium), bekommt sie ohne Modell den Typ
+  `Leer`, behält aber ihren Text aus Stufe 1 – eine echte Textebene kann unsichtbar sein (weißer oder verdeckter
+  Text), und ein Scan, den die App nicht zeichnen konnte, ist nicht erwiesen leer. (Befund der Schlussprüfung: Vorher
+  verlor eine solche Seite ihren Text.)
+- *Abschnitte bleiben, wenn sich kein Text ändert*: Das Modell ordnet jede Seite jeder PDF ein; bei Dokumenten, deren
+  Text gleich bleibt (Textebene, Pläne, Fotos), werden die Abschnitte nicht neu geschrieben – sonst würden alle ihre
+  Vektoren ein zweites Mal berechnet.
+- *Typen gehören zum Dateiinhalt*: Ändert sich eine Datei, verschwinden ihre Seitentypen – auch wenn das Seitenmodell
+  gerade abgeschaltet ist.
 - *Dokumentstatus*: Warten nur noch Seiten mit echter Textebene auf ihren Typ, ist das Dokument vollständig
   („Seitentyp ausstehend: N Seite(n)“, kein Mangel). Auch eine solche Seite, die scheitert oder abgelehnt wird, macht
   das Dokument nicht unvollständig – sein Text ist da.
