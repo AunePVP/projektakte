@@ -1,6 +1,6 @@
 # Entwurf: Bildauswertung über das eigene Seitenmodell (Nemotron Parse + Typ-Kopf)
 
-Stand: 24. November 2026. Status: Entwurf, wartet auf Freigabe des Nutzers.
+Stand: 24. November 2026. Status: vom Nutzer freigegeben (26. November 2026), CAD-Frage: Variante c.
 
 ## 1. Absicht
 
@@ -166,11 +166,11 @@ gleich: Textebene bzw. Tesseract sofort durchsuchbar.
   falsch, nicht `_garbled`) – die vorhandene Unterscheidung.
 - Ausgelassen wie heute: `SKIP_READ_FOLDERS` (wird gar nicht gelesen), `VISION_SKIP_FOLDERS` (Fotos nicht ans
   Modell), in der Statusseite abgeschaltete Ordner.
-- `VISION_SKIP_CAD=1` gilt weiter, aber enger gefasst – **offene Frage an den Nutzer, siehe Abschnitt 8**. Bis
-  dahin gilt: CAD-Seite = zeichnet kein Bild **und** hat keine echte Textebene (das ist die heutige Bedeutung, denn
-  heute kommen nur Seiten ohne Textebene dorthin). Sie geht nicht ans Modell und bekommt `typ = Plan`,
-  `source = cad`. Seiten mit echter Textebene gehen immer ans Modell – sonst würde jede am Rechner erzeugte
-  Textseite (zeichnet auch kein Bild) als Plan eingeordnet.
+- `VISION_SKIP_CAD=1` gilt weiter, neu gefasst (**vom Nutzer entschieden, Variante c**): CAD-Seite = zeichnet kein
+  Bild **und** ist größer als A4 (Seitenfläche über 110 % von 595 × 842 pt) – mit oder ohne Textebene. Sie wird nicht
+  gezeichnet und geht nicht ans Modell (Zeichnen kostete 12–30 s je Seite), bekommt `typ = Plan`, `source = cad` und
+  behält ihren Text aus Stufe 1. Seiten ohne Bild bis A4 (am Rechner erzeugte Textseiten, Briefe mit Text als Kurven)
+  gehen ans Modell. Bekannte Folge: A3-Tabellen und A3-Formulare ohne Bild gelten als Plan (Text bleibt erhalten).
 - `MAX_DOC_VISION_CALLS` (500 Seiten je Dokument) gilt weiter für Scan-Seiten. Seiten mit echter Textebene zählen
   nicht dagegen und machen ein Dokument nie unvollständig; die Grenze `MAX_DOC_PIXELS` je Aufruf des Leseprozesses
   bleibt. *(Aufruf des Entwurfs.)*
@@ -293,10 +293,3 @@ Suche: [ rauchabzug treppenraum        ] Projekt: [ alle ▾ ] Seitentyp: [ Alle
 - Bildformat an den Dienst: die vorhandene Aufbereitung (`for_model`, JPEG/PNG); TIFF/BMP-Bilddateien vor dem Senden
   nach PNG wandeln, falls der Dienst sie mit 400 ablehnt.
 
-## 8. Offene Frage an den Nutzer
-
-**CAD-Pläne mit echter Textebene.** Viele CAD-Exporte haben echten Text (Beschriftungen) und zeichnen kein Bild.
-Unter „alle Seiten ans Modell“ würden sie gezeichnet (12–30 s je Seite, gemessen im November) und dann vom Modell als
-Plan eingeordnet. Möglichkeiten: (a) so lassen – jede Seite mit Textebene geht ans Modell, große Pläne kosten Zeit;
-(b) mit `VISION_SKIP_CAD=1` Seiten ohne Bild, die größer als A3 sind, ohne Modell als Plan einordnen; (c) wie (b),
-aber schon ab größer als A4.
