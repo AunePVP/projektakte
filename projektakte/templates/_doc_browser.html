@@ -27,7 +27,7 @@
       <td><a href="/dokumente/{{ d.id }}" data-betrachter="{{ viewer_url(d.id) }}">{{ (d.filename or d.rel_path)|path }}</a>{% if d.doc_type %} <span class="pill doc-type" title="Dokumentart">{{ d.doc_type }}</span>{% endif %}</td>
       <td class="hide-sm">{{ d.ext[1:]|upper }}</td>
       <td class="date">{{ d.doc_date|de_date }}</td>
-      <td>{% if d.status != 'ok' %}<span class="pill warn" title="{{ d.message or '' }}">{{ DOC_STATUS.get(d.status, d.status) }}</span>{% elif d.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
+      <td>{% set ds = doc_state(d) %}{% if ds.label %}<span class="pill{{ ' warn' if ds.warn }}" title="{{ ds.detail }}">{{ ds.label }}</span>{% elif d.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
     </tr>
     {% endfor %}
     {% if not browser.folders and not browser.files %}<tr><td colspan="4" class="empty">Keine Dokumente.</td></tr>{% endif %}

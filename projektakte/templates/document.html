@@ -11,7 +11,7 @@
   <dt>Datum</dt><dd>{{ d.doc_date|de_date }}</dd>
   <dt>Größe</dt><dd>{{ d.size|filesize }}{% if d.pages %} · {{ d.pages|plural('Seite', 'Seiten') }}{% endif %}</dd>
   {% if page_types %}<dt>Seitentypen</dt><dd>{{ page_types }}</dd>{% endif %}
-  <dt>Status</dt><dd>{% if d.status == 'ok' %}indexiert{% if d.method == 'vision' %} (per Bildauswertung){% endif %}{% else %}<span class="pill warn">{{ DOC_STATUS.get(d.status, d.status) }}</span> {{ d.message or '' }}{% endif %}</dd>
+  <dt>Status</dt><dd>{% set ds = doc_state(d) %}{% if ds.label %}<span class="pill{{ ' warn' if ds.warn }}">{{ ds.label }}</span> {% endif %}{{ ds.detail }}</dd>
 </dl>
 {% if d.available %}<p><a class="button secondary" href="{{ file_url(d.id, d.filename) }}">Originaldatei öffnen</a></p>
 {% elif d.status == 'pending' %}<p class="note info">Originaldatei noch nicht da – sie wird automatisch nachgeladen, sobald plMail sie liefert.</p>
@@ -20,6 +20,23 @@
 {% if v.kind != 'text' %}
 <section class="bt-inline bt-art-{{ v.kind }}" aria-label="Ansicht der Datei">{{ anzeige(v, '/dokumente/' ~ d.id ~ '?') }}</section>
 {% elif v.note %}<p class="note warn">{{ v.note }}</p>{% endif %}
+{% if review %}
+<h2 id="seiten">Seiten zum Ansehen</h2>
+<p class="muted small">Hier war sich das Modell unsicher, hat eine Schleife gekürzt, oder die Textebene passt nicht zu dem, was die Seite zeigt. Ein Klick auf einen Typ ordnet die Seite von Hand zu; das Dokument wird danach ohne das Modell neu zusammengesetzt.</p>
+<table class="list">
+  <thead><tr><th>Seite</th><th>Typ</th><th>Hinweis</th><th>von Hand zuordnen</th></tr></thead>
+  <tbody>
+  {% for r in review %}
+  <tr>
+    <td><a href="/dokumente/{{ d.id }}?seite={{ r.page }}" data-betrachter="{{ viewer_url(d.id, r.page) }}">Seite {{ r.page }}</a></td>
+    <td><span class="pill page-type">{{ r.label }}</span></td>
+    <td class="small">{{ r.hint or '' }}</td>
+    <td><form method="post" action="/dokumente/{{ d.id }}/seiten/{{ r.page }}/typ" class="inline">{% for t in PAGE_TYPES if t != 'Unsicher' %}<button class="secondary small" name="typ" value="{{ t }}"{{ ' disabled' if t == r.typ }}>{{ t }}</button> {% endfor %}</form></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
 <h2>Abschnitte</h2>
 {#- c.html: the chunk text without markdown syntax (web.chunk_view) – headings, tables, lists; the
     paragraph chunking repeats at the beginning of the next section is shown only once (web.without_overlap) -#}

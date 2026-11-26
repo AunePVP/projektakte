@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Seiten zum Ansehen{% endblock %}
+{% block content %}
+<h1>Seiten zum Ansehen</h1>
+<p class="muted">Das Seitenmodell hat bisher {{ summary or 'noch keine Seite' }} eingeordnet. Hier stehen die Seiten, bei denen ein Blick lohnt: Das Modell war sich unsicher, es hat eine Schleife gekürzt, oder die Textebene passt nicht zu dem, was die Seite zeigt{% if totals.Mensch %} · {{ totals.Mensch }} von Hand zugeordnet{% endif %}.</p>
+{% if rows %}
+<table class="list">
+  <thead><tr><th>Dokument</th><th>Seite</th><th>Typ</th><th>Hinweis</th><th>von Hand zuordnen</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td><a href="/dokumente/{{ r.doc_id }}#seiten">{{ r.filename }}</a>{% if r.project %} <span class="muted small">· <a href="/projekte/{{ r.project }}">{{ r.project }}</a></span>{% endif %}</td>
+    <td><a href="/dokumente/{{ r.doc_id }}?seite={{ r.page }}" data-betrachter="{{ viewer_url(r.doc_id, r.page) }}">Seite {{ r.page }}</a></td>
+    <td><span class="pill page-type">{{ r.label }}</span></td>
+    <td class="small">{{ r.hint or '' }}</td>
+    <td><form method="post" action="/dokumente/{{ r.doc_id }}/seiten/{{ r.page }}/typ" class="inline"><input type="hidden" name="weiter" value="seiten">{% for t in PAGE_TYPES if t != 'Unsicher' %}<button class="secondary small" name="typ" value="{{ t }}"{{ ' disabled' if t == r.typ }}>{{ t }}</button> {% endfor %}</form></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p>{% if ab %}<a href="/seiten?ab={{ [0, ab - 50]|max }}">← zurück</a> {% endif %}{% if more %}<a href="/seiten?ab={{ more }}">weiter →</a>{% endif %}</p>
+{% else %}<p class="empty">Keine Seiten zum Ansehen.</p>{% endif %}
+{% endblock %}

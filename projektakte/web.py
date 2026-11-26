@@ -303,7 +303,32 @@ templates.env.filters.update(dauer=zeiten.dauer, etwa=zeiten.etwa, je=zeiten.je)
 templates.env.filters.update(de_date=de_date, de_num=de_num, plural=plural, filesize=filesize,
                              cite_links=cite_links, highlight=_highlight_filter, snippet=_snippet_filter,
                              path=breakable_path)
+def _pages(n: int) -> str:
+    return f"{n} Seite" if n == 1 else f"{n} Seiten"
+
+
+def doc_state(d) -> dict:
+    """What the lists and the document page say about a document: a label (a pill; "" for a document that is
+    simply indexed), whether it is a problem, and a line of detail. A document whose pages still wait for the
+    model is neither "übersprungen" nor finished: it says how many pages are left."""
+    get = d.get if hasattr(d, "get") else (lambda key, default=None: d[key] if key in d.keys() else default)
+    status, pending, pages = get("status"), int(get("vision_pending") or 0), int(get("pages") or 0)
+    if pending and status == "skipped":
+        return {"label": "wartet auf Bildauswertung", "warn": False, "detail": f"{_pages(pending)} noch nicht gelesen"}
+    if pending and status == "ok" and get("incomplete"):
+        total = f" von {max(pages, pending)}" if pages else ""
+        return {"label": "wird gelesen", "warn": False,
+                "detail": f"{pending}{total} {'Seite' if max(pages, pending) == 1 else 'Seiten'} noch nicht gelesen"}
+    if pending and status == "ok":
+        return {"label": "", "warn": False, "detail": f"indexiert – Seitentyp für {_pages(pending)} offen"}
+    if status != "ok":
+        return {"label": DOC_STATUS.get(status, status or ""), "warn": True, "detail": get("message") or ""}
+    return {"label": "", "warn": False,
+            "detail": "indexiert (per Bildauswertung)" if get("method") == "vision" else "indexiert"}
+
+
 templates.env.globals.update(ASSIGN_LABELS=ASSIGN_LABELS, METHOD_LABELS=METHOD_LABELS, DOC_STATUS=DOC_STATUS,
+                             doc_state=doc_state,
                              INBOX_FILTERS=INBOX_FILTERS, version=__version__, answer_view=answer_view,
                              auth_disabled_for=auth_disabled_for, passage=_passage_global, file_url=file_url,
                              viewer_url=viewer_url)
@@ -497,8 +522,8 @@ def settings_save(request: Request, ansicht: str = Form("")):
 def _project_attachments(conn, number: str) -> list[dict]:
     """Attachments of the mails assigned to a project (newest mail first)."""
     return [dict(r) for r in conn.execute(
-        "SELECT d.id, d.filename, d.ext, d.size, d.status, d.message, d.method, m.id AS mail_id, "
-        "m.subject, m.date FROM documents d JOIN mails m ON m.id = d.mail_id "
+        "SELECT d.id, d.filename, d.ext, d.size, d.status, d.message, d.method, d.vision_pending, d.incomplete, "
+        "d.pages, m.id AS mail_id, m.subject, m.date FROM documents d JOIN mails m ON m.id = d.mail_id "
         "WHERE m.project = ? AND m.deleted = 0 ORDER BY m.date DESC, d.id", (number,))]
 
 
@@ -652,7 +677,7 @@ def project_content(request: Request, number: str, tab: str = "dokumente", ordne
 
 @router.get("/projekte/{number}", response_class=HTMLResponse)
 def project_page(request: Request, number: str, art: str = "alle", auswahl: str = "", tab: str = "dokumente",
-                 ordner: str = "", alle: str = ""):
+                 ordner: str = "", alle: str = "", bauvorhaben: str = ""):
     s = _settings(request)
     with db.session(s.db_path) as conn:
         p, docs, mails, attachments = _load_project(conn, number)
@@ -661,6 +686,10 @@ def project_page(request: Request, number: str, art: str = "alle", auswahl: str 
         site = get_project(conn, p["parent"]) if p.get("parent") else None
         subprojects = (_with_activity(children(conn, p["number"]), _activity(conn))
                        if p.get("kind") == BAUVORHABEN else [])
+        # a site with a single order and nothing of its own: that order is the project (?bauvorhaben=1 shows
+        # the site itself)
+        if len(subprojects) == 1 and not (docs or mails or attachments) and not bauvorhaben:
+            return RedirectResponse(f"/projekte/{quote(subprojects[0]['number'], safe='')}", status_code=303)
         suggested = conn.execute("SELECT COUNT(*) FROM mails WHERE suggested_project = ? AND deleted = 0 "
                                  "AND assign_status = 'suggested'", (p["number"],)).fetchone()[0]
         folders = project_folders(conn, p["number"])
@@ -744,8 +773,8 @@ templates.env.globals.update(doc_type_of=doc_type_of, doc_type_note=doc_type_not
 
 def _project_docs(conn, number: str) -> list[dict]:
     return [dict(r) for r in conn.execute(
-        "SELECT id, rel_path, filename, ext, size, doc_date, pages, status, message, method, "
-        f"CASE WHEN doc_type_confidence >= {dokumentarten.MIN_RANKED} THEN doc_type END AS doc_type FROM documents "
+        "SELECT id, rel_path, filename, ext, size, doc_date, pages, status, message, method, vision_pending, "
+        f"incomplete, CASE WHEN doc_type_confidence >= {dokumentarten.MIN_RANKED} THEN doc_type END AS doc_type FROM documents "
         "WHERE project = ? AND mail_id IS NULL ORDER BY rel_path", (number,))]
 
 
@@ -1213,15 +1242,49 @@ def document_page(request: Request, doc_id: int, seite: str = ""):
             raise HTTPException(404, "Dokument nicht gefunden")
         rows = _chunk_rows(conn, doc_id)
         page_types = seitentypen.summary(seitentypen.counts(conn, doc_id))  # "" unless the page model saw it
+        labels = {n: seitentypen.label(r["typ"], kopf=r["kopf"], schleife=bool(r["schleife"]))
+                  for n, r in seitentypen.known(conn, doc_id).items()}
+        review = seitentypen.to_review(conn, 200, doc_id=doc_id)
         mail = None
         if d["mail_id"]:
             mail = conn.execute("SELECT id, subject, date FROM mails WHERE id = ?", (d["mail_id"],)).fetchone()
     d = dict(d)
     v = viewer_view(s, d, page=_page_param(seite), mail=dict(mail) if mail else None)
     d["available"] = v["available"]
-    chunks = [chunk_view(c) for c in without_overlap(rows)]
+    chunks = [chunk_view(c, labels) for c in without_overlap(rows)]
     return render(request, "document.html", d=d, chunks=chunks, mail=dict(mail) if mail else None, v=v,
-                  page_types=page_types)
+                  page_types=page_types, review=review, PAGE_TYPES=seitentypen.TYPES)
+
+
+@router.post("/dokumente/{doc_id}/seiten/{page}/typ")
+def set_page_type(request: Request, doc_id: int, page: int, typ: str = Form(""), weiter: str = Form("")):
+    """A person types a page (the model was unsure, or wrong). The document is read again at the next pass and
+    its texts are made anew – the model is not asked."""
+    if typ not in seitentypen.TYPES:
+        raise HTTPException(422, f"Unbekannter Seitentyp – möglich: {', '.join(seitentypen.TYPES)}")
+    with db.session(_settings(request).db_path) as conn:
+        if not seitentypen.set_by_hand(conn, doc_id, page, typ):
+            raise HTTPException(404, "Diese Seite hat noch keinen Seitentyp")
+    indexer = getattr(request.app.state, "indexer", None)
+    if indexer is not None and getattr(indexer, "alive", False):
+        indexer.trigger()
+    return RedirectResponse("/seiten" if weiter == "seiten" else f"/dokumente/{doc_id}#seiten", status_code=303)
+
+
+@router.get("/seiten", response_class=HTMLResponse)
+def pages_to_review(request: Request, ab: int = 0):
+    """Pages a person may want to look at: the model was unsure, a loop was cut short, or the text layer was not
+    what the page shows."""
+    ab = max(0, ab)
+    with db.session(_settings(request).db_path) as conn:
+        rows = seitentypen.to_review(conn, REVIEW_PAGE + 1, ab)
+        totals = seitentypen.totals(conn)
+    return render(request, "seiten.html", rows=rows[:REVIEW_PAGE], totals=totals, ab=ab,
+                  more=ab + REVIEW_PAGE if len(rows) > REVIEW_PAGE else None, PAGE_TYPES=seitentypen.TYPES,
+                  summary=seitentypen.summary(totals))
+
+
+REVIEW_PAGE = 50  # pages to look at shown at a time
 
 
 def _chunk_rows(conn, doc_id: int) -> list[dict]:
@@ -1328,14 +1391,17 @@ def without_overlap(chunks: list[dict]) -> list[dict]:
     return out
 
 
-def chunk_view(chunk: dict) -> dict:
+def chunk_view(chunk: dict, page_labels: dict | None = None) -> dict:
     """A chunk as the document page shows it: the text without markdown syntax (headings as
-    headings, tables as tables) and a context line with the page and – unless the text starts with
-    it – the heading of the section it belongs to."""
+    headings, tables as tables) and a context line with the page, what the page model said the page is
+    (``page_labels``: page → label, nothing for a plain text page) and – unless the text starts with it – the
+    heading of the section it belongs to."""
     blocks = parse_blocks(chunk.get("text") or "")
     starts_with_heading = bool(blocks) and blocks[0].kind == "heading" and (
         not chunk.get("heading") or same_heading(blocks[0].text, chunk["heading"]))
     context = [f"Seite {chunk['page']}"] if chunk.get("page") else []
+    if context and (page_labels or {}).get(chunk["page"]):
+        context.append(page_labels[chunk["page"]])
     if chunk.get("heading") and not starts_with_heading:
         context.append(chunk["heading"])
     return {**chunk, "context": " · ".join(context), "html": render_html(blocks)}

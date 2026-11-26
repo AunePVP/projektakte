@@ -9,8 +9,8 @@ import sqlite3
 TYPES = ("Text", "Plan", "Foto", "Leer", "Unsicher")  # ai.seitenmodell.TYPES
 LOOP = "Schleife"
 NONE = "ohne"  # the search filter's value for pages without a type
-# how a page got its type
-MODEL, CAD, RENDER = "modell", "cad", "render"
+# how a page got its type (page_types.source)
+MODEL, CAD, RENDER, BY_HAND = "modell", "cad", "render", "mensch"
 
 
 def store(conn: sqlite3.Connection, doc_id: int, page: int, *, typ: str, kopf: str | None = None,
@@ -61,7 +61,10 @@ def compose(stage1: dict[int, str], rows: dict, segments: dict | None = None) ->
     for n, r in rows.items():
         raw = (r["raw"] or "").strip()
         has_text = bool((stage1.get(n) or "").strip())
-        if r["layer"]:
+        if r["typ"] == "Leer" and r["source"] == BY_HAND:  # a person looked at the page: it has no text
+            out[n] = ""
+            info[n] = (HUMAN, None)
+        elif r["layer"]:
             lines = (segments or {}).get(n)
             if r["typ"] == "Text" and lines:
                 blocks[n], share, origin = compose_layer(lines, raw, schleife=bool(r["schleife"]), finish=r["finish"])
@@ -124,3 +127,62 @@ def label(typ: str | None, *, kopf: str | None = None, schleife: bool = False) -
     if typ == "Text":
         return None
     return _WORDS.get(typ, typ)
+
+
+def set_by_hand(conn: sqlite3.Connection, doc_id: int, page: int, typ: str) -> bool:
+    """A person types a page the model saw (``source`` mensch; the model's guess and raw text stay). The document
+    is read again at the next indexing pass – its pages' texts are made anew from what is stored, the model is
+    not asked. False if the page has no type yet. No commit."""
+    if typ not in TYPES:
+        raise ValueError(f"unbekannter Seitentyp: {typ!r}")
+    done = conn.execute("UPDATE page_types SET typ = ?, source = ? WHERE doc_id = ? AND page = ?",
+                        (typ, BY_HAND, doc_id, page)).rowcount
+    if not done:
+        return False
+    conn.execute("UPDATE documents SET incomplete = 1, extract_profile = '', retry_after = NULL WHERE id = ?", (doc_id,))
+    return True
+
+
+# pages a person may want to look at: the model was unsure, the service cut a loop short, or the text layer was
+# not what the page shows (the model's text is used instead)
+REVIEW_WHERE = ("((t.typ = 'Unsicher' AND t.source != 'mensch') OR t.schleife = 1 "
+                "OR (t.layer = 1 AND t.quelle = 'modell'))")
+
+
+def hint(row) -> str | None:
+    """Why a page is listed for a look, as shown beside it."""
+    if row["layer"] and row["quelle"] == FROM_MODEL:
+        share = row["deckung"]
+        return ("Textebene passt nicht zur Seite – Text des Modells verwendet"
+                + (f" (Deckung {round(share * 100)} %)" if share is not None else ""))
+    if row["schleife"]:
+        return "Schleife des Modells – Text gekürzt"
+    if row["typ"] == "Unsicher" and row["source"] != BY_HAND:
+        return "Modell unsicher – Seite hat nur den Text aus der Datei"
+    return None
+
+
+def to_review(conn: sqlite3.Connection, limit: int = 100, offset: int = 0, doc_id: int | None = None) -> list[dict]:
+    """Pages to look at (REVIEW_WHERE), with their document; of one document or of all (oldest document first)."""
+    where, args = REVIEW_WHERE, []
+    if doc_id is not None:
+        where += " AND t.doc_id = ?"
+        args.append(doc_id)
+    rows = conn.execute(
+        "SELECT t.doc_id, t.page, t.typ, t.kopf, t.sicherheit, t.schleife, t.source, t.layer, t.quelle, t.deckung, "
+        "d.filename, d.rel_path, d.project FROM page_types t JOIN documents d ON d.id = t.doc_id "
+        f"WHERE {where} ORDER BY t.doc_id, t.page LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+    return [dict(r) | {"label": label(r["typ"], kopf=r["kopf"], schleife=bool(r["schleife"])) or r["typ"],
+                       "hint": hint(r)} for r in rows]
+
+
+def totals(conn: sqlite3.Connection) -> dict[str, int]:
+    """Pages of the whole index per type; "Schleife", "Abweichung" (text layer not what the page shows), "Mensch"
+    (typed by hand) and "Ansehen" (pages to look at) beside them."""
+    out = {typ: n for typ, n in conn.execute("SELECT typ, COUNT(*) FROM page_types GROUP BY typ")}
+    one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
+    out[LOOP] = one("SELECT COUNT(*) FROM page_types WHERE schleife = 1")
+    out["Abweichung"] = one("SELECT COUNT(*) FROM page_types WHERE layer = 1 AND quelle = 'modell'")
+    out["Mensch"] = one("SELECT COUNT(*) FROM page_types WHERE source = 'mensch'")
+    out["Ansehen"] = one(f"SELECT COUNT(*) FROM page_types t WHERE {REVIEW_WHERE}")
+    return out

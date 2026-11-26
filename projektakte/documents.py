@@ -204,7 +204,8 @@ def prepare_document(*, rel_path: str, data: bytes, mtime: float | None, llm=Non
     return PreparedDocument(
         rel_path=rel_path, filename=filename, ext=Path(filename).suffix.lower(), size=len(data),
         sha256=sha256(data), mtime=mtime, doc_date=doc_date or document_date(filename, result.text, mtime),
-        pages=max((p.number or 0 for p in result.pages), default=0) or None, result=result,
+        pages=max([p.number or 0 for p in result.pages] + list(result.vision_pages), default=0) or None,
+        result=result,
         chunks=chunks, profile=stored_profile(extraction_profile(llm), result))
 
 

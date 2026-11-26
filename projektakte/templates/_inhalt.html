@@ -19,7 +19,7 @@
         <span class="show-sm small">aus der Mail <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a> <span class="muted">vom {{ a.date|de_date }}</span></span></td>
       <td class="hide-sm">{{ a.ext[1:]|upper }}</td>
       <td class="hide-sm"><span class="muted">{{ a.date|de_date }}</span> <a href="/mails/{{ a.mail_id }}">{{ a.subject or '(ohne Betreff)' }}</a></td>
-      <td>{% if a.status != 'ok' %}<span class="pill warn" title="{{ a.message or '' }}">{{ DOC_STATUS.get(a.status, a.status) }}</span>{% elif a.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
+      <td>{% set ds = doc_state(a) %}{% if ds.label %}<span class="pill{{ ' warn' if ds.warn }}" title="{{ ds.detail }}">{{ ds.label }}</span>{% elif a.method == 'vision' %}<span class="pill">per Bildauswertung</span>{% endif %}</td>
     </tr>
     {% else %}<tr><td colspan="4" class="empty">Keine Anhänge in den zugeordneten Mails.</td></tr>{% endfor %}
     </tbody>
